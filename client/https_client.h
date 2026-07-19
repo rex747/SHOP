@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <winhttp.h>
 #include <string>
+#include <vector>
 #include <optional>
 #include <nlohmann/json.hpp>
 #include "logger.h"
@@ -55,21 +56,17 @@ public:
             WINHTTP_NO_PROXY_BYPASS, 0);
 
         if (!m_hSession) {
-            g_logger.error(L"WinHttpOpen failed: " +
-                std::to_wstring(GetLastError()));
+            g_logger.error(L"WinHttpOpen failed: " + std::to_wstring(GetLastError()));
             return false;
         }
 
-        // Set timeouts
-        DWORD timeout = 30000; // 30 seconds
+        DWORD timeout = 30000;
         WinHttpSetTimeouts(m_hSession, timeout, timeout, timeout, timeout);
 
-        m_hConnect = WinHttpConnect(m_hSession, m_host.c_str(),
-            m_port, 0);
+        m_hConnect = WinHttpConnect(m_hSession, m_host.c_str(), m_port, 0);
 
         if (!m_hConnect) {
-            g_logger.error(L"WinHttpConnect failed: " +
-                std::to_wstring(GetLastError()));
+            g_logger.error(L"WinHttpConnect failed: " + std::to_wstring(GetLastError()));
             cleanup();
             return false;
         }
@@ -104,7 +101,7 @@ public:
             m_hConnect, method.c_str(), path.c_str(),
             nullptr, WINHTTP_NO_REFERER,
             WINHTTP_DEFAULT_ACCEPT_TYPES,
-            WINHTTP_FLAG_SECURE  // HTTPS
+            WINHTTP_FLAG_SECURE
         );
 
         if (!hRequest) {
@@ -112,30 +109,20 @@ public:
             return std::nullopt;
         }
 
-        // Set security flags
         DWORD flags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
             SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
             SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
             SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
 
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS,
-            &flags, sizeof(flags));
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof(flags));
 
-        if (!WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof(flags))) {
-            g_logger.warning(L"Failed to set security flags: " + std::to_wstring(GetLastError()));
-        }
-
-        // Add headers
         std::wstring headers = L"Content-Type: application/json\r\n";
         if (!authToken.empty()) {
             headers += L"Authorization: Bearer " + authToken + L"\r\n";
         }
 
-        // Convert JSON to string
         std::string requestStr = requestBody.dump();
-        
 
-        // Send request
         BOOL result = WinHttpSendRequest(
             hRequest, headers.c_str(), -1,
             (LPVOID)requestStr.c_str(),
@@ -143,76 +130,67 @@ public:
         );
 
         if (!result) {
-            g_logger.error(L"WinHttpSendRequest failed");
+            g_logger.error(L"WinHttpSendRequest failed: " + std::to_wstring(GetLastError()));
             WinHttpCloseHandle(hRequest);
             return std::nullopt;
         }
 
-        // Receive response
         result = WinHttpReceiveResponse(hRequest, nullptr);
         if (!result) {
-            g_logger.error(L"WinHttpReceiveResponse failed");
+            g_logger.error(L"WinHttpReceiveResponse failed: " + std::to_wstring(GetLastError()));
             WinHttpCloseHandle(hRequest);
             return std::nullopt;
         }
 
-        // Get status code
         DWORD statusCode = 0;
         DWORD size = sizeof(statusCode);
         WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &size,
-            WINHTTP_NO_HEADER_INDEX);
+            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &size, WINHTTP_NO_HEADER_INDEX);
 
-        // Read response body (ВСЕГДА, независимо от статуса)
-        std::wstring response;
+        // ИСПРАВЛЕНИЕ 3: Корректное чтение UTF-8 байтов напрямую в std::string 
+        // без попыток некорректного преобразования через wchar_t, что вызывало parse_error.101
+        std::string responseStr;
         DWORD bytesAvailable = 0;
         do {
             bytesAvailable = 0;
             WinHttpQueryDataAvailable(hRequest, &bytesAvailable);
             if (bytesAvailable > 0) {
-                std::vector<wchar_t> buffer(bytesAvailable / sizeof(wchar_t) + 1);
+                std::vector<char> buffer(bytesAvailable + 1);
                 DWORD bytesRead = 0;
                 WinHttpReadData(hRequest, buffer.data(), bytesAvailable, &bytesRead);
-                response.append(buffer.data(), bytesRead / sizeof(wchar_t));
+                responseStr.append(buffer.data(), bytesRead);
             }
         } while (bytesAvailable > 0);
 
         WinHttpCloseHandle(hRequest);
 
-        // Parse JSON response
-        std::string responseStr = wstring_to_utf8(response);
         json responseJson;
         try {
             responseJson = json::parse(responseStr);
         }
         catch (const json::exception& e) {
-            g_logger.error(L"JSON parse error: " + utf8_to_wstring(e.what()));
+            g_logger.error(L"JSON parse error: " + utf8_to_wstring(e.what()) + L", response: " + utf8_to_wstring(responseStr));
             return std::nullopt;
         }
 
-        // Return parsed JSON with status code info
         responseJson["_http_status"] = statusCode;
 
         if (statusCode != 200 && statusCode != 201) {
-            g_logger.error(L"HTTP error: " + std::to_wstring(statusCode) +
-                L", body: " + utf8_to_wstring(responseStr));
+            g_logger.error(L"HTTP error: " + std::to_wstring(statusCode) + L", body: " + utf8_to_wstring(responseStr));
         }
 
         return responseJson;
     }
 
-    // Convenience methods
     std::optional<json> get(const std::wstring& path, const std::wstring& token = L"") {
         return sendRequest(path, L"GET", json::object(), token);
     }
 
-    std::optional<json> post(const std::wstring& path, const json& data,
-        const std::wstring& token = L"") {
+    std::optional<json> post(const std::wstring& path, const json& data, const std::wstring& token = L"") {
         return sendRequest(path, L"POST", data, token);
     }
 
-    std::optional<json> put(const std::wstring& path, const json& data,
-        const std::wstring& token = L"") {
+    std::optional<json> put(const std::wstring& path, const json& data, const std::wstring& token = L"") {
         return sendRequest(path, L"PUT", data, token);
     }
 };
