@@ -1,12 +1,12 @@
 // database.h
 #pragma once
 
-#include <pqxx/pqxx>
+#include <iostream>
 #include <string>
 #include <vector>
 #include <optional>
+#include <pqxx/pqxx>
 #include <nlohmann/json.hpp>
-#include <string_view>
 
 #include "config_server.h"
 #include "logger_server.h"
@@ -44,21 +44,20 @@ public:
         try {
             pqxx::work txn{ *g_dbConnection };
 
-            // Create tables
             txn.exec(R"(
                 CREATE TABLE IF NOT EXISTS clients (
-                    id              SERIAL PRIMARY KEY,
-                    phone           VARCHAR(20) UNIQUE NOT NULL,
-                    last_name       VARCHAR(64)  NOT NULL,
-                    first_name      VARCHAR(64)  NOT NULL,
-                    middle_name     VARCHAR(64),
-                    email           VARCHAR(64),
+                    id SERIAL PRIMARY KEY,
+                    phone VARCHAR(20) UNIQUE NOT NULL,
+                    last_name VARCHAR(64) NOT NULL,
+                    first_name VARCHAR(64) NOT NULL,
+                    middle_name VARCHAR(64),
+                    email VARCHAR(64),
                     items_submitted INTEGER DEFAULT 0,
-                    items_sold      INTEGER DEFAULT 0,
-                    created_at      INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
-                    updated_at      INTEGER DEFAULT EXTRACT(EPOCH FROM NOW())
+                    items_sold INTEGER DEFAULT 0,
+                    created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
+                    updated_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW())
                 );
-                
+
                 CREATE TABLE IF NOT EXISTS queue_tickets (
                     id SERIAL PRIMARY KEY,
                     number VARCHAR(50) UNIQUE NOT NULL,
@@ -72,7 +71,7 @@ public:
                     status VARCHAR(20) DEFAULT 'waiting',
                     served_at INTEGER
                 );
-                
+
                 CREATE TABLE IF NOT EXISTS items (
                     id SERIAL PRIMARY KEY,
                     client_id INTEGER REFERENCES clients(id),
@@ -84,7 +83,7 @@ public:
                     sold_at INTEGER,
                     synced_to_1c BOOLEAN DEFAULT FALSE
                 );
-                
+
                 CREATE TABLE IF NOT EXISTS auth_sms_codes (
                     id SERIAL PRIMARY KEY,
                     phone VARCHAR(20) NOT NULL,
@@ -92,7 +91,7 @@ public:
                     created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
                     used BOOLEAN DEFAULT FALSE
                 );
-                
+
                 CREATE TABLE IF NOT EXISTS auth_tokens (
                     id SERIAL PRIMARY KEY,
                     client_id INTEGER REFERENCES clients(id),
@@ -102,7 +101,7 @@ public:
                     expires_at INTEGER NOT NULL,
                     revoked BOOLEAN DEFAULT FALSE
                 );
-                
+
                 CREATE TABLE IF NOT EXISTS trust_acceptances (
                     id SERIAL PRIMARY KEY,
                     client_id INTEGER REFERENCES clients(id),
@@ -111,7 +110,7 @@ public:
                     processed BOOLEAN DEFAULT FALSE,
                     processed_at INTEGER
                 );
-                
+
                 CREATE TABLE IF NOT EXISTS sync_log (
                     id SERIAL PRIMARY KEY,
                     sync_type VARCHAR(50) NOT NULL,
@@ -120,7 +119,7 @@ public:
                     error_message TEXT,
                     created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW())
                 );
-                
+
                 CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(phone);
                 CREATE INDEX IF NOT EXISTS idx_queue_tickets_status ON queue_tickets(status);
                 CREATE INDEX IF NOT EXISTS idx_queue_tickets_created ON queue_tickets(created_at);
@@ -131,7 +130,6 @@ public:
             txn.commit();
             g_serverLogger.info("Database initialized successfully");
             return true;
-
         }
         catch (const std::exception& e) {
             g_serverLogger.error(std::string("Database initialization error: ") + e.what());
@@ -139,23 +137,27 @@ public:
         }
     }
 
-    // --- getClientByPhone ---
     static std::optional<Client> getClientByPhone(const std::string& phone) {
         try {
             pqxx::work txn{ *g_dbConnection };
             auto result = txn.exec(
-                "SELECT id, phone, name, email, created_at, active FROM clients WHERE phone = $1",
-                pqxx::params{ phone } // <-- ќЅя«ј“≈Ћ№Ќјя ќЅ≈–“ ј
+                "SELECT id, phone, last_name, first_name, middle_name, email, created_at FROM clients WHERE phone = $1",
+                pqxx::params{ phone }
             );
             if (result.empty()) return std::nullopt;
 
             Client client;
             client.id = result[0]["id"].as<int>();
             client.phone = result[0]["phone"].as<std::string>();
-            client.name = result[0]["name"].as<std::string>();
-            client.email = result[0]["email"].as<std::string>();
+
+            std::string last = result[0]["last_name"].as<std::string>();
+            std::string first = result[0]["first_name"].as<std::string>();
+            std::string mid = result[0]["middle_name"].is_null() ? "" : result[0]["middle_name"].as<std::string>();
+            client.name = last + " " + first + (mid.empty() ? "" : " " + mid);
+
+            client.email = result[0]["email"].is_null() ? "" : result[0]["email"].as<std::string>();
             client.createdAt = result[0]["created_at"].as<int64_t>();
-            client.active = result[0]["active"].as<bool>();
+            client.active = true;
             return client;
         }
         catch (const std::exception& e) {
@@ -164,7 +166,7 @@ public:
         }
     }
 
-    // --- registerClient ---
+    // »—ѕ–ј¬Ћ≈Ќ»≈ 2: «апросы теперь обращаютс€ к таблице 'clients', а не к несуществующей 'clients_extended'
     static bool registerClient(const std::string& phone, const std::string& last_name,
         const std::string& first_name, const std::string& middle_name,
         const std::string& email, int items_submitted, int items_sold)
@@ -172,18 +174,17 @@ public:
         try {
             pqxx::work txn{ *g_dbConnection };
 
-            // std::optional идеально работает с pqxx::params дл€ передачи NULL
             std::optional<std::string> mid_opt = middle_name.empty() ? std::nullopt : std::optional<std::string>(middle_name);
             std::optional<std::string> email_opt = email.empty() ? std::nullopt : std::optional<std::string>(email);
 
             auto exist = txn.exec(
-                "SELECT id FROM clients_extended WHERE phone = $1",
+                "SELECT id FROM clients WHERE phone = $1",
                 pqxx::params{ phone }
             );
 
             if (!exist.empty()) {
                 txn.exec(
-                    "UPDATE clients_extended SET last_name=$2, first_name=$3, middle_name=$4, "
+                    "UPDATE clients SET last_name=$2, first_name=$3, middle_name=$4, "
                     "email=$5, items_submitted=$6, items_sold=$7, updated_at=EXTRACT(EPOCH FROM NOW()) "
                     "WHERE phone=$1",
                     pqxx::params{ phone, last_name, first_name, mid_opt, email_opt, items_submitted, items_sold }
@@ -194,16 +195,9 @@ public:
             }
 
             txn.exec(
-                "INSERT INTO clients_extended (phone, last_name, first_name, middle_name, email, items_submitted, items_sold) "
+                "INSERT INTO clients (phone, last_name, first_name, middle_name, email, items_submitted, items_sold) "
                 "VALUES ($1,$2,$3,$4,$5,$6,$7)",
                 pqxx::params{ phone, last_name, first_name, mid_opt, email_opt, items_submitted, items_sold }
-            );
-
-            std::string full_name = last_name + " " + first_name + (middle_name.empty() ? "" : " " + middle_name);
-            txn.exec(
-                "INSERT INTO clients (phone, name, email) VALUES ($1, $2, $3) "
-                "ON CONFLICT (phone) DO UPDATE SET name=$2, email=$3",
-                pqxx::params{ phone, full_name, email }
             );
 
             txn.commit();
@@ -216,7 +210,6 @@ public:
         }
     }
 
-    // --- createTicket ---
     static QueueTicket createTicket(int clientId, const std::string& queueType, int itemsCount) {
         QueueTicket ticket;
         try {
@@ -251,7 +244,7 @@ public:
             ticket.position = result[0]["position"].as<int>();
             ticket.itemsCount = itemsCount;
             ticket.windowNumber = result[0]["window_number"].as<std::string>();
-            ticket.estimatedWaitTime = result[0]["estimated_wait_time"].as<int64_t>();
+            ticket.estimatedWaitTime = result[0]["estimated_wait_time"].as<int>();
             ticket.createdAt = result[0]["created_at"].as<int64_t>();
             ticket.status = "waiting";
             txn.commit();
@@ -262,7 +255,7 @@ public:
         }
         return ticket;
     }
-    
+
     static json ticketToJson(const QueueTicket& ticket) {
         json j;
         j["id"] = ticket.id;
@@ -278,7 +271,6 @@ public:
         return j;
     }
 
-    // --- updateItemSyncStatus ---
     static bool updateItemSyncStatus(int itemId, bool synced) {
         try {
             pqxx::work txn{ *g_dbConnection };
@@ -297,12 +289,11 @@ public:
 
     static std::vector<json> getUnsyncedItems() {
         std::vector<json> items;
-
         try {
             pqxx::work txn{ *g_dbConnection };
             auto result = txn.exec(
                 "SELECT i.id, i.client_id, i.description, i.estimated_price, "
-                "c.phone, c.name "
+                "c.phone, c.last_name, c.first_name, c.middle_name "
                 "FROM items i "
                 "JOIN clients c ON i.client_id = c.id "
                 "WHERE i.synced_to_1c = FALSE"
@@ -315,15 +306,18 @@ public:
                 item["description"] = row["description"].as<std::string>();
                 item["estimated_price"] = row["estimated_price"].as<double>();
                 item["client_phone"] = row["phone"].as<std::string>();
-                item["client_name"] = row["name"].as<std::string>();
+
+                std::string last = row["last_name"].as<std::string>();
+                std::string first = row["first_name"].as<std::string>();
+                std::string mid = row["middle_name"].is_null() ? "" : row["middle_name"].as<std::string>();
+                item["client_name"] = last + " " + first + (mid.empty() ? "" : " " + mid);
+
                 items.push_back(item);
             }
-
         }
         catch (const std::exception& e) {
             g_serverLogger.error(std::string("getUnsyncedItems error: ") + e.what());
         }
-
         return items;
     }
 };
