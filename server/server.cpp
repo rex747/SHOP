@@ -24,12 +24,14 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
+#include <boost/asio/ssl/error.hpp>
 #include "config_server.h"
 #include "database.h"
 #include "auth_service.h"
 #include "queue_service.h"
 #include "onec_integration.h"
 #include "rate_limiter.h"
+#include "logger_server.h" // Предполагается наличие вашего логгера
 
 using namespace std;
 namespace beast = boost::beast;
@@ -39,13 +41,16 @@ namespace ssl = net::ssl;
 using tcp = net::ip::tcp;
 using json = nlohmann::json;
 
+// Глобальный экземпляр логгера (согласно вашей архитектуре)
+extern Logger g_serverLogger;
+Logger g_serverLogger("/var/log/kiosk/server.log");
+
 class HttpSession : public std::enable_shared_from_this<HttpSession> {
     ssl::stream<tcp::socket> stream_;
     beast::flat_buffer buffer_;
     http::request<http::string_body> request_;
     http::response<http::string_body> response_;
 
-    // Внедренные зависимости (вместо глобальных переменных)
     std::shared_ptr<Database> db_;
     std::shared_ptr<AuthService> auth_;
     std::shared_ptr<QueueService> queue_;
@@ -70,7 +75,10 @@ public:
     void run() {
         stream_.async_handshake(ssl::stream_base::server,
             [self = shared_from_this()](beast::error_code ec) {
-                if (ec) return;
+                if (ec) {
+                    self->onFail(ec, "handshake");
+                    return;
+                }
                 self->doRead();
             });
     }
@@ -79,7 +87,10 @@ private:
     void doRead() {
         http::async_read(stream_, buffer_, request_,
             [self = shared_from_this()](beast::error_code ec, std::size_t) {
-                if (ec) return;
+                if (ec) {
+                    self->onFail(ec, "read");
+                    return;
+                }
                 self->handleRequest();
             });
     }
@@ -92,6 +103,8 @@ private:
         auto target = request_.target();
         auto method = request_.method();
         std::string client_ip = getClientIP();
+
+        g_serverLogger.info("Received request: " + std::string(http::to_string(method)) + " " + std::string(target) + " from " + client_ip);
 
         response_.version(request_.version());
         response_.keep_alive(false);
@@ -116,6 +129,7 @@ private:
                 handleOneCSync(client_ip);
             }
             else {
+                g_serverLogger.warning("Routing request: " + std::string(http::to_string(method)) + " " + std::string(target) + " -> Not found");
                 response_.result(http::status::not_found);
                 response_.set(http::field::content_type, "application/json");
                 response_.body() = json{ {"error", "Not found"} }.dump();
@@ -123,9 +137,10 @@ private:
             }
         }
         catch (const exception& e) {
+            g_serverLogger.error("Exception during request handling: " + std::string(e.what()));
             response_.result(http::status::internal_server_error);
             response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", e.what()} }.dump();
+            response_.body() = json{ {"error", "Internal server error"} }.dump();
             response_.prepare_payload();
         }
 
@@ -175,6 +190,7 @@ private:
         phone = "+7" + digits.substr(1);
 
         bool ok = db_->registerClient(phone, last_name, first_name, middle_name, email, items_submitted, items_sold);
+        g_serverLogger.info("Client registration attempt for: " + phone + " -> Success: " + std::to_string(ok));
 
         response_.result(http::status::ok);
         response_.set(http::field::content_type, "application/json");
@@ -263,11 +279,13 @@ private:
             response_.result(http::status::ok);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"access_token", tokens.first}, {"refresh_token", tokens.second}, {"success", true} }.dump();
+            g_serverLogger.info("TOTP verification successful for: " + phone);
         }
         else {
             response_.result(http::status::unauthorized);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Invalid TOTP code or replay detected"} }.dump();
+            g_serverLogger.warning("TOTP verification FAILED for: " + phone);
         }
         response_.prepare_payload();
     }
@@ -329,17 +347,35 @@ private:
     void doWrite() {
         http::async_write(stream_, response_,
             [self = shared_from_this()](beast::error_code ec, std::size_t) {
-                if (ec) return;
+                if (ec) {
+                    self->onFail(ec, "write");
+                    return;
+                }
                 self->onComplete();
             });
     }
 
     void onComplete() {
         stream_.async_shutdown(
-            [self = shared_from_this()](beast::error_code) {
+            [self = shared_from_this()](beast::error_code ec) {
+                if (ec) {
+                    // Игнорируем ошибки shutdown, так как клиент мог уже разорвать соединение
+                }
                 beast::error_code ec2;
                 self->stream_.lowest_layer().shutdown(tcp::socket::shutdown_send, ec2);
             });
+    }
+
+    void onFail(beast::error_code ec, std::string const& what) {
+        // ИНТЕЛЛЕКТУАЛЬНОЕ ЛОГГИРОВАНИЕ: 
+        // Ошибки рукопожатия SSL часто вызваны ботами, сканирующими порты plaintext HTTP запросами.
+        // Мы понижаем уровень логирования до WARNING, чтобы не засорять журнал ERROR.
+        if (what == "handshake" && ec.category() == boost::asio::error::get_ssl_category()) {
+            g_serverLogger.warning("SSL handshake failed (likely bot scan or incompatible client): " + ec.message());
+        }
+        else {
+            g_serverLogger.error(what + ": " + ec.message());
+        }
     }
 };
 
@@ -348,7 +384,6 @@ class HttpListener : public std::enable_shared_from_this<HttpListener> {
     ssl::context& ctx_;
     tcp::acceptor acceptor_;
 
-    // Внедренные зависимости
     std::shared_ptr<Database> db_;
     std::shared_ptr<AuthService> auth_;
     std::shared_ptr<QueueService> queue_;
@@ -375,7 +410,6 @@ private:
             ioc_,
             [self = shared_from_this()](beast::error_code ec, tcp::socket socket) {
                 if (!ec) {
-                    // Исправление: передача всех зависимостей в HttpSession
                     std::make_shared<HttpSession>(std::move(socket), self->ctx_, self->db_, self->auth_, self->queue_, self->onec_, self->rate_limiter_)->run();
                 }
                 self->doAccept();
@@ -391,57 +425,66 @@ void runServer(std::shared_ptr<Database> db, std::shared_ptr<AuthService> auth,
         unsigned short port = static_cast<unsigned short>(Config::SERVER_PORT);
         net::io_context ioc{ 1 };
 
-        ssl::context ctx{ ssl::context::tlsv12_server };
-        ctx.set_options(ssl::context::default_workarounds | ssl::context::no_sslv2 | ssl::context::single_dh_use);
+        // УЖЕСТЧЕННАЯ КОНФИГУРАЦИЯ SSL ДЛЯ ЗАЩИТЫ ОТ УЯЗВИМОСТЕЙ И НЕКОРРЕКТНЫХ КЛИЕНТОВ
+        ssl::context ctx{ ssl::context::tlsv12_server }; // Разрешаем только TLS 1.2 и выше
+        ctx.set_options(ssl::context::default_workarounds |
+            ssl::context::no_sslv2 |
+            ssl::context::no_sslv3 |
+            ssl::context::no_tlsv1 |
+            ssl::context::no_tlsv1_1 |
+            ssl::context::single_dh_use);
+
+        // Установка современных, безопасных наборов шифров
+        SSL_CTX_set_cipher_list(ctx.native_handle(), "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384");
 
         ctx.use_certificate_chain_file(Config::SSL_CERT_PATH);
         ctx.use_private_key_file(Config::SSL_KEY_PATH, ssl::context::pem);
 
-        // Исправление: передача всех зависимостей в HttpListener
+        g_serverLogger.info("SSL context configured with TLS 1.2+ and strong ciphers.");
+
         auto listener = std::make_shared<HttpListener>(ioc, ctx, tcp::endpoint{ address, port }, db, auth, queue, onec, rate_limiter);
+        g_serverLogger.info("Server listening on port " + std::to_string(port));
         listener->run();
         ioc.run();
     }
     catch (const std::exception& e) {
-        std::cerr << "Server startup error: " << e.what() << std::endl;
+        g_serverLogger.error("Server startup error: " + std::string(e.what()));
     }
 }
 
 int main() {
     try {
-        std::string connStr = "host=" + std::to_string(Config::DB_PORT) + " port=" + std::to_string(Config::DB_PORT) +
-            " dbname=" + Config::DB_NAME + " user=" + Config::DB_USER +
-            " password=" + Config::DB_PASSWORD;
+        g_serverLogger.info("=== Server starting ===");
 
-        // 1. Создаем подключение к БД
+        std::string connStr = "host=" + std::string(Config::DB_HOST) +
+            " port=" + std::to_string(Config::DB_PORT) +
+            " dbname=" + std::string(Config::DB_NAME) +
+            " user=" + std::string(Config::DB_USER) +
+            " password=" + std::string(Config::DB_PASSWORD);
         auto conn = std::make_shared<pqxx::connection>(connStr);
         if (!conn->is_open()) {
-            std::cerr << "Database connection failed" << std::endl;
+            g_serverLogger.error("Database connection failed");
             return 1;
         }
 
-        // 2. Внедрение зависимостей (Dependency Injection): создание экземпляров сервисов
         auto db = std::make_shared<Database>(conn, Config::ENCRYPTION_KEY);
         auto auth = std::make_shared<AuthService>(db);
         auto queue = std::make_shared<QueueService>(db);
         auto onec = std::make_shared<OneCIntegration>(db);
-        auto rate_limiter = std::make_shared<RateLimiter>(5, std::chrono::minutes(1)); // 5 попыток в минуту на IP
+        auto rate_limiter = std::make_shared<RateLimiter>(5, std::chrono::minutes(1));
 
-        // 3. Инициализация
         if (!auth->initialize()) {
-            std::cerr << "Auth service initialization failed" << std::endl;
+            g_serverLogger.error("Auth service initialization failed");
             return 1;
         }
 
-        std::cout << "Server starting on port " << Config::SERVER_PORT << std::endl;
-
-        // 4. Запуск сервера с передачей зависимостей
         runServer(db, auth, queue, onec, rate_limiter);
 
+        g_serverLogger.info("=== Server shutdown ===");
         return 0;
     }
     catch (const std::exception& e) {
-        std::cerr << "Fatal error: " << e.what() << std::endl;
+        g_serverLogger.error("Fatal error: " + std::string(e.what()));
         return 1;
     }
 }
