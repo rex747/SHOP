@@ -22,6 +22,19 @@ struct Client {
     bool active;
 };
 
+struct QueueTicket {
+    int id;
+    std::string number;
+    int clientId;
+    std::string queueType;
+    int position;
+    int itemsCount;
+    std::string windowNumber;
+    int64_t estimatedWaitTime;
+    int64_t createdAt;
+    std::string status;
+};
+
 class Database {
 private:
     std::shared_ptr<pqxx::connection> conn_;
