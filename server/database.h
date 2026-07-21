@@ -10,8 +10,8 @@
 
 #include "config_server.h"
 #include "logger_server.h"
+#include "crypto_utils.h"
 
-extern pqxx::connection* g_dbConnection;
 extern Logger g_serverLogger;
 
 using json = nlohmann::json;
@@ -39,10 +39,19 @@ struct QueueTicket {
 };
 
 class Database {
+private:
+    std::shared_ptr<pqxx::connection> conn_;
+    std::string encryption_key_;
+
 public:
-    static bool initialize() {
+	//Конструктор класса Database, который принимает shared_ptr на объект pqxx::connection и строку с ключом шифрования.
+    Database(std::shared_ptr<pqxx::connection> conn, std::string enc_key)
+        : conn_(conn), encryption_key_(std::move(enc_key)) {
+    }
+
+    bool initialize() {
         try {
-            pqxx::work txn{ *g_dbConnection };
+            pqxx::work txn{ *conn_ };
 
             txn.exec(R"(
                 CREATE TABLE IF NOT EXISTS clients (
@@ -52,6 +61,7 @@ public:
                     first_name VARCHAR(64) NOT NULL,
                     middle_name VARCHAR(64),
                     email VARCHAR(64),
+                    totp_secret_encrypted TEXT,
                     items_submitted INTEGER DEFAULT 0,
                     items_sold INTEGER DEFAULT 0,
                     created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
@@ -83,15 +93,7 @@ public:
                     sold_at INTEGER,
                     synced_to_1c BOOLEAN DEFAULT FALSE
                 );
-
-                CREATE TABLE IF NOT EXISTS auth_sms_codes (
-                    id SERIAL PRIMARY KEY,
-                    phone VARCHAR(20) NOT NULL,
-                    code VARCHAR(10) NOT NULL,
-                    created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
-                    used BOOLEAN DEFAULT FALSE
-                );
-
+               
                 CREATE TABLE IF NOT EXISTS auth_tokens (
                     id SERIAL PRIMARY KEY,
                     client_id INTEGER REFERENCES clients(id),
@@ -137,9 +139,9 @@ public:
         }
     }
 
-    static std::optional<Client> getClientByPhone(const std::string& phone) {
+    std::optional<Client> getClientByPhone(const std::string& phone) {
         try {
-            pqxx::work txn{ *g_dbConnection };
+            pqxx::work txn{ *conn_ };
             auto result = txn.exec(
                 "SELECT id, phone, last_name, first_name, middle_name, email, created_at FROM clients WHERE phone = $1",
                 pqxx::params{ phone }
@@ -167,12 +169,12 @@ public:
     }
 
     // ИСПРАВЛЕНИЕ 2: Запросы теперь обращаются к таблице 'clients', а не к несуществующей 'clients_extended'
-    static bool registerClient(const std::string& phone, const std::string& last_name,
+    bool registerClient(const std::string& phone, const std::string& last_name,
         const std::string& first_name, const std::string& middle_name,
         const std::string& email, int items_submitted, int items_sold)
     {
         try {
-            pqxx::work txn{ *g_dbConnection };
+            pqxx::work txn{ *conn_ };
 
             std::optional<std::string> mid_opt = middle_name.empty() ? std::nullopt : std::optional<std::string>(middle_name);
             std::optional<std::string> email_opt = email.empty() ? std::nullopt : std::optional<std::string>(email);
@@ -210,10 +212,57 @@ public:
         }
     }
 
-    static QueueTicket createTicket(int clientId, const std::string& queueType, int itemsCount) {
+	//Установка TOTP-секрета для клиента. Секрет шифруется перед сохранением в базе данных.
+    bool setTOTPSecret(const std::string& phone, const std::string& secret) {
+        try {
+			g_serverLogger.info("Setting TOTP secret for phone: " + phone);
+            std::string encrypted = CryptoUtils::encryptAES256CBC(secret, encryption_key_);
+			g_serverLogger.info("Encrypted TOTP secret: " + encrypted);
+            pqxx::work txn{ *conn_ };
+            txn.exec(
+                "UPDATE clients SET totp_secret_encrypted = $1 WHERE phone = $2",
+                pqxx::params{ encrypted, phone }
+				
+            );
+            txn.commit();
+			g_serverLogger.info("TOTP secret set successfully for phone: " + phone);
+            return true;
+        }
+        catch (const std::exception& e) {
+			g_serverLogger.error(std::string("setTOTPSecret error: ") + e.what());
+            std::cerr << "setTOTPSecret error: " << e.what() << std::endl;
+            return false;
+        }
+    }
+	// Получение TOTP-секрета для клиента. Секрет расшифровывается перед возвратом.
+    std::optional<std::string> getTOTPSecret(const std::string& phone) {
+        try {
+			g_serverLogger.info("Retrieving TOTP secret for phone: " + phone);
+            pqxx::work txn{ *conn_ };
+			g_serverLogger.info("Executing query to retrieve encrypted TOTP secret for phone: " + phone);
+            auto result = txn.exec(
+                "SELECT totp_secret_encrypted FROM clients WHERE phone = $1",
+                pqxx::params{ phone }
+            );
+            if (!result.empty() && !result[0]["totp_secret_encrypted"].is_null()) {
+                std::string encrypted = result[0]["totp_secret_encrypted"].as<std::string>();
+				g_serverLogger.info("Encrypted TOTP secret retrieved: " + encrypted);
+                return CryptoUtils::decryptAES256CBC(encrypted, encryption_key_);
+            }
+			g_serverLogger.info("No TOTP secret found for phone: " + phone);
+            return std::nullopt;
+        }
+        catch (const std::exception& e) {
+			g_serverLogger.error(std::string("getTOTPSecret error: ") + e.what());
+            std::cerr << "getTOTPSecret error: " << e.what() << std::endl;
+            return std::nullopt;
+        }
+    }
+
+    QueueTicket createTicket(int clientId, const std::string& queueType, int itemsCount) {
         QueueTicket ticket;
         try {
-            pqxx::work txn{ *g_dbConnection };
+            pqxx::work txn{ *conn_ };
             std::string prefix = (queueType == "general") ? "G" :
                 (queueType == "first_time") ? "F" :
                 (queueType == "extra_20") ? "E" :
@@ -271,9 +320,9 @@ public:
         return j;
     }
 
-    static bool updateItemSyncStatus(int itemId, bool synced) {
+    bool updateItemSyncStatus(int itemId, bool synced) {
         try {
-            pqxx::work txn{ *g_dbConnection };
+            pqxx::work txn{ *conn_ };
             txn.exec(
                 "UPDATE items SET synced_to_1c = $1 WHERE id = $2",
                 pqxx::params{ synced, itemId }
@@ -287,10 +336,10 @@ public:
         }
     }
 
-    static std::vector<json> getUnsyncedItems() {
+    std::vector<json> getUnsyncedItems() {
         std::vector<json> items;
         try {
-            pqxx::work txn{ *g_dbConnection };
+            pqxx::work txn{ *conn_ };
             auto result = txn.exec(
                 "SELECT i.id, i.client_id, i.description, i.estimated_price, "
                 "c.phone, c.last_name, c.first_name, c.middle_name "
@@ -319,5 +368,24 @@ public:
             g_serverLogger.error(std::string("getUnsyncedItems error: ") + e.what());
         }
         return items;
+    }
+
+    // НОВЫЙ ПУБЛИЧНЫЙ МЕТОД для инкапсулированного сохранения токенов
+    bool saveAuthTokens(int client_id, const std::string& access_token_hash,
+        const std::string& refresh_token_hash, int64_t expires_at) {
+        try {
+            pqxx::work txn{ *conn_ };
+            txn.exec(
+                "INSERT INTO auth_tokens (client_id, access_token_hash, refresh_token_hash, expires_at) "
+                "VALUES ($1, $2, $3, $4)",
+                pqxx::params{ client_id, access_token_hash, refresh_token_hash, expires_at }
+            );
+            txn.commit();
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "saveAuthTokens DB error: " << e.what() << std::endl;
+            return false;
+        }
     }
 };

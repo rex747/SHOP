@@ -44,5 +44,11 @@
     <ClInclude Include="backup_service.h">
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
+    <ClInclude Include="crypto_utils.h">
+      <Filter>Файлы заголовков</Filter>
+    </ClInclude>
+    <ClInclude Include="rate_limiter.h">
+      <Filter>Файлы заголовков</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

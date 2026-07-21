@@ -6,7 +6,7 @@
 
 namespace Config {
     // Server settings
-    constexpr int SERVER_PORT = 8080;
+    inline const int SERVER_PORT = 8443;
     constexpr int SERVER_WORKER_THREADS = 4;
 
     // Database
@@ -32,9 +32,8 @@ namespace Config {
     constexpr int JWT_ACCESS_EXPIRY_SECONDS = 3600;
     constexpr int JWT_REFRESH_EXPIRY_SECONDS = 86400 * 7;
 
-    // SMS Provider
-    constexpr const char* SMS_API_URL = "https://sms-provider.com/api";
-    constexpr const char* SMS_API_KEY = "your-sms-api-key";
+    // Ключ шифрования (будет хэширован SHA-256 для гарантии длины 32 байта)
+    inline const std::string ENCRYPTION_KEY = "your_32_byte_encryption_key_here!!";
 
     // Logging
     constexpr const char* LOG_PATH = "/var/log/kiosk";

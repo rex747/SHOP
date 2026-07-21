@@ -34,6 +34,8 @@
 #include "logger_server.h"
 #include "monitoring.h"
 #include "backup_service.h"
+#include "crypto_utils.h"
+#include "rate_limiter.h"
 
 using namespace std;
 namespace beast = boost::beast;
@@ -57,16 +59,27 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     http::request<http::string_body> request_;
     http::response<http::string_body> response_;
 
+    std::shared_ptr<Database> db_;
+    std::shared_ptr<AuthService> auth_;
+    std::shared_ptr<RateLimiter> rate_limiter_;
+
 public:
-    explicit HttpSession(tcp::socket&& socket, ssl::context& ctx)
-        : stream_(std::move(socket), ctx) {
+    explicit HttpSession(tcp::socket&& socket, ssl::context& ctx, 
+        std::shared_ptr<Database> db, std::shared_ptr<AuthService> auth, 
+        std::shared_ptr<RateLimiter> rate_limiter)
+        : stream_(std::move(socket), ctx),
+        db_(std::move(db)),
+        auth_(std::move(auth)),
+        rate_limiter_(std::move(rate_limiter)) {
     }
 
     void run() {
+		g_serverLogger.info("Starting SSL handshake with client: " + stream_.next_layer().remote_endpoint().address().to_string());
         stream_.async_handshake(ssl::stream_base::server,
             [self = shared_from_this()](beast::error_code ec) {
                 if (ec) return self->onFail(ec, "handshake");
                 self->doRead();
+				g_serverLogger.info("SSL handshake completed successfully with client: " + self->stream_.next_layer().remote_endpoint().address().to_string());
             });
     }
 
@@ -75,28 +88,37 @@ private:
         http::async_read(stream_, buffer_, request_,
             [self = shared_from_this()](beast::error_code ec, std::size_t bytes_transferred) {
                 if (ec) return self->onFail(ec, "read");
+				g_serverLogger.info("Read " + std::to_string(bytes_transferred) + " bytes from client: " + self->stream_.next_layer().remote_endpoint().address().to_string());
                 self->handleRequest();
+				g_serverLogger.info("Request handled successfully for client: " + self->stream_.next_layer().remote_endpoint().address().to_string());
             });
     }
 
+    std::string getClientIP() {
+        return stream_.lowest_layer().remote_endpoint().address().to_string();
+    }
+
     void handleRequest() {
-        g_serverLogger.info("Received request: " + std::string(request_.method_string()) + " " + std::string(request_.target()));
+        g_serverLogger.info("Received request from " + getClientIP() + ": " + std::string(request_.method_string()) + " " + std::string(request_.target()));
         response_.version(request_.version());
         response_.keep_alive(false);
 
         auto target = request_.target();
         auto method = request_.method();
-        g_serverLogger.info("Routing request: " + std::string(request_.method_string()) + " " + std::string(target));
+        std::string client_ip = getClientIP();
+        g_serverLogger.info("Routing request from " + client_ip + ": " + std::string(request_.method_string()) + " " + std::string(target));
 
         try {
             if (target == "/api/v1/clients/register" && method == http::verb::post) {
+				g_serverLogger.info("Handling client registration request from " + client_ip);
                 handleClientRegister();
+				g_serverLogger.info("Client registration request handled successfully for " + client_ip);
             }
-            else if (target == "/api/v1/auth/sms" && method == http::verb::post) {
-                handleAuthSMS();
+            else if (target == "/api/v1/auth/totp/setup" && method == http::verb::post) {
+                handleTOTPSetup(client_ip);
             }
-            else if (target == "/api/v1/auth/verify" && method == http::verb::post) {
-                handleAuthVerify();
+            else if (target == "/api/v1/auth/totp/verify" && method == http::verb::post) {
+                handleTOTPVerify(client_ip);
             }
             else if (target == "/api/v1/queue/get_ticket" && method == http::verb::post) {
                 handleGetTicket();
@@ -203,7 +225,7 @@ private:
             return;
         }
 
-        bool ok = Database::registerClient(phone, last_name, first_name, middle_name, email, items_submitted, items_sold);
+        bool ok = db_->registerClient(phone, last_name, first_name, middle_name, email, items_submitted, items_sold);
         g_serverLogger.info("Client registration result for phone " + phone + ": " + (ok ? "success" : "failure"));
 
         response_.result(http::status::ok);
@@ -213,48 +235,92 @@ private:
         g_serverLogger.info("Response sent for registration request: " + response_.body());
     }
 
-    void handleAuthSMS() {
-        g_serverLogger.info("Request: " + std::string(request_.method_string()) + " " + std::string(request_.target()));
-        json body = json::parse(request_.body());
-        std::string phone = body["phone"];
-        g_serverLogger.info("Parsed JSON body: " + body.dump());
-
-        std::string code = generateSMSCode();
-        bool sent = sendSMS(phone, code);
-        g_serverLogger.info("SMS code sent to phone " + phone + ": " + (sent ? "success" : "failure"));
-        json resp;
-        resp["success"] = sent;
-        if (sent) {
-            g_authService.storeSMSCode(phone, code);
-            g_serverLogger.info("SMS code stored for phone " + phone);
+    void handleTOTPSetup(const std::string& client_ip) {
+        if (!rate_limiter_->allow(client_ip + "_setup")) {
+            response_.result(http::status::too_many_requests);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Rate limit exceeded"} }.dump();
+            response_.prepare_payload();
+            return;
         }
+
+        json body;
+        try {
+            body = json::parse(request_.body());
+        }
+        catch (const json::parse_error& e) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        std::string phone = body["phone"].get<std::string>();
+        std::string digits;
+        for (char c : phone) if (c >= '0' && c <= '9') digits += c;
+        if (digits.length() == 11 && (digits[0] == '7' || digits[0] == '8')) {
+            phone = "+7" + digits.substr(1);
+        }
+
+        auto secretOpt = db_->getTOTPSecret(phone);
+        std::string secret;
+        if (secretOpt && !secretOpt->empty()) {
+            secret = *secretOpt;
+        }
+        else {
+            secret = auth_->generateTOTPSecret();
+            db_->setTOTPSecret(phone, secret);
+        }
+
+        std::string uri = auth_->generateTOTPURI(secret, phone);
 
         response_.result(http::status::ok);
         response_.set(http::field::content_type, "application/json");
-        response_.body() = resp.dump();
+        response_.body() = json{ {"success", true}, {"secret", secret}, {"uri", uri} }.dump();
         response_.prepare_payload();
-        g_serverLogger.info("Response sent for SMS request: " + response_.body());
     }
 
-    void handleAuthVerify() {
-        json body = json::parse(request_.body());
-        std::string phone = body["phone"];
-        std::string code = body["sms_code"];
+    void handleTOTPVerify(const std::string& client_ip) {
+        if (!rate_limiter_->allow(client_ip + "_verify")) {
+            response_.result(http::status::too_many_requests);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Rate limit exceeded"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
 
-        if (g_authService.verifySMSCode(phone, code)) {
-            auto tokens = g_authService.generateTokens(phone);
-            json resp;
-            resp["access_token"] = tokens.first;
-            resp["refresh_token"] = tokens.second;
-            resp["success"] = true;
+        json body;
+        try {
+            body = json::parse(request_.body());
+        }
+        catch (const json::parse_error& e) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        std::string phone = body["phone"].get<std::string>();
+        std::string code = body["code"].get<std::string>();
+
+        std::string digits;
+        for (char c : phone) if (c >= '0' && c <= '9') digits += c;
+        if (digits.length() == 11 && (digits[0] == '7' || digits[0] == '8')) {
+            phone = "+7" + digits.substr(1);
+        }
+
+        if (auth_->verifyTOTP(phone, code)) {
+            auto tokens = auth_->generateTokens(phone);
             response_.result(http::status::ok);
             response_.set(http::field::content_type, "application/json");
-            response_.body() = resp.dump();
+            response_.body() = json{ {"access_token", tokens.first}, {"refresh_token", tokens.second}, {"success", true} }.dump();
         }
         else {
             response_.result(http::status::unauthorized);
-            json error = { {"error", "Invalid code"} };
-            response_.body() = error.dump();
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid TOTP code or replay detected"} }.dump();
         }
         response_.prepare_payload();
     }
@@ -321,28 +387,23 @@ private:
     void onFail(beast::error_code ec, std::string const& what) {
         g_serverLogger.error(what + ": " + ec.message());
     }
-
-    std::string generateSMSCode() {
-        g_serverLogger.info("Generating SMS code");
-        std::string code = to_string(100000 + (rand() % 900000));
-        g_serverLogger.info("Generated SMS code: " + code);
-        return code;
-    }
-
-    bool sendSMS(const std::string& phone, const std::string& code) {
-        g_serverLogger.info("SMS to " + phone + ": " + code);
-        return true;
-    }
+        
 };
 
 class HttpListener : public std::enable_shared_from_this<HttpListener> {
     net::io_context& ioc_;
     ssl::context& ctx_;
     tcp::acceptor acceptor_;
+    std::shared_ptr<Database> db_;
+    std::shared_ptr<AuthService> auth_;
+    std::shared_ptr<RateLimiter> rate_limiter_;
 
 public:
-    HttpListener(net::io_context& ioc, ssl::context& ctx, tcp::endpoint endpoint)
-        : ioc_(ioc), ctx_(ctx), acceptor_(ioc, endpoint) {
+    HttpListener(net::io_context& ioc, ssl::context& ctx, tcp::endpoint endpoint, 
+        std::shared_ptr<Database> db, std::shared_ptr<AuthService> auth,
+        std::shared_ptr<RateLimiter> rate_limiter)
+        : ioc_(ioc), ctx_(ctx), acceptor_(ioc, endpoint),
+        db_(std::move(db)), auth_(std::move(auth)), rate_limiter_(std::move(rate_limiter)) {
     }
 
     void run() {
@@ -357,14 +418,14 @@ private:
                     g_serverLogger.error("accept: " + ec.message());
                 }
                 else {
-                    std::make_shared<HttpSession>(std::move(socket), self->ctx_)->run();
+                    std::make_shared<HttpSession>(std::move(socket), self->ctx_, self->db_, self->auth_, self->rate_limiter_)->run();
                 }
                 self->doAccept();
             });
     }
 };
 
-void runServer() {
+void runServer(std::shared_ptr<Database> db, std::shared_ptr<AuthService> auth, std::shared_ptr<RateLimiter> rate_limiter) {
     try {
         g_serverLogger.info("Starting server on port " + std::to_string(Config::SERVER_PORT));
         auto const address = net::ip::make_address("0.0.0.0");
@@ -411,6 +472,11 @@ int main(int argc, char* argv[]) {
             << " password=" << Config::DB_PASSWORD;
         std::string connStr = connStrStream.str();
 
+        auto conn = std::make_shared<pqxx::connection>(connStr);
+        auto db = std::make_shared<Database>(conn, Config::ENCRYPTION_KEY);
+        auto auth = std::make_shared<AuthService>(db);
+        auto rate_limiter = std::make_shared<RateLimiter>(5, std::chrono::minutes(1)); // 5 attempts per minute per IP
+
         g_serverLogger.info("Connecting to database with connection string: " + connStr);
 
         g_dbConnection = new pqxx::connection(connStr);
@@ -438,7 +504,7 @@ int main(int argc, char* argv[]) {
         g_monitoring.start();
         g_backup.start();
 
-        runServer();
+        runServer(db,auth,rate_limiter);
 
         g_monitoring.stop();
         g_backup.stop();

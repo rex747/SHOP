@@ -154,11 +154,13 @@
     <ClInclude Include="auth_service.h" />
     <ClInclude Include="backup_service.h" />
     <ClInclude Include="config_server.h" />
+    <ClInclude Include="crypto_utils.h" />
     <ClInclude Include="database.h" />
     <ClInclude Include="logger_server.h" />
     <ClInclude Include="monitoring.h" />
     <ClInclude Include="onec_integration.h" />
     <ClInclude Include="queue_service.h" />
+    <ClInclude Include="rate_limiter.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
