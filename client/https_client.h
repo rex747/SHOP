@@ -1,196 +1,157 @@
-// https_client.h
+﻿// https_client.h
 #pragma once
 
 #include <windows.h>
 #include <winhttp.h>
 #include <string>
-#include <vector>
 #include <optional>
+#include <vector>
 #include <nlohmann/json.hpp>
 #include "logger.h"
 #include "config.h"
-#include "string_utils.h"
-
-#pragma comment(lib, "winhttp.lib")
-
-using json = nlohmann::json;
 
 extern Logger g_logger;
 
+using json = nlohmann::json;
+
 class HTTPSClient {
 private:
-    std::wstring m_host;
-    int m_port;
-    HINTERNET m_hSession;
-    HINTERNET m_hConnect;
-    bool m_initialized;
+    HINTERNET m_hSession = nullptr;
+    std::wstring m_serverName;
+    INTERNET_PORT m_port;
 
-    std::wstring getErrorDescription(DWORD errorCode) {
-        LPWSTR buffer = nullptr;
-        FormatMessageW(
-            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
-            nullptr, errorCode, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-            (LPWSTR)&buffer, 0, nullptr
-        );
-        std::wstring result = buffer ? buffer : L"Unknown error";
-        LocalFree(buffer);
-        return result;
+    std::string wstring_to_utf8(const std::wstring& wstr) {
+        if (wstr.empty()) return std::string();
+        int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+        std::string strTo(size_needed, 0);
+        WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+        return strTo;
+    }
+
+    std::wstring utf8_to_wstring(const std::string& str) {
+        if (str.empty()) return std::wstring();
+        int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
+        std::wstring wstrTo(size_needed, 0);
+        MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed);
+        return wstrTo;
     }
 
 public:
-    HTTPSClient(const std::wstring& host, int port)
-        : m_host(host), m_port(port), m_hSession(nullptr),
-        m_hConnect(nullptr), m_initialized(false) {
+    HTTPSClient(const std::wstring& serverName, INTERNET_PORT port)
+        : m_serverName(serverName), m_port(port) {
+        m_hSession = WinHttpOpen(L"KioskClient/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!m_hSession) {
+            g_logger.error(L"WinHttpOpen failed: " + std::to_wstring(GetLastError()));
+        }
     }
 
     ~HTTPSClient() {
-        cleanup();
-    }
-
-    bool initialize() {
-        if (m_initialized) return true;
-
-        m_hSession = WinHttpOpen(L"TerminalKiosk/1.0",
-            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-            WINHTTP_NO_PROXY_NAME,
-            WINHTTP_NO_PROXY_BYPASS, 0);
-
-        if (!m_hSession) {
-            g_logger.error(L"WinHttpOpen failed: " + std::to_wstring(GetLastError()));
-            return false;
-        }
-
-        DWORD timeout = 30000;
-        WinHttpSetTimeouts(m_hSession, timeout, timeout, timeout, timeout);
-
-        m_hConnect = WinHttpConnect(m_hSession, m_host.c_str(), m_port, 0);
-
-        if (!m_hConnect) {
-            g_logger.error(L"WinHttpConnect failed: " + std::to_wstring(GetLastError()));
-            cleanup();
-            return false;
-        }
-
-        m_initialized = true;
-        g_logger.info(L"HTTPS client initialized successfully");
-        return true;
-    }
-
-    void cleanup() {
-        if (m_hConnect) {
-            WinHttpCloseHandle(m_hConnect);
-            m_hConnect = nullptr;
-        }
         if (m_hSession) {
             WinHttpCloseHandle(m_hSession);
-            m_hSession = nullptr;
         }
-        m_initialized = false;
     }
 
-    std::optional<json> sendRequest(const std::wstring& path,
-        const std::wstring& method,
-        const json& requestBody = json::object(),
-        const std::wstring& authToken = L"") {
-        if (!m_initialized) {
-            g_logger.error(L"HTTPS client not initialized");
+    // ✅ ИСПРАВЛЕНИЕ ОШИБКИ C2039: Добавлен метод initialize для совместимости с main.cpp
+    bool initialize() {
+        return m_hSession != nullptr;
+    }
+
+    // ✅ ИСПРАВЛЕНИЕ ОШИБКИ C2660: Добавлен третий аргумент authToken со значением по умолчанию
+    std::optional<json> post(const std::wstring& path, const json& requestBody, const std::wstring& authToken = L"") {
+        if (!m_hSession) {
+            g_logger.error(L"HTTP Session is not initialized");
             return std::nullopt;
         }
 
-        HINTERNET hRequest = WinHttpOpenRequest(
-            m_hConnect, method.c_str(), path.c_str(),
-            nullptr, WINHTTP_NO_REFERER,
-            WINHTTP_DEFAULT_ACCEPT_TYPES,
-            WINHTTP_FLAG_SECURE
-        );
+        std::string utf8Body = requestBody.dump();
 
-        if (!hRequest) {
-            g_logger.error(L"WinHttpOpenRequest failed");
-            return std::nullopt;
-        }
-
-        DWORD flags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
-            SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-            SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
-            SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
-
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof(flags));
-
+        // Формируем базовые заголовки
         std::wstring headers = L"Content-Type: application/json\r\n";
+
+        // ✅ ДОБАВЛЕНО: Если передан токен, добавляем заголовок Authorization для безопасности
         if (!authToken.empty()) {
             headers += L"Authorization: Bearer " + authToken + L"\r\n";
         }
 
-        std::string requestStr = requestBody.dump();
+        g_logger.info(L"Connecting to: https://" + m_serverName + L":" + std::to_wstring(m_port) + path);
 
-        BOOL result = WinHttpSendRequest(
-            hRequest, headers.c_str(), -1,
-            (LPVOID)requestStr.c_str(),
-            static_cast<DWORD>(requestStr.size()), static_cast<DWORD>(requestStr.size()), 0
-        );
-
-        if (!result) {
-            g_logger.error(L"WinHttpSendRequest failed: " + std::to_wstring(GetLastError()));
-            WinHttpCloseHandle(hRequest);
+        HINTERNET hConnect = WinHttpConnect(m_hSession, m_serverName.c_str(), m_port, 0);
+        if (!hConnect) {
+            g_logger.error(L"WinHttpConnect failed: " + std::to_wstring(GetLastError()));
             return std::nullopt;
         }
 
-        result = WinHttpReceiveResponse(hRequest, nullptr);
-        if (!result) {
+        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", path.c_str(), NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+        if (!hRequest) {
+            g_logger.error(L"WinHttpOpenRequest failed: " + std::to_wstring(GetLastError()));
+            WinHttpCloseHandle(hConnect);
+            return std::nullopt;
+        }
+
+        // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ ОШИБКИ 12029:
+        // Игнорируем ошибки проверки сертификата (неизвестный CA, несовпадение имени, истекший срок).
+        DWORD dwFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+            SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+            SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+            SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+
+        if (!WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwFlags, sizeof(dwFlags))) {
+            g_logger.warning(L"WinHttpSetOption (SECURITY_FLAGS) failed: " + std::to_wstring(GetLastError()) + L". Proceeding anyway.");
+        }
+
+        g_logger.info(L"Sending POST request to: " + path);
+
+        // ✅ Отправляем запрос с обновленными заголовками (включающими Bearer token, если он есть)
+        BOOL bResults = WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.length(),
+            (LPVOID)utf8Body.c_str(), (DWORD)utf8Body.length(), (DWORD)utf8Body.length(), 0);
+
+        if (!bResults) {
+            DWORD err = GetLastError();
+            g_logger.error(L"WinHttpSendRequest failed: " + std::to_wstring(err));
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            return std::nullopt;
+        }
+
+        bResults = WinHttpReceiveResponse(hRequest, NULL);
+        if (!bResults) {
             g_logger.error(L"WinHttpReceiveResponse failed: " + std::to_wstring(GetLastError()));
             WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
             return std::nullopt;
         }
 
-        DWORD statusCode = 0;
-        DWORD size = sizeof(statusCode);
-        WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &size, WINHTTP_NO_HEADER_INDEX);
-
-        // ����������� 3: ���������� ������ UTF-8 ������ �������� � std::string 
-        // ��� ������� ������������� �������������� ����� wchar_t, ��� �������� parse_error.101
-        std::string responseStr;
-        DWORD bytesAvailable = 0;
+        DWORD dwSize = 0;
+        std::string responseText;
         do {
-            bytesAvailable = 0;
-            WinHttpQueryDataAvailable(hRequest, &bytesAvailable);
-            if (bytesAvailable > 0) {
-                std::vector<char> buffer(bytesAvailable + 1);
-                DWORD bytesRead = 0;
-                WinHttpReadData(hRequest, buffer.data(), bytesAvailable, &bytesRead);
-                responseStr.append(buffer.data(), bytesRead);
+            dwSize = 0;
+            if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) {
+                g_logger.error(L"WinHttpQueryDataAvailable failed: " + std::to_wstring(GetLastError()));
+                break;
             }
-        } while (bytesAvailable > 0);
+            if (dwSize > 0) {
+                std::vector<char> buffer(dwSize + 1, 0);
+                DWORD dwDownloaded = 0;
+                if (WinHttpReadData(hRequest, (LPVOID)buffer.data(), dwSize, &dwDownloaded)) {
+                    responseText.append(buffer.data(), dwDownloaded);
+                }
+            }
+        } while (dwSize > 0);
 
         WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
 
-        json responseJson;
-        try {
-            responseJson = json::parse(responseStr);
-        }
-        catch (const json::exception& e) {
-            g_logger.error(L"JSON parse error: " + utf8_to_wstring(e.what()) + L", response: " + utf8_to_wstring(responseStr));
+        if (responseText.empty()) {
+            g_logger.warning(L"Empty response received from server");
             return std::nullopt;
         }
 
-        responseJson["_http_status"] = statusCode;
-
-        if (statusCode != 200 && statusCode != 201) {
-            g_logger.error(L"HTTP error: " + std::to_wstring(statusCode) + L", body: " + utf8_to_wstring(responseStr));
+        try {
+            return json::parse(responseText);
         }
-
-        return responseJson;
-    }
-
-    std::optional<json> get(const std::wstring& path, const std::wstring& token = L"") {
-        return sendRequest(path, L"GET", json::object(), token);
-    }
-
-    std::optional<json> post(const std::wstring& path, const json& data, const std::wstring& token = L"") {
-        return sendRequest(path, L"POST", data, token);
-    }
-
-    std::optional<json> put(const std::wstring& path, const json& data, const std::wstring& token = L"") {
-        return sendRequest(path, L"PUT", data, token);
+        catch (const json::parse_error& e) {
+            g_logger.error(L"JSON parse error in response: " + utf8_to_wstring(e.what()));
+            return std::nullopt;
+        }
     }
 };

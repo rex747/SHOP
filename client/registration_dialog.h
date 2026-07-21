@@ -1,17 +1,16 @@
-﻿// registration_dialog.h - полное исправление
+﻿// registration_dialog.h
 #pragma once
-
 #include <windows.h>
 #include <string>
 #include <regex>
 #include "auth_manager.h"
 #include "logger.h"
+#include "database_local.h" // Добавлено для LocalDB::addClient
 
 extern AuthManager g_authManager;
 extern Logger g_logger;
 extern HINSTANCE g_hInstance;
 
-// ✅ ДОБАВИТЬ определения констант
 #ifndef IDC_PHONE_EDIT
 #define IDC_PHONE_EDIT 1001
 #endif
@@ -47,14 +46,11 @@ private:
     HWND m_hSendCodeBtn;
     HWND m_hVerifyBtn;
     HWND m_hStatusLabel;
-
     std::wstring m_phone;
     bool m_codeSent;
 
-    static INT_PTR CALLBACK DialogProc(HWND hDlg, UINT msg,
-        WPARAM wParam, LPARAM lParam) {
+    static INT_PTR CALLBACK DialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
         RegistrationDialog* pThis = nullptr;
-
         if (msg == WM_INITDIALOG) {
             pThis = reinterpret_cast<RegistrationDialog*>(lParam);
             SetWindowLongPtr(hDlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
@@ -62,13 +58,11 @@ private:
             return pThis->onInitDialog();
         }
         else {
-            pThis = reinterpret_cast<RegistrationDialog*>(
-                GetWindowLongPtr(hDlg, GWLP_USERDATA));
+            pThis = reinterpret_cast<RegistrationDialog*>(GetWindowLongPtr(hDlg, GWLP_USERDATA));
             if (pThis) {
                 return pThis->handleMessage(msg, wParam, lParam);
             }
         }
-
         return FALSE;
     }
 
@@ -80,14 +74,10 @@ private:
         m_hSendCodeBtn = GetDlgItem(m_hDlg, IDC_SEND_CODE_BTN);
         m_hVerifyBtn = GetDlgItem(m_hDlg, IDC_VERIFY_BTN);
         m_hStatusLabel = GetDlgItem(m_hDlg, IDC_STATUS_LABEL);
-
         m_codeSent = false;
-
         EnableWindow(m_hCodeEdit, FALSE);
         EnableWindow(m_hVerifyBtn, FALSE);
-
         SetWindowTextW(m_hStatusLabel, L"Введите номер телефона");
-
         return TRUE;
     }
 
@@ -120,15 +110,14 @@ private:
     void onSendCode() {
         wchar_t phone[20];
         GetWindowTextW(m_hPhoneEdit, phone, 20);
-
         std::wstring phoneStr(phone);
         if (!validatePhone(phoneStr)) {
             SetWindowTextW(m_hStatusLabel, L"Неверный формат телефона");
             return;
         }
-
         m_phone = phoneStr;
 
+        // ИСПРАВЛЕНО: Использование setupTOTP вместо sendSMSCode
         auto result = g_authManager.setupTOTP(m_phone);
         if (result.success) {
             m_codeSent = true;
@@ -137,41 +126,41 @@ private:
             EnableWindow(m_hSendCodeBtn, FALSE);
             SetWindowTextW(m_hStatusLabel, L"Инициализация TOTP успешна. Введите код из приложения");
             SetFocus(m_hCodeEdit);
+            g_logger.info(L"TOTP setup initiated for: " + m_phone);
         }
         else {
-            SetWindowTextW(m_hStatusLabel, L"Ошибка отправки SMS");
+            SetWindowTextW(m_hStatusLabel, L"Ошибка инициализации TOTP на сервере");
+            g_logger.error(L"TOTP setup failed for: " + m_phone);
         }
     }
 
     void onVerify() {
         wchar_t code[10];
         GetWindowTextW(m_hCodeEdit, code, 10);
-
         wchar_t name[100];
         GetWindowTextW(m_hNameEdit, name, 100);
-
         wchar_t email[100];
         GetWindowTextW(m_hEmailEdit, email, 100);
 
+        // ИСПРАВЛЕНО: Использование verifyTOTP вместо authenticate
         if (g_authManager.verifyTOTP(m_phone, std::wstring(code))) {
             LocalDB::addClient(m_phone, std::wstring(name), std::wstring(email));
-            g_logger.info(L"Client registered: " + m_phone);
+            g_logger.info(L"Client registered locally and authenticated via TOTP: " + m_phone);
             EndDialog(m_hDlg, IDOK);
         }
         else {
             SetWindowTextW(m_hStatusLabel, L"Неверный код TOTP или ошибка аутентификации");
+            g_logger.warning(L"TOTP verification failed for: " + m_phone);
         }
     }
 
     bool validatePhone(const std::wstring& phone) {
-        // ✅ ЗАМЕНИТЬ std::regex на std::wregex для wchar_t
         std::wregex phoneRegex(L"^\\+?[0-9]{10,15}$");
         return std::regex_match(phone, phoneRegex);
     }
 
 public:
     INT_PTR show(HWND hParent) {
-        // ✅ ЗАМЕНИТЬ hInstance на g_hInstance
         return DialogBoxParamW(g_hInstance, MAKEINTRESOURCE(IDD_REGISTRATION_DIALOG),
             hParent, DialogProc, reinterpret_cast<LPARAM>(this));
     }
