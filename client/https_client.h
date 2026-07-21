@@ -7,6 +7,7 @@
 #include <optional>
 #include <vector>
 #include <nlohmann/json.hpp>
+
 #include "logger.h"
 #include "config.h"
 
@@ -37,9 +38,11 @@ private:
     }
 
 public:
+
     HTTPSClient(const std::wstring& serverName, INTERNET_PORT port)
         : m_serverName(serverName), m_port(port) {
         m_hSession = WinHttpOpen(L"KioskClient/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+		g_logger.info(L"HTTPSClient initialized for server: " + serverName + L":" + std::to_wstring(port));
         if (!m_hSession) {
             g_logger.error(L"WinHttpOpen failed: " + std::to_wstring(GetLastError()));
         }
@@ -48,12 +51,16 @@ public:
     ~HTTPSClient() {
         if (m_hSession) {
             WinHttpCloseHandle(m_hSession);
+			g_logger.log(LogLevel::INFO, L"HTTPSClient session closed");
         }
     }
 
     // ✅ ИСПРАВЛЕНИЕ ОШИБКИ C2039: Добавлен метод initialize для совместимости с main.cpp
     bool initialize() {
         return m_hSession != nullptr;
+        if (!m_hSession) {
+            g_logger.error(L"HTTPSClient::initialize() failed: session is null.");
+        }
     }
 
     // ✅ ИСПРАВЛЕНИЕ ОШИБКИ C2660: Добавлен третий аргумент authToken со значением по умолчанию
@@ -64,6 +71,8 @@ public:
         }
 
         std::string utf8Body = requestBody.dump();
+        g_logger.info(L"Preparing POST request to: " + path);
+        g_logger.info(L"Request body size: " + std::to_wstring(utf8Body.length()) + L" bytes");
 
         // Формируем базовые заголовки
         std::wstring headers = L"Content-Type: application/json\r\n";
@@ -71,16 +80,19 @@ public:
         // ✅ ДОБАВЛЕНО: Если передан токен, добавляем заголовок Authorization для безопасности
         if (!authToken.empty()) {
             headers += L"Authorization: Bearer " + authToken + L"\r\n";
+            g_logger.info(L"Added Authorization header (Bearer token).");
         }
 
         g_logger.info(L"Connecting to: https://" + m_serverName + L":" + std::to_wstring(m_port) + path);
 
         HINTERNET hConnect = WinHttpConnect(m_hSession, m_serverName.c_str(), m_port, 0);
+
         if (!hConnect) {
             g_logger.error(L"WinHttpConnect failed: " + std::to_wstring(GetLastError()));
             return std::nullopt;
         }
 
+        g_logger.info(L"Opening HTTPS request (WINHTTP_FLAG_SECURE)...");
         HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", path.c_str(), NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
         if (!hRequest) {
             g_logger.error(L"WinHttpOpenRequest failed: " + std::to_wstring(GetLastError()));
@@ -88,12 +100,14 @@ public:
             return std::nullopt;
         }
 
-        // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ ОШИБКИ 12029:
+        // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ ОШИБКИ 12029/12045:
         // Игнорируем ошибки проверки сертификата (неизвестный CA, несовпадение имени, истекший срок).
         DWORD dwFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
             SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
             SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
             SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+
+        g_logger.info(L"Setting SECURITY_FLAG_IGNORE_* options for SSL...");
 
         if (!WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwFlags, sizeof(dwFlags))) {
             g_logger.warning(L"WinHttpSetOption (SECURITY_FLAGS) failed: " + std::to_wstring(GetLastError()) + L". Proceeding anyway.");
@@ -108,11 +122,18 @@ public:
         if (!bResults) {
             DWORD err = GetLastError();
             g_logger.error(L"WinHttpSendRequest failed: " + std::to_wstring(err));
+            if (err == 12029) {
+                g_logger.error(L"ERROR 12029: Cannot connect. CHECK IF SERVER IP AND PORT (8443) ARE CORRECT AND FIREWALL ALLOWS IT.");
+            }
+            else if (err == 12045) {
+                g_logger.error(L"ERROR 12045: Cannot connect. CHECK IF SERVER IP AND PORT (8443) ARE CORRECT AND FIREWALL ALLOWS IT.");
+            }
             WinHttpCloseHandle(hRequest);
             WinHttpCloseHandle(hConnect);
             return std::nullopt;
         }
-
+        
+        g_logger.info(L"Waiting for response via WinHttpReceiveResponse...");
         bResults = WinHttpReceiveResponse(hRequest, NULL);
         if (!bResults) {
             g_logger.error(L"WinHttpReceiveResponse failed: " + std::to_wstring(GetLastError()));
@@ -146,11 +167,14 @@ public:
             return std::nullopt;
         }
 
+        g_logger.info(L"Response received successfully. Size: " + std::to_wstring(responseText.length()) + L" bytes.");
+
         try {
             return json::parse(responseText);
         }
         catch (const json::parse_error& e) {
             g_logger.error(L"JSON parse error in response: " + utf8_to_wstring(e.what()));
+            g_logger.error(L"Raw response: " + utf8_to_wstring(responseText));
             return std::nullopt;
         }
     }

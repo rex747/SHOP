@@ -8,8 +8,8 @@
 namespace Config {
     // Server configuration
     constexpr const wchar_t* SERVER_HOST = L"77.222.32.209";
-    constexpr int SERVER_PORT = 8080;
-    constexpr const wchar_t* SERVER_BASE_URL = L"https://77.222.32.209:8080/api/v1";
+    constexpr int SERVER_PORT = 8443;
+    constexpr const wchar_t* SERVER_BASE_URL = L"https://77.222.32.209:8443/api/v1";
 
     // Database configuration
     constexpr const wchar_t* DB_HOST = L"77.222.32.209";
