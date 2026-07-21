@@ -76,24 +76,42 @@ private:
 
         return false;
     }
+      
 
 public:
-    bool authenticate(const std::wstring& phone, const std::wstring& smsCode)
-    {
+    struct TOTPSetupResult {
+        bool success;
+        std::string secret;
+        std::string uri;
+    };
+
+    TOTPSetupResult setupTOTP(const std::wstring& phone) {
         nlohmann::json request;
         request["phone"] = wstring_to_utf8(phone);
-        request["sms_code"] = wstring_to_utf8(smsCode);
+        auto response = g_httpsClient.post(L"/api/v1/auth/totp/setup", request);
 
-        auto response = g_httpsClient.post(L"/api/v1/auth/verify", request);
-        if (!response)
-        {
-            g_logger.warning(L"Authentication failed for phone: " + phone);
-            return false;
+        TOTPSetupResult result{ false, "", "" };
+        if (response && response->contains("success") && (*response)["success"].get<bool>()) {
+            result.success = true;
+            if (response->contains("secret")) result.secret = (*response)["secret"].get<std::string>();
+            if (response->contains("uri")) result.uri = (*response)["uri"].get<std::string>();
+            m_phone = wstring_to_utf8(phone);
         }
+        return result;
+    }
 
-        if (response->contains("access_token") && (*response)["access_token"].is_string() &&
-            response->contains("refresh_token") && (*response)["refresh_token"].is_string())
-        {
+    bool verifyTOTP(const std::wstring& phone, const std::wstring& code) {
+        nlohmann::json request;
+        request["phone"] = wstring_to_utf8(phone);
+        request["code"] = wstring_to_utf8(code);
+
+        auto response = g_httpsClient.post(L"/api/v1/auth/totp/verify", request);
+        if (!response) return false;
+
+        if (response->contains("success") && (*response)["success"].get<bool>() &&
+            response->contains("access_token") && (*response)["access_token"].is_string() &&
+            response->contains("refresh_token") && (*response)["refresh_token"].is_string()) {
+
             auto now = std::chrono::system_clock::now();
             std::int64_t exp = std::chrono::duration_cast<std::chrono::seconds>(
                 now.time_since_epoch()).count() + 3600;
@@ -103,38 +121,16 @@ public:
                 (*response)["refresh_token"].get<std::string>(),
                 exp
             );
-
             m_phone = wstring_to_utf8(phone);
-            g_logger.info(L"Authentication successful for phone: " + phone);
             return true;
         }
 
-        g_logger.warning(L"Authentication failed for phone: " + phone);
         return false;
     }
 
-    bool sendSMSCode(const std::wstring& phone)
-    {
-        nlohmann::json request;
-        request["phone"] = wstring_to_utf8(phone);
-
-        auto response = g_httpsClient.post(L"/api/v1/auth/sms", request);
-        if (response && response->contains("success") && (*response)["success"].get<bool>())
-        {
-            g_logger.info(L"SMS code sent to: " + phone);
-            return true;
-        }
-
-        g_logger.error(L"Failed to send SMS code to: " + phone);
-        return false;
-    }
-
-    std::wstring getAuthToken()
-    {
-        if (!m_token || !m_token->isValid())
-        {
-            if (!refreshAccessToken())
-            {
+    std::wstring getAuthToken() {
+        if (!m_token || !m_token->isValid()) {
+            if (!refreshAccessToken()) {
                 m_token.reset();
                 return L"";
             }
@@ -142,31 +138,16 @@ public:
         return utf8_to_wstring(m_token->accessToken);
     }
 
-    bool isAuthenticated() const
-    {
+    bool isAuthenticated() const {
         return m_token.has_value() && m_token->isValid();
     }
 
-    void logout()
-    {
+    void logout() {
         m_token.reset();
         m_phone.clear();
     }
 
-    std::wstring getPhone() const
-    {
+    std::wstring getPhone() const {
         return utf8_to_wstring(m_phone);
-    }
-
-    // Вызывается после успешной регистрации без SMS-верификации.
-    // Помечает клиента как зарегистрированного и сохраняет телефон.
-    void markAsRegistered(const std::wstring& phone, const std::wstring& /*fullName*/)
-    {
-        m_phone = wstring_to_utf8(phone);
-        // Создаём "пустой" токен-заглушку, чтобы isAuthenticated() возвращал true.
-        // Настоящий токен будет получен при первом же запросе к серверу.
-        m_token.emplace("", "",
-            std::chrono::system_clock::now().time_since_epoch().count() / 1000 + 3600);
-        g_logger.info(L"Client marked as registered (no SMS): " + phone);
     }
 };

@@ -129,12 +129,13 @@ private:
 
         m_phone = phoneStr;
 
-        if (g_authManager.sendSMSCode(m_phone)) {
+        auto result = g_authManager.setupTOTP(m_phone);
+        if (result.success) {
             m_codeSent = true;
             EnableWindow(m_hCodeEdit, TRUE);
             EnableWindow(m_hVerifyBtn, TRUE);
             EnableWindow(m_hSendCodeBtn, FALSE);
-            SetWindowTextW(m_hStatusLabel, L"Код отправлен. Введите код из SMS");
+            SetWindowTextW(m_hStatusLabel, L"Инициализация TOTP успешна. Введите код из приложения");
             SetFocus(m_hCodeEdit);
         }
         else {
@@ -152,13 +153,13 @@ private:
         wchar_t email[100];
         GetWindowTextW(m_hEmailEdit, email, 100);
 
-        if (g_authManager.authenticate(m_phone, std::wstring(code))) {
+        if (g_authManager.verifyTOTP(m_phone, std::wstring(code))) {
             LocalDB::addClient(m_phone, std::wstring(name), std::wstring(email));
             g_logger.info(L"Client registered: " + m_phone);
             EndDialog(m_hDlg, IDOK);
         }
         else {
-            SetWindowTextW(m_hStatusLabel, L"Неверный код или ошибка аутентификации");
+            SetWindowTextW(m_hStatusLabel, L"Неверный код TOTP или ошибка аутентификации");
         }
     }
 

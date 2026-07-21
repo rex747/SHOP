@@ -367,7 +367,13 @@ private:
             SetWindowTextW(m_hStatusLabel, L"Регистрация успешна!");
             g_logger.info(L"Client registered on server: " + normalizedPhone);
 
-            g_authManager.markAsRegistered(normalizedPhone, fullName);
+            auto totpResult = g_authManager.setupTOTP(normalizedPhone);
+            if (totpResult.success) {
+                g_logger.info(L"TOTP initialized for: " + normalizedPhone);
+            }
+            else {
+                g_logger.warning(L"TOTP initialization failed for: " + normalizedPhone);
+            }
 
             Sleep(1500);
             DestroyWindow(m_hWnd);
