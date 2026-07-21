@@ -42,7 +42,7 @@ using namespace std;
 HINSTANCE g_hInstance;
 HWND g_hMainWnd;
 Logger g_logger(L"terminal.log");
-HTTPSClient g_httpsClient(L"77.222.32.209", 8080);
+HTTPSClient g_httpsClient(L"77.222.32.209", 8443);
 QueueManager g_queueManager;
 AuthManager g_authManager;
 ReceiptPrinter g_printer;

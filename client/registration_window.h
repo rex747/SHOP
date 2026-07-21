@@ -1,4 +1,5 @@
-// registration_window.h
+﻿// registration_window.h
+// Окно регистрации клиента с поддержкой перехода к TOTP-аутентификации для существующих пользователей
 #pragma once
 #include <windows.h>
 #include <commctrl.h>
@@ -25,9 +26,7 @@ namespace RegUtils {
         std::wstring digits;
         digits.reserve(input.size());
         for (wchar_t ch : input) {
-            if (ch >= L'0' && ch <= L'9') {
-                digits += ch;
-            }
+            if (ch >= L'0' && ch <= L'9') digits += ch;
         }
         return digits;
     }
@@ -35,14 +34,10 @@ namespace RegUtils {
     inline std::wstring normalizePhone(const std::wstring& input) {
         std::wstring digits = extractDigits(input);
         if (digits.length() == 11) {
-            if (digits[0] == L'7' || digits[0] == L'8') {
-                return L"+7" + digits.substr(1);
-            }
+            if (digits[0] == L'7' || digits[0] == L'8') return L"+7" + digits.substr(1);
             return L"";
         }
-        if (digits.length() == 10) {
-            return L"+7" + digits;
-        }
+        if (digits.length() == 10) return L"+7" + digits;
         return L"";
     }
 
@@ -50,12 +45,8 @@ namespace RegUtils {
         if (name.empty() || name.length() > maxLen) return false;
         bool hasLetter = false;
         for (wchar_t ch : name) {
-            if (iswalpha(ch)) {
-                hasLetter = true;
-            }
-            else if (ch != L' ' && ch != L'-' && ch != L'\'') {
-                return false;
-            }
+            if (iswalpha(ch)) hasLetter = true;
+            else if (ch != L' ' && ch != L'-' && ch != L'\'') return false;
         }
         return hasLetter;
     }
@@ -63,11 +54,9 @@ namespace RegUtils {
     inline bool isValidEmail(const std::wstring& email) {
         if (email.empty() || email.length() > 30) return false;
         auto atPos = email.find(L'@');
-        if (atPos == std::wstring::npos || atPos == 0 || atPos == email.length() - 1)
-            return false;
+        if (atPos == std::wstring::npos || atPos == 0 || atPos == email.length() - 1) return false;
         auto dotPos = email.find(L'.', atPos);
-        if (dotPos == std::wstring::npos || dotPos == email.length() - 1)
-            return false;
+        if (dotPos == std::wstring::npos || dotPos == email.length() - 1) return false;
         return true;
     }
 
@@ -94,6 +83,10 @@ namespace RegUtils {
 #define IDC_REG_SUBMIT          5013
 #define IDC_REG_BACK            5014
 #define IDC_REG_CLOSE           5015
+// ✅ ДОБАВЛЕНЫ ID для элементов TOTP-аутентификации
+#define IDC_TOTP_CODE_LABEL     5016
+#define IDC_TOTP_CODE_EDIT      5017
+#define IDC_TOTP_VERIFY_BTN     5018
 
 class RegistrationWindow {
 private:
@@ -106,6 +99,11 @@ private:
     HWND m_hStatusLabel;
     HWND m_hCloseBtn;
 
+    // ✅ ДОБАВЛЕНЫ элементы для ввода TOTP кода
+    HWND m_hTotpCodeLabel;
+    HWND m_hTotpCodeEdit;
+    HWND m_hTotpVerifyBtn;
+
     HFONT m_hFontTitle;
     HFONT m_hFontButton;
     HFONT m_hFontLabel;
@@ -114,6 +112,10 @@ private:
     HBRUSH m_hRedBrush;
     HBRUSH m_hWhiteBrush;
     std::vector<HWND> m_buttons;
+
+    // ✅ ДОБАВЛЕНЫ переменные состояния
+    bool m_isVerifyingTOTP;
+    std::wstring m_currentPhone;
 
     static constexpr const wchar_t* CLASS_NAME = L"RegistrationWindowClass";
 
@@ -142,7 +144,7 @@ private:
         GetClientRect(m_hWnd, &rc);
         int clientWidth = rc.right - rc.left;
 
-        HWND hTitle = CreateWindowExW(0, L"STATIC", L"����������� �������", WS_VISIBLE | WS_CHILD | SS_CENTER, 0, 20, clientWidth, 100, m_hWnd, (HMENU)(INT_PTR)IDC_REG_TITLE, g_hInstance, nullptr);
+        HWND hTitle = CreateWindowExW(0, L"STATIC", L"Регистрация клиента", WS_VISIBLE | WS_CHILD | SS_CENTER, 0, 20, clientWidth, 100, m_hWnd, (HMENU)(INT_PTR)IDC_REG_TITLE, g_hInstance, nullptr);
         SendMessageW(hTitle, WM_SETFONT, (WPARAM)m_hFontTitle, TRUE);
 
         const int labelWidth = 200;
@@ -161,23 +163,37 @@ private:
             return hEdit;
             };
 
-        m_hPhoneEdit = createLabeledEdit(IDC_REG_PHONE_LABEL, IDC_REG_PHONE, L"�������:", 0, 0, 30);
-        m_hLastNameEdit = createLabeledEdit(IDC_REG_LASTNAME_LABEL, IDC_REG_LASTNAME, L"�������:", 1, 0, 40);
-        m_hFirstNameEdit = createLabeledEdit(IDC_REG_FIRSTNAME_LABEL, IDC_REG_FIRSTNAME, L"���:", 2, 0, 20);
-        m_hMiddleNameEdit = createLabeledEdit(IDC_REG_MIDDLENAME_LABEL, IDC_REG_MIDDLENAME, L"��������:", 3, 0, 20);
+        m_hPhoneEdit = createLabeledEdit(IDC_REG_PHONE_LABEL, IDC_REG_PHONE, L"Телефон:", 0, 0, 30);
+        m_hLastNameEdit = createLabeledEdit(IDC_REG_LASTNAME_LABEL, IDC_REG_LASTNAME, L"Фамилия:", 1, 0, 40);
+        m_hFirstNameEdit = createLabeledEdit(IDC_REG_FIRSTNAME_LABEL, IDC_REG_FIRSTNAME, L"Имя:", 2, 0, 20);
+        m_hMiddleNameEdit = createLabeledEdit(IDC_REG_MIDDLENAME_LABEL, IDC_REG_MIDDLENAME, L"Отчество:", 3, 0, 20);
         m_hEmailEdit = createLabeledEdit(IDC_REG_EMAIL_LABEL, IDC_REG_EMAIL, L"E-mail:", 4, 0, 30);
 
         m_hStatusLabel = CreateWindowExW(0, L"STATIC", L"", WS_VISIBLE | WS_CHILD | SS_CENTER, startX, startY + 5 * rowHeight + 10, labelWidth + editWidth + 20, 40, m_hWnd, (HMENU)(INT_PTR)IDC_REG_STATUS, g_hInstance, nullptr);
         SendMessageW(m_hStatusLabel, WM_SETFONT, (WPARAM)m_hFontLabel, TRUE);
 
+        // ✅ СОЗДАНИЕ ЭЛЕМЕНТОВ TOTP (ИЗНАЧАЛЬНО СКРЫТЫ)
+        m_hTotpCodeLabel = CreateWindowExW(0, L"STATIC", L"Код из приложения:", WS_VISIBLE | WS_CHILD | SS_RIGHT, startX, startY + 5 * rowHeight + 10, labelWidth, editHeight, m_hWnd, (HMENU)(INT_PTR)IDC_TOTP_CODE_LABEL, g_hInstance, nullptr);
+        SendMessageW(m_hTotpCodeLabel, WM_SETFONT, (WPARAM)m_hFontLabel, TRUE);
+        m_hTotpCodeEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL | ES_NUMBER, startX + labelWidth + 20, startY + 5 * rowHeight + 10, editWidth, editHeight, m_hWnd, (HMENU)(INT_PTR)IDC_TOTP_CODE_EDIT, g_hInstance, nullptr);
+        SendMessageW(m_hTotpCodeEdit, WM_SETFONT, (WPARAM)m_hFontEdit, TRUE);
+        SendMessageW(m_hTotpCodeEdit, EM_SETLIMITTEXT, (WPARAM)6, 0); // Ограничение до 6 символов
+
+        m_hTotpVerifyBtn = CreateWindowExW(0, L"BUTTON", L"Подтвердить вход", WS_CHILD | BS_PUSHBUTTON | BS_NOTIFY, startX, startY + 6 * rowHeight + 10, 300, Config::BUTTON_HEIGHT, m_hWnd, (HMENU)(INT_PTR)IDC_TOTP_VERIFY_BTN, g_hInstance, nullptr);
+        SendMessageW(m_hTotpVerifyBtn, WM_SETFONT, (WPARAM)m_hFontButton, TRUE);
+
+        // Скрываем элементы TOTP при инициализации
+        ShowWindow(m_hTotpCodeLabel, SW_HIDE);
+        ShowWindow(m_hTotpCodeEdit, SW_HIDE);
+        ShowWindow(m_hTotpVerifyBtn, SW_HIDE);
+
         const int btnWidth = 300;
-        const int btnHeight = Config::BUTTON_HEIGHT;
         const int btnY = startY + 5 * rowHeight + 20;
 
-        HWND hSubmitBtn = CreateWindowExW(0, L"BUTTON", L"����������������", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_NOTIFY, startX, btnY, btnWidth, btnHeight, m_hWnd, (HMENU)(INT_PTR)IDC_REG_SUBMIT, g_hInstance, nullptr);
+        HWND hSubmitBtn = CreateWindowExW(0, L"BUTTON", L"Зарегистрировать", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_NOTIFY, startX, btnY, btnWidth, Config::BUTTON_HEIGHT, m_hWnd, (HMENU)(INT_PTR)IDC_REG_SUBMIT, g_hInstance, nullptr);
         m_buttons.push_back(hSubmitBtn);
 
-        HWND hBackBtn = CreateWindowExW(0, L"BUTTON", L"�����", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_NOTIFY, startX + labelWidth + editWidth + 20 - btnWidth, btnY, btnWidth, btnHeight, m_hWnd, (HMENU)(INT_PTR)IDC_REG_BACK, g_hInstance, nullptr);
+        HWND hBackBtn = CreateWindowExW(0, L"BUTTON", L"Назад", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_NOTIFY, startX + labelWidth + editWidth + 20 - btnWidth, btnY, btnWidth, Config::BUTTON_HEIGHT, m_hWnd, (HMENU)(INT_PTR)IDC_REG_BACK, g_hInstance, nullptr);
         m_buttons.push_back(hBackBtn);
 
         for (HWND btn : m_buttons) {
@@ -186,6 +202,38 @@ private:
     }
 
     void onSubmit() {
+        // ✅ ВЕТВЛЕНИЕ ЛОГИКИ: Мы в режиме проверки TOTP или в режиме регистрации?
+        if (m_isVerifyingTOTP) {
+            wchar_t code[10];
+			g_logger.info(L"Verifying TOTP code for existing user: " + m_currentPhone);
+            GetWindowTextW(m_hTotpCodeEdit, code, 10);
+            std::wstring codeStr(code);
+			g_logger.log(LogLevel::INFO, L"User entered TOTP code: " + codeStr);
+
+            if (codeStr.length() != 6) {
+                SetWindowTextW(m_hStatusLabel, L"Код должен состоять из 6 цифр");
+                SetFocus(m_hTotpCodeEdit);
+                return;
+            }
+
+            SetWindowTextW(m_hStatusLabel, L"Проверка кода...");
+
+            if (g_authManager.verifyTOTP(m_currentPhone, codeStr)) {
+                SetWindowTextW(m_hStatusLabel, L"Успешная аутентификация!");
+                g_logger.info(L"Existing user successfully authenticated via TOTP: " + m_currentPhone);
+                Sleep(1000);
+                DestroyWindow(m_hWnd);
+            }
+            else {
+                SetWindowTextW(m_hStatusLabel, L"Неверный код TOTP. Попробуйте снова.");
+                SetWindowTextW(m_hTotpCodeEdit, L""); // Очистить поле
+                SetFocus(m_hTotpCodeEdit);
+                g_logger.warning(L"TOTP verification failed for existing user: " + m_currentPhone);
+            }
+            return;
+        }
+
+        // --- ОБЫЧНАЯ ЛОГИКА РЕГИСТРАЦИИ ---
         wchar_t buf[128];
         GetWindowTextW(m_hPhoneEdit, buf, 128);     std::wstring phone = RegUtils::trim(buf);
         GetWindowTextW(m_hLastNameEdit, buf, 128);  std::wstring lastName = RegUtils::trim(buf);
@@ -195,33 +243,33 @@ private:
 
         std::wstring normalizedPhone = RegUtils::normalizePhone(phone);
         if (normalizedPhone.empty()) {
-            SetWindowTextW(m_hStatusLabel, L"������: ������� 10 ��� 11 ���� (��������, +7-911-111-11-11)");
+            SetWindowTextW(m_hStatusLabel, L"Ошибка: введите 10 или 11 цифр (например, +7-911-111-11-11)");
             SetFocus(m_hPhoneEdit);
             return;
         }
         if (!RegUtils::isValidName(lastName, 40)) {
-            SetWindowTextW(m_hStatusLabel, L"�������: �� 1 �� 40 ����");
+            SetWindowTextW(m_hStatusLabel, L"Фамилия: от 1 до 40 букв");
             SetFocus(m_hLastNameEdit);
             return;
         }
         if (!RegUtils::isValidName(firstName, 20)) {
-            SetWindowTextW(m_hStatusLabel, L"���: �� 1 �� 20 ����");
+            SetWindowTextW(m_hStatusLabel, L"Имя: от 1 до 20 букв");
             SetFocus(m_hFirstNameEdit);
             return;
         }
         if (!middleName.empty() && !RegUtils::isValidName(middleName, 20)) {
-            SetWindowTextW(m_hStatusLabel, L"��������: �� 1 �� 20 ����");
+            SetWindowTextW(m_hStatusLabel, L"Отчество: от 1 до 20 букв");
             SetFocus(m_hMiddleNameEdit);
             return;
         }
         if (!email.empty() && !RegUtils::isValidEmail(email)) {
-            SetWindowTextW(m_hStatusLabel, L"E-mail: �������� ������");
+            SetWindowTextW(m_hStatusLabel, L"E-mail: неверный формат");
             SetFocus(m_hEmailEdit);
             return;
         }
 
         EnableWindow(GetDlgItem(m_hWnd, IDC_REG_SUBMIT), FALSE);
-        SetWindowTextW(m_hStatusLabel, L"��������� ������...");
+        SetWindowTextW(m_hStatusLabel, L"Обработка данных...");
 
         std::wstring fullName = lastName;
         if (!firstName.empty())  fullName += L" " + firstName;
@@ -245,28 +293,68 @@ private:
         auto response = g_httpsClient.post(L"/api/v1/clients/register", request);
 
         if (response && response->contains("success") && (*response)["success"].is_boolean() && (*response)["success"].get<bool>()) {
-            SetWindowTextW(m_hStatusLabel, L"����������� ������ �������!");
-            g_logger.info(L"Client registered on server: " + normalizedPhone);
 
-            // ����������: �������� markAsRegistered �� setupTOTP ��� ������������� TOTP-������� �� �������
-            auto totpResult = g_authManager.setupTOTP(normalizedPhone);
-            if (totpResult.success) {
-                g_logger.info(L"TOTP initialized successfully for: " + normalizedPhone);
+            bool alreadyExists = response->contains("already_exists") && (*response)["already_exists"].get<bool>();
+
+            if (alreadyExists) {
+                g_logger.info(L"User already exists: " + normalizedPhone + L". Switching to TOTP authentication...");
+
+                // ✅ ИНИЦИИРУЕМ TOTP И ПЕРЕХОДИМ В РЕЖИМ ВВОДА КОДА
+                auto totpResult = g_authManager.setupTOTP(normalizedPhone);
+                if (totpResult.success) {
+                    m_isVerifyingTOTP = true;
+                    m_currentPhone = normalizedPhone;
+
+                    // Скрываем поля регистрации и кнопку "Зарегистрировать"
+                    ShowWindow(m_hPhoneEdit, SW_HIDE);
+                    ShowWindow(GetDlgItem(m_hWnd, IDC_REG_PHONE_LABEL), SW_HIDE);
+                    ShowWindow(m_hLastNameEdit, SW_HIDE);
+                    ShowWindow(GetDlgItem(m_hWnd, IDC_REG_LASTNAME_LABEL), SW_HIDE);
+                    ShowWindow(m_hFirstNameEdit, SW_HIDE);
+                    ShowWindow(GetDlgItem(m_hWnd, IDC_REG_FIRSTNAME_LABEL), SW_HIDE);
+                    ShowWindow(m_hMiddleNameEdit, SW_HIDE);
+                    ShowWindow(GetDlgItem(m_hWnd, IDC_REG_MIDDLENAME_LABEL), SW_HIDE);
+                    ShowWindow(m_hEmailEdit, SW_HIDE);
+                    ShowWindow(GetDlgItem(m_hWnd, IDC_REG_EMAIL_LABEL), SW_HIDE);
+                    ShowWindow(GetDlgItem(m_hWnd, IDC_REG_SUBMIT), SW_HIDE);
+
+                    // Показываем поля для ввода TOTP
+                    ShowWindow(m_hTotpCodeLabel, SW_SHOW);
+                    ShowWindow(m_hTotpCodeEdit, SW_SHOW);
+                    ShowWindow(m_hTotpVerifyBtn, SW_SHOW);
+
+                    SetWindowTextW(m_hStatusLabel, L"Пользователь уже зарегистрирован.\nВведите 6-значный код из вашего приложения-аутентификатора:");
+                    SetWindowTextW(m_hTotpCodeEdit, L"");
+                    SetFocus(m_hTotpCodeEdit);
+
+                    g_logger.info(L"TOTP setup URI received for existing user. UI switched to code input.");
+                }
+                else {
+                    SetWindowTextW(m_hStatusLabel, L"Ошибка инициализации TOTP. Попробуйте войти через главный экран.");
+                    g_logger.error(L"TOTP setup failed for existing user: " + normalizedPhone);
+                    EnableWindow(GetDlgItem(m_hWnd, IDC_REG_SUBMIT), TRUE);
+                }
             }
             else {
-                g_logger.warning(L"TOTP initialization failed for: " + normalizedPhone + L". Client may need to set it up manually.");
-            }
+                // Это НОВЫЙ пользователь
+                SetWindowTextW(m_hStatusLabel, L"Регистрация прошла успешно!");
+                g_logger.info(L"New client registered on server: " + normalizedPhone);
 
-            Sleep(1500);
-            DestroyWindow(m_hWnd);
+                auto totpResult = g_authManager.setupTOTP(normalizedPhone);
+                if (totpResult.success) {
+                    g_logger.info(L"TOTP initialized successfully for new user: " + normalizedPhone);
+                }
+                Sleep(1500);
+                DestroyWindow(m_hWnd);
+            }
         }
         else {
-            std::wstring errMsg = L"������ ����������� �� �������";
+            std::wstring errMsg = L"Ошибка регистрации на сервере";
             if (response && response->contains("error") && (*response)["error"].is_string()) {
                 errMsg = utf8_to_wstring((*response)["error"].get<std::string>());
             }
             else if (!response) {
-                errMsg = L"��� ����� � ��������. ��������� ����������� � ��������� ����.";
+                errMsg = L"Нет связи с сервером. Проверьте подключение и настройки сети (порт 8443).";
             }
             SetWindowTextW(m_hStatusLabel, errMsg.c_str());
             g_logger.error(L"Server registration failed: " + normalizedPhone);
@@ -309,9 +397,18 @@ private:
 
     LRESULT onCommand(int cmd) {
         switch (cmd) {
-        case IDC_REG_SUBMIT: onSubmit(); break;
-        case IDC_REG_BACK: DestroyWindow(m_hWnd); break;
-        case IDC_REG_CLOSE: DestroyWindow(m_hWnd); break;
+        case IDC_REG_SUBMIT:
+            onSubmit();
+            break;
+        case IDC_TOTP_VERIFY_BTN: // ✅ Обработка нажатия кнопки подтверждения TOTP
+            onSubmit();
+            break;
+        case IDC_REG_BACK:
+            DestroyWindow(m_hWnd);
+            break;
+        case IDC_REG_CLOSE:
+            DestroyWindow(m_hWnd);
+            break;
         }
         return 0;
     }
@@ -359,9 +456,11 @@ public:
     RegistrationWindow()
         : m_hWnd(nullptr), m_hPhoneEdit(nullptr), m_hLastNameEdit(nullptr), m_hFirstNameEdit(nullptr),
         m_hMiddleNameEdit(nullptr), m_hEmailEdit(nullptr), m_hStatusLabel(nullptr), m_hCloseBtn(nullptr),
+        m_hTotpCodeLabel(nullptr), m_hTotpCodeEdit(nullptr), m_hTotpVerifyBtn(nullptr), // ✅ Инициализация новых полей
         m_hFontTitle(nullptr), m_hFontButton(nullptr), m_hFontLabel(nullptr), m_hFontEdit(nullptr),
-        m_hGreenBrush(nullptr), m_hRedBrush(nullptr), m_hWhiteBrush(nullptr) {
-    }
+        m_hGreenBrush(nullptr), m_hRedBrush(nullptr), m_hWhiteBrush(nullptr),
+        m_isVerifyingTOTP(false), m_currentPhone(L"") {
+    } // ✅ Инициализация состояния
 
     ~RegistrationWindow() {
         releaseFontsAndBrushes();
@@ -390,7 +489,7 @@ public:
         int x = (screenWidth - wndWidth) / 2;
         int y = (screenHeight - wndHeight) / 2;
 
-        m_hWnd = CreateWindowExW(WS_EX_WINDOWEDGE, CLASS_NAME, L"����������� ������� - �����",
+        m_hWnd = CreateWindowExW(WS_EX_WINDOWEDGE, CLASS_NAME, L"Регистрация клиента - Киоск",
             WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME), x, y, wndWidth, wndHeight,
             hParent, nullptr, g_hInstance, this);
 
