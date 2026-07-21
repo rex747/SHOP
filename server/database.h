@@ -1,4 +1,4 @@
-// database.h
+п»ї// server/database.h
 #pragma once
 
 #include <iostream>
@@ -8,13 +8,10 @@
 #include <memory>
 #include <pqxx/pqxx>
 #include <nlohmann/json.hpp>
-
 #include "config_server.h"
 #include "crypto_utils.h"
-#include "logger_server.h"
 
 using json = nlohmann::json;
-extern Logger g_serverLogger;
 
 struct Client {
     int id;
@@ -23,19 +20,6 @@ struct Client {
     std::string email;
     int64_t createdAt;
     bool active;
-};
-
-struct QueueTicket {
-    int id;
-    std::string number;
-    int clientId;
-    std::string queueType;
-    int position;
-    int itemsCount;
-    std::string windowNumber;
-    int64_t estimatedWaitTime;
-    int64_t createdAt;
-    std::string status;
 };
 
 class Database {
@@ -65,19 +49,6 @@ public:
                     created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
                     updated_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW())
                 );
-                CREATE TABLE IF NOT EXISTS queue_tickets (
-                    id SERIAL PRIMARY KEY,
-                    number VARCHAR(50) UNIQUE NOT NULL,
-                    client_id INTEGER REFERENCES clients(id),
-                    queue_type VARCHAR(50) NOT NULL,
-                    position INTEGER NOT NULL,
-                    items_count INTEGER DEFAULT 1,
-                    window_number VARCHAR(10),
-                    estimated_wait_time INTEGER DEFAULT 0,
-                    created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
-                    status VARCHAR(20) DEFAULT 'waiting',
-                    served_at INTEGER
-                );
                 CREATE TABLE IF NOT EXISTS auth_tokens (
                     id SERIAL PRIMARY KEY,
                     client_id INTEGER REFERENCES clients(id),
@@ -87,46 +58,23 @@ public:
                     expires_at INTEGER NOT NULL,
                     revoked BOOLEAN DEFAULT FALSE
                 );
-                CREATE TABLE IF NOT EXISTS trust_acceptances (
+                -- вњ… РќРћР’РђРЇ РўРђР‘Р›РР¦Рђ Р”Р›РЇ EMAIL OTP
+                CREATE TABLE IF NOT EXISTS email_otp (
                     id SERIAL PRIMARY KEY,
-                    client_id INTEGER REFERENCES clients(id),
-                    items_description TEXT,
-                    created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
-                    processed BOOLEAN DEFAULT FALSE,
-                    processed_at INTEGER
-                );
-                CREATE TABLE IF NOT EXISTS items (
-                    id SERIAL PRIMARY KEY,
-                    client_id INTEGER REFERENCES clients(id),
-                    description TEXT NOT NULL,
-                    estimated_price DECIMAL(10,2),
-                    actual_price DECIMAL(10,2),
-                    status VARCHAR(50) DEFAULT 'pending',
-                    created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
-                    sold_at INTEGER,
-                    synced_to_1c BOOLEAN DEFAULT FALSE
-                );
-                CREATE TABLE IF NOT EXISTS sync_log (
-                    id SERIAL PRIMARY KEY,
-                    sync_type VARCHAR(50) NOT NULL,
-                    records_count INTEGER,
-                    status VARCHAR(20),
-                    error_message TEXT,
+                    phone VARCHAR(20) NOT NULL,
+                    code_hash VARCHAR(256) NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    used BOOLEAN DEFAULT FALSE,
                     created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW())
                 );
                 CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(phone);
-                CREATE INDEX IF NOT EXISTS idx_queue_tickets_status ON queue_tickets(status);
-                CREATE INDEX IF NOT EXISTS idx_queue_tickets_created ON queue_tickets(created_at);
-                CREATE INDEX IF NOT EXISTS idx_items_client ON items(client_id);
-                CREATE INDEX IF NOT EXISTS idx_items_synced ON items(synced_to_1c);
+                CREATE INDEX IF NOT EXISTS idx_email_otp_phone ON email_otp(phone);
             )");
             txn.commit();
-            g_serverLogger.info("Database initialized successfully");
             return true;
         }
         catch (const std::exception& e) {
             std::cerr << "Database initialization error: " << e.what() << std::endl;
-            g_serverLogger.error(std::string("Database initialization error: ") + e.what());
             return false;
         }
     }
@@ -138,11 +86,7 @@ public:
                 "SELECT id, phone, last_name, first_name, middle_name, email, created_at FROM clients WHERE phone = $1",
                 pqxx::params{ phone }
             );
-            if (result.empty()) {
-                g_serverLogger.info("Client not found for phone: " + phone);
-                return std::nullopt;
-            }
-
+            if (result.empty()) return std::nullopt;
             Client client;
             client.id = result[0]["id"].as<int>();
             client.phone = result[0]["phone"].as<std::string>();
@@ -154,11 +98,9 @@ public:
             client.createdAt = result[0]["created_at"].as<int64_t>();
             client.active = true;
             return client;
-            g_serverLogger.info("Client retrieved successfully for phone: " + phone);
         }
         catch (const std::exception& e) {
             std::cerr << "getClientByPhone error: " << e.what() << std::endl;
-            g_serverLogger.error(std::string("getClientByPhone error: ") + e.what());
             return std::nullopt;
         }
     }
@@ -171,10 +113,8 @@ public:
             std::optional<std::string> mid_opt = middle_name.empty() ? std::nullopt : std::optional<std::string>(middle_name);
             std::optional<std::string> email_opt = email.empty() ? std::nullopt : std::optional<std::string>(email);
 
-            // Проверяем, существует ли пользователь
             auto exist = txn.exec("SELECT id FROM clients WHERE phone = $1", pqxx::params{ phone });
             if (!exist.empty()) {
-                // Пользователь уже существует: обновляем данные
                 txn.exec(
                     "UPDATE clients SET last_name=$2, first_name=$3, middle_name=$4, "
                     "email=$5, items_submitted=$6, items_sold=$7, updated_at=EXTRACT(EPOCH FROM NOW()) "
@@ -182,23 +122,18 @@ public:
                     pqxx::params{ phone, last_name, first_name, mid_opt, email_opt, items_submitted, items_sold }
                 );
                 txn.commit();
-                g_serverLogger.info("Client updated successfully for phone: " + phone);
-                return { true, true }; // Успех, и пользователь УЖЕ СУЩЕСТВОВАЛ
+                return { true, true }; // РЈСЃРїРµС…, СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓРµС‚
             }
-
-            // Пользователь новый: создаем запись
             txn.exec(
                 "INSERT INTO clients (phone, last_name, first_name, middle_name, email, items_submitted, items_sold) "
                 "VALUES ($1,$2,$3,$4,$5,$6,$7)",
                 pqxx::params{ phone, last_name, first_name, mid_opt, email_opt, items_submitted, items_sold }
             );
             txn.commit();
-            g_serverLogger.info("Client created successfully for phone: " + phone);
-            return { true, false }; // Успех, и пользователь БЫЛ СОЗДАН (новый)
+            return { true, false }; // РЈСЃРїРµС…, РЅРѕРІС‹Р№ РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ
         }
         catch (const std::exception& e) {
             std::cerr << "registerClient error: " << e.what() << std::endl;
-            g_serverLogger.error(std::string("registerClient error: ") + e.what());
             return { false, false };
         }
     }
@@ -236,6 +171,46 @@ public:
         catch (const std::exception& e) {
             std::cerr << "getTOTPSecret error: " << e.what() << std::endl;
             return std::nullopt;
+        }
+    }
+    
+    bool saveEmailOTP(const std::string& phone, const std::string& code_hash, int64_t expires_at) {
+        try {
+            pqxx::work txn{ *conn_ };
+            // РЎРЅР°С‡Р°Р»Р° Р°РЅРЅСѓР»РёСЂСѓРµРј СЃС‚Р°СЂС‹Рµ РЅРµРёСЃРїРѕР»СЊР·РѕРІР°РЅРЅС‹Рµ РєРѕРґС‹ РґР»СЏ СЌС‚РѕРіРѕ С‚РµР»РµС„РѕРЅР°
+            txn.exec("UPDATE email_otp SET used = TRUE WHERE phone = $1 AND used = FALSE", pqxx::params{ phone });
+            txn.exec(
+                "INSERT INTO email_otp (phone, code_hash, expires_at) VALUES ($1, $2, $3)",
+                pqxx::params{ phone, code_hash, expires_at }
+            );
+            txn.commit();
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "saveEmailOTP error: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    bool verifyAndConsumeEmailOTP(const std::string& phone, const std::string& code_hash) {
+        try {
+            pqxx::work txn{ *conn_ };
+            int64_t now = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
+            auto result = txn.exec(
+                "SELECT id FROM email_otp WHERE phone = $1 AND code_hash = $2 AND expires_at > $3 AND used = FALSE",
+                pqxx::params{ phone, code_hash, now }
+            );
+            if (result.empty()) {
+                return false; // РљРѕРґ РЅРµРІРµСЂРЅС‹Р№, РёСЃС‚РµРє РёР»Рё СѓР¶Рµ РёСЃРїРѕР»СЊР·РѕРІР°РЅ
+            }
+            // РџРѕРјРµС‡Р°РµРј РєР°Рє РёСЃРїРѕР»СЊР·РѕРІР°РЅРЅС‹Р№
+            txn.exec("UPDATE email_otp SET used = TRUE WHERE id = $1", pqxx::params{ result[0]["id"].as<int>() });
+            txn.commit();
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "verifyAndConsumeEmailOTP error: " << e.what() << std::endl;
+            return false;
         }
     }
 
@@ -380,7 +355,7 @@ public:
         return items;
     }
 
-    // ЕДИНСТВЕННОЕ объявление и определение этого метода (дубликат удален)
+    // Р•Р”РРќРЎРўР’Р•РќРќРћР• РѕР±СЉСЏРІР»РµРЅРёРµ Рё РѕРїСЂРµРґРµР»РµРЅРёРµ СЌС‚РѕРіРѕ РјРµС‚РѕРґР° (РґСѓР±Р»РёРєР°С‚ СѓРґР°Р»РµРЅ)
     bool updateItemSyncStatus(int itemId, bool synced) {
         try {
             pqxx::work txn{ *conn_ };
@@ -408,5 +383,4 @@ public:
             std::cerr << "logSync error: " << e.what() << std::endl;
         }
     }
-
 };

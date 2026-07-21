@@ -13,10 +13,12 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
-#include <nlohmann/json.hpp>
+#include <nlohmann/json.hpp> 
+
 #include "database.h"
 #include "config_server.h"
 #include "crypto_utils.h"
+#include "email_service.h"
 
 using json = nlohmann::json;
 
@@ -159,6 +161,16 @@ private:
         }
         return ss.str();
     }
+    std::string hashString(const std::string& str) {
+        unsigned char hash[EVP_MAX_MD_SIZE];
+        unsigned int hashLen;
+        EVP_Digest(str.c_str(), static_cast<int>(str.size()), hash, &hashLen, EVP_sha256(), nullptr);
+        std::stringstream ss;
+        for (unsigned int i = 0; i < hashLen; i++) {
+            ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+        }
+        return ss.str();
+    }
 
 public:
     // Внедрение зависимости через конструктор
@@ -233,5 +245,32 @@ public:
             std::cerr << "generateTokens DB error: " << e.what() << std::endl;
         }
         return { accessToken, refreshToken };
+    }
+
+    //Запрос и отправка Email OTP
+    bool requestEmailOTP(const std::string& phone, const std::string& email) {
+        if (email.empty()) return false;
+
+        std::string code = generateTOTPSecret();
+        std::string code_hash = hashString(code);
+        int64_t now = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
+        int64_t expires_at = now + 300; // 5 минут
+
+        if (db_->saveEmailOTP(phone, code_hash, expires_at)) {
+            return EmailService::sendOTP(email, code);
+        }
+        return false;
+    }
+
+    // Проверка Email OTP и выдача токенов
+    std::pair<bool, std::pair<std::string, std::string>> verifyEmailOTP(const std::string& phone, const std::string& code) {
+        std::string code_hash = hashString(code);
+
+        if (db_->verifyAndConsumeEmailOTP(phone, code_hash)) {
+            // Код верен, генерируем JWT токены
+            auto tokens = generateTokens(phone); // Используем существующий метод
+            return { true, tokens };
+        }
+        return { false, {"", ""} };
     }
 };

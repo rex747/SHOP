@@ -113,6 +113,12 @@ private:
             if (target == "/api/v1/clients/register" && method == http::verb::post) {
                 handleClientRegister(client_ip);
             }
+            else if (target == "/api/v1/auth/email_otp/request" && method == http::verb::post) {
+                handleEmailOTPRequest(client_ip);
+            }
+            else if (target == "/api/v1/auth/email_otp/verify" && method == http::verb::post) {
+                handleEmailOTPVerify(client_ip);
+            }
             else if (target == "/api/v1/auth/totp/setup" && method == http::verb::post) {
                 handleTOTPSetup(client_ip);
             }
@@ -308,6 +314,75 @@ private:
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Invalid TOTP code or replay detected"} }.dump();
             g_serverLogger.warning("TOTP verification FAILED for: " + phone);
+        }
+        response_.prepare_payload();
+    }
+
+    void handleEmailOTPRequest(const std::string& client_ip) {
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (const json::parse_error& e) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        std::string phone = body.value("phone", "");
+        std::string email = body.value("email", "");
+
+        if (phone.empty() || email.empty()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Phone and email are required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        if (auth_->requestEmailOTP(phone, email)) {
+            response_.result(http::status::ok);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"success", true}, {"message", "OTP sent to email"} }.dump();
+            g_serverLogger.info("Email OTP requested for: " + phone);
+        }
+        else {
+            response_.result(http::status::internal_server_error);
+            response_.body() = json{ {"error", "Failed to send OTP"} }.dump();
+        }
+        response_.prepare_payload();
+    }
+
+    void handleEmailOTPVerify(const std::string& client_ip) {
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (const json::parse_error& e) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        std::string phone = body.value("phone", "");
+        std::string code = body.value("code", "");
+
+        if (phone.empty() || code.length() != 6) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Valid phone and 6-digit code required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        auto [success, tokens] = auth_->verifyEmailOTP(phone, code);
+        if (success) {
+            response_.result(http::status::ok);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"success", true}, {"access_token", tokens.first}, {"refresh_token", tokens.second} }.dump();
+            g_serverLogger.info("Email OTP verification successful for: " + phone);
+        }
+        else {
+            response_.result(http::status::unauthorized);
+            response_.body() = json{ {"error", "Invalid or expired OTP code"} }.dump();
+            g_serverLogger.warning("Email OTP verification FAILED for: " + phone);
         }
         response_.prepare_payload();
     }
