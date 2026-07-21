@@ -8,10 +8,13 @@
 #include <memory>
 #include <pqxx/pqxx>
 #include <nlohmann/json.hpp>
+
 #include "config_server.h"
 #include "crypto_utils.h"
+#include "logger_server.h"
 
 using json = nlohmann::json;
+extern Logger g_serverLogger;
 
 struct Client {
     int id;
@@ -118,10 +121,12 @@ public:
                 CREATE INDEX IF NOT EXISTS idx_items_synced ON items(synced_to_1c);
             )");
             txn.commit();
+            g_serverLogger.info("Database initialized successfully");
             return true;
         }
         catch (const std::exception& e) {
             std::cerr << "Database initialization error: " << e.what() << std::endl;
+            g_serverLogger.error(std::string("Database initialization error: ") + e.what());
             return false;
         }
     }
@@ -133,7 +138,11 @@ public:
                 "SELECT id, phone, last_name, first_name, middle_name, email, created_at FROM clients WHERE phone = $1",
                 pqxx::params{ phone }
             );
-            if (result.empty()) return std::nullopt;
+            if (result.empty()) {
+                g_serverLogger.info("Client not found for phone: " + phone);
+                return std::nullopt;
+            }
+
             Client client;
             client.id = result[0]["id"].as<int>();
             client.phone = result[0]["phone"].as<std::string>();
@@ -145,14 +154,16 @@ public:
             client.createdAt = result[0]["created_at"].as<int64_t>();
             client.active = true;
             return client;
+            g_serverLogger.info("Client retrieved successfully for phone: " + phone);
         }
         catch (const std::exception& e) {
             std::cerr << "getClientByPhone error: " << e.what() << std::endl;
+            g_serverLogger.error(std::string("getClientByPhone error: ") + e.what());
             return std::nullopt;
         }
     }
 
-    bool registerClient(const std::string& phone, const std::string& last_name,
+    std::pair<bool, bool> registerClient(const std::string& phone, const std::string& last_name,
         const std::string& first_name, const std::string& middle_name,
         const std::string& email, int items_submitted, int items_sold) {
         try {
@@ -160,8 +171,10 @@ public:
             std::optional<std::string> mid_opt = middle_name.empty() ? std::nullopt : std::optional<std::string>(middle_name);
             std::optional<std::string> email_opt = email.empty() ? std::nullopt : std::optional<std::string>(email);
 
+            // Проверяем, существует ли пользователь
             auto exist = txn.exec("SELECT id FROM clients WHERE phone = $1", pqxx::params{ phone });
             if (!exist.empty()) {
+                // Пользователь уже существует: обновляем данные
                 txn.exec(
                     "UPDATE clients SET last_name=$2, first_name=$3, middle_name=$4, "
                     "email=$5, items_submitted=$6, items_sold=$7, updated_at=EXTRACT(EPOCH FROM NOW()) "
@@ -169,19 +182,24 @@ public:
                     pqxx::params{ phone, last_name, first_name, mid_opt, email_opt, items_submitted, items_sold }
                 );
                 txn.commit();
-                return true;
+                g_serverLogger.info("Client updated successfully for phone: " + phone);
+                return { true, true }; // Успех, и пользователь УЖЕ СУЩЕСТВОВАЛ
             }
+
+            // Пользователь новый: создаем запись
             txn.exec(
                 "INSERT INTO clients (phone, last_name, first_name, middle_name, email, items_submitted, items_sold) "
                 "VALUES ($1,$2,$3,$4,$5,$6,$7)",
                 pqxx::params{ phone, last_name, first_name, mid_opt, email_opt, items_submitted, items_sold }
             );
             txn.commit();
-            return true;
+            g_serverLogger.info("Client created successfully for phone: " + phone);
+            return { true, false }; // Успех, и пользователь БЫЛ СОЗДАН (новый)
         }
         catch (const std::exception& e) {
             std::cerr << "registerClient error: " << e.what() << std::endl;
-            return false;
+            g_serverLogger.error(std::string("registerClient error: ") + e.what());
+            return { false, false };
         }
     }
 
@@ -390,4 +408,5 @@ public:
             std::cerr << "logSync error: " << e.what() << std::endl;
         }
     }
+
 };

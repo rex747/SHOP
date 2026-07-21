@@ -151,12 +151,14 @@ private:
         json body;
         try {
             body = json::parse(request_.body());
+			g_serverLogger.info("Client registration payload: " + body.dump());
         }
         catch (const json::parse_error& e) {
             response_.result(http::status::bad_request);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
             response_.prepare_payload();
+			g_serverLogger.warning("Client registration failed: Invalid JSON payload from " + client_ip);
             return;
         }
 
@@ -167,6 +169,7 @@ private:
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Missing required fields"} }.dump();
             response_.prepare_payload();
+			g_serverLogger.warning("Client registration failed: Missing required fields from " + client_ip);
             return;
         }
 
@@ -185,17 +188,36 @@ private:
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Invalid phone number"} }.dump();
             response_.prepare_payload();
+            g_serverLogger.warning("Client registration failed: Invalid phone number from " + client_ip + " -> " + phone);
             return;
         }
         phone = "+7" + digits.substr(1);
+		g_serverLogger.info("Client registration attempt for: " + phone + " from " + client_ip);
 
-        bool ok = db_->registerClient(phone, last_name, first_name, middle_name, email, items_submitted, items_sold);
-        g_serverLogger.info("Client registration attempt for: " + phone + " -> Success: " + std::to_string(ok));
+        //Получаем пару <успех, уже_существует>
+        auto [ok, already_exists] = db_->registerClient(phone, last_name, first_name, middle_name, email, items_submitted, items_sold);
+        
+        if (!ok) {
+            response_.result(http::status::internal_server_error);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Database error during registration"} }.dump();
+            response_.prepare_payload();
+			g_serverLogger.log(LogLevel::ERROR, "Client registration failed for: " + phone + " from " + client_ip + " -> Database error");
+            return;
+        }
+
+        g_serverLogger.info("Client registration attempt for: " + phone +
+            " | Success: " + std::to_string(ok) +
+            " | Already exists: " + std::to_string(already_exists));
 
         response_.result(http::status::ok);
         response_.set(http::field::content_type, "application/json");
-        response_.body() = json{ {"success", ok}, {"phone", phone} }.dump();
+
+        // Добавляем флаг already_exists в ответ клиенту
+        json resp = { {"success", ok}, {"phone", phone}, {"already_exists", already_exists} };
+        response_.body() = resp.dump();
         response_.prepare_payload();
+		g_serverLogger.info("Client registration successful for: " + phone + " from " + client_ip + " | Already exists: " + std::to_string(already_exists));
     }
 
     void handleTOTPSetup(const std::string& client_ip) {
