@@ -61,15 +61,21 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
 
     std::shared_ptr<Database> db_;
     std::shared_ptr<AuthService> auth_;
+    std::shared_ptr<QueueService> queue_;
+    std::shared_ptr<OneCIntegration> onec_;
     std::shared_ptr<RateLimiter> rate_limiter_;
 
 public:
     explicit HttpSession(tcp::socket&& socket, ssl::context& ctx, 
         std::shared_ptr<Database> db, std::shared_ptr<AuthService> auth, 
+        std::shared_ptr<QueueService> queue,
+        std::shared_ptr<OneCIntegration> onec,
         std::shared_ptr<RateLimiter> rate_limiter)
         : stream_(std::move(socket), ctx),
         db_(std::move(db)),
         auth_(std::move(auth)),
+        queue_(std::move(queue)),
+        onec_(std::move(onec)),
         rate_limiter_(std::move(rate_limiter)) {
     }
 
@@ -111,7 +117,7 @@ private:
         try {
             if (target == "/api/v1/clients/register" && method == http::verb::post) {
 				g_serverLogger.info("Handling client registration request from " + client_ip);
-                handleClientRegister();
+                handleClientRegister(client_ip);
 				g_serverLogger.info("Client registration request handled successfully for " + client_ip);
             }
             else if (target == "/api/v1/auth/totp/setup" && method == http::verb::post) {
@@ -121,13 +127,13 @@ private:
                 handleTOTPVerify(client_ip);
             }
             else if (target == "/api/v1/queue/get_ticket" && method == http::verb::post) {
-                handleGetTicket();
+                handleGetTicket(client_ip);
             }
             else if (target == "/api/v1/queue/trust_acceptance" && method == http::verb::post) {
-                handleTrustAcceptance();
+                handleTrustAcceptance(client_ip);
             }
             else if (target == "/api/v1/onec/sync" && method == http::verb::post) {
-                handleOneCSync();
+                handleOneCSync(client_ip);
             }
             else {
                 response_.result(http::status::not_found);
@@ -148,7 +154,7 @@ private:
         doWrite();
     }
 
-    void handleClientRegister()
+    void handleClientRegister(const std::string& client_ip)
     {
         g_serverLogger.info("Request ClientRegister: " + std::string(request_.method_string()) + " " + std::string(request_.target()));
         json body;
@@ -325,7 +331,7 @@ private:
         response_.prepare_payload();
     }
 
-    void handleGetTicket() {
+    void handleGetTicket(const std::string& client_ip) {
         json body = json::parse(request_.body());
         int clientId = body["client_id"];
         std::string queueType = body["queue_type"];
@@ -339,7 +345,7 @@ private:
         response_.prepare_payload();
     }
 
-    void handleTrustAcceptance() {
+    void handleTrustAcceptance(const std::string& client_ip) {
         json body = json::parse(request_.body());
         int clientId = body["client_id"];
         bool success = g_queueService.createTrustAcceptance(clientId);
@@ -350,7 +356,7 @@ private:
         response_.prepare_payload();
     }
 
-    void handleOneCSync() {
+    void handleOneCSync(const std::string& client_ip) {
         bool success = g_onec.syncData();
         response_.result(http::status::ok);
         response_.set(http::field::content_type, "application/json");
@@ -396,14 +402,18 @@ class HttpListener : public std::enable_shared_from_this<HttpListener> {
     tcp::acceptor acceptor_;
     std::shared_ptr<Database> db_;
     std::shared_ptr<AuthService> auth_;
+    std::shared_ptr<QueueService> queue_;
+    std::shared_ptr<OneCIntegration> onec_;
     std::shared_ptr<RateLimiter> rate_limiter_;
 
 public:
     HttpListener(net::io_context& ioc, ssl::context& ctx, tcp::endpoint endpoint, 
         std::shared_ptr<Database> db, std::shared_ptr<AuthService> auth,
+        std::shared_ptr<QueueService> queue, std::shared_ptr<OneCIntegration> onec,
         std::shared_ptr<RateLimiter> rate_limiter)
         : ioc_(ioc), ctx_(ctx), acceptor_(ioc, endpoint),
-        db_(std::move(db)), auth_(std::move(auth)), rate_limiter_(std::move(rate_limiter)) {
+        db_(std::move(db)), auth_(std::move(auth)), queue_(std::move(queue)),
+        onec_(std::move(onec)), rate_limiter_(std::move(rate_limiter)) {
     }
 
     void run() {
@@ -418,18 +428,19 @@ private:
                     g_serverLogger.error("accept: " + ec.message());
                 }
                 else {
-                    std::make_shared<HttpSession>(std::move(socket), self->ctx_, self->db_, self->auth_, self->rate_limiter_)->run();
+                    std::make_shared<HttpSession>(std::move(socket), self->ctx_, self->db_, self->auth_, self->queue_, self->onec_, self->rate_limiter_)->run();
                 }
                 self->doAccept();
             });
     }
 };
 
-void runServer(std::shared_ptr<Database> db, std::shared_ptr<AuthService> auth, std::shared_ptr<RateLimiter> rate_limiter) {
+void runServer(std::shared_ptr<Database> db, std::shared_ptr<AuthService> auth, std::shared_ptr<QueueService> queue, std::shared_ptr<OneCIntegration> onec, std::shared_ptr<RateLimiter> rate_limiter) {
     try {
-        g_serverLogger.info("Starting server on port " + std::to_string(Config::SERVER_PORT));
+        
         auto const address = net::ip::make_address("0.0.0.0");
         unsigned short port = static_cast<unsigned short>(Config::SERVER_PORT);
+        g_serverLogger.info("Starting server on port " + std::to_string(Config::SERVER_PORT));
         net::io_context ioc{ 1 };
 
         ssl::context ctx{ ssl::context::tlsv12_server };
@@ -445,7 +456,7 @@ void runServer(std::shared_ptr<Database> db, std::shared_ptr<AuthService> auth, 
             return;
         }
 
-        auto listener = std::make_shared<HttpListener>(ioc, ctx, tcp::endpoint{ address, port });
+        auto listener = std::make_shared<HttpListener>(ioc, ctx, tcp::endpoint{ address, port }, db, auth, queue, onec, rate_limiter);
         listener->run();
         g_serverLogger.info("Server started on port " + to_string(port));
 
@@ -473,8 +484,17 @@ int main(int argc, char* argv[]) {
         std::string connStr = connStrStream.str();
 
         auto conn = std::make_shared<pqxx::connection>(connStr);
+
+        if (!conn->is_open()) {
+            std::cerr << "Database connection failed" << std::endl;
+			g_serverLogger.log(LogLevel::CRITICAL, "Database connection failed");
+            return 1;
+        }
+		// Создание экземпляров сервисов с использованием умных указателей для управления временем жизни объектов.
         auto db = std::make_shared<Database>(conn, Config::ENCRYPTION_KEY);
         auto auth = std::make_shared<AuthService>(db);
+        auto queue = std::make_shared<QueueService>(db);
+        auto onec = std::make_shared<OneCIntegration>(db);
         auto rate_limiter = std::make_shared<RateLimiter>(5, std::chrono::minutes(1)); // 5 attempts per minute per IP
 
         g_serverLogger.info("Connecting to database with connection string: " + connStr);
@@ -487,24 +507,27 @@ int main(int argc, char* argv[]) {
 
         g_serverLogger.info("Database connected");
 
-        if (!g_authService.initialize()) {
-            g_serverLogger.critical("Auth service initialization failed");
+        if (!auth->initialize()) {
+			g_serverLogger.critical("Auth service initialization failed");
+            std::cerr << "Auth service initialization failed" << std::endl;
             return 1;
         }
 
-        if (!g_queueService.initialize()) {
+        if (!queue->initialize()) {
             g_serverLogger.critical("Queue service initialization failed");
+			std::cerr << "Queue service initialization failed" << std::endl;
             return 1;
         }
 
-        if (!g_onec.initialize()) {
+        if (!onec->initialize()) {
             g_serverLogger.error("1C integration initialization failed");
+			std::cerr << "1C integration initialization failed" << std::endl;
         }
 
         g_monitoring.start();
         g_backup.start();
 
-        runServer(db,auth,rate_limiter);
+        runServer(db,auth,queue,onec,rate_limiter);
 
         g_monitoring.stop();
         g_backup.stop();

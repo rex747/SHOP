@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
 #include "database.h"
@@ -18,6 +19,7 @@ private:
     std::string m_baseUrl;
     std::string m_user;
     std::string m_password;
+    std::shared_ptr<Database> db_;
 
     static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
         userp->append((char*)contents, size * nmemb);
@@ -119,7 +121,7 @@ public:
         g_serverLogger.info("Starting 1C sync");
 
         // Get unsynced items
-        auto items = Database::getUnsyncedItems();
+        auto items = db_->getUnsyncedItems();
 
         if (items.empty()) {
             g_serverLogger.info("No items to sync");
@@ -148,7 +150,7 @@ public:
         if (response.contains("success") && response["success"].get<bool>()) {
             // Mark items as synced
             for (const auto& item : items) {
-                Database::updateItemSyncStatus(item["id"].get<int>(), true);
+				db_->updateItemSyncStatus(item["id"].get<int>(), true);
             }
 
             g_serverLogger.info("Synced " + std::to_string(items.size()) + " items to 1C");

@@ -7,7 +7,6 @@
 #include <cstring>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
-#include <openssl/sha.h>
 
 class CryptoUtils {
 public:
@@ -48,12 +47,28 @@ public:
     }
 
     static std::string get32ByteKey(const std::string& input) {
-        unsigned char hash[SHA256_DIGEST_LENGTH];
-        SHA256_CTX sha256;
-        SHA256_Init(&sha256);
-        SHA256_Update(&sha256, input.c_str(), input.size());
-        SHA256_Final(hash, &sha256);
-        return std::string(reinterpret_cast<char*>(hash), SHA256_DIGEST_LENGTH);
+        EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+        if (!ctx) throw std::runtime_error("EVP_MD_CTX_new failed");
+
+        const EVP_MD* md = EVP_sha256();
+        unsigned char hash[EVP_MAX_MD_SIZE];
+        unsigned int hashLen = 0;
+
+        if (1 != EVP_DigestInit_ex(ctx, md, nullptr)) {
+            EVP_MD_CTX_free(ctx);
+            throw std::runtime_error("EVP_DigestInit_ex failed");
+        }
+        if (1 != EVP_DigestUpdate(ctx, input.c_str(), input.size())) {
+            EVP_MD_CTX_free(ctx);
+            throw std::runtime_error("EVP_DigestUpdate failed");
+        }
+        if (1 != EVP_DigestFinal_ex(ctx, hash, &hashLen)) {
+            EVP_MD_CTX_free(ctx);
+            throw std::runtime_error("EVP_DigestFinal_ex failed");
+        }
+        EVP_MD_CTX_free(ctx);
+
+        return std::string(reinterpret_cast<char*>(hash), hashLen);
     }
 
     static std::string encryptAES256CBC(const std::string& plaintext, const std::string& key) {

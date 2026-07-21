@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <memory>
 #include <pqxx/pqxx>
 #include <nlohmann/json.hpp>
 
@@ -305,6 +306,55 @@ public:
         return ticket;
     }
 
+    bool createTrustAcceptance(int clientId) {
+        try {
+            pqxx::work txn{ *conn_ };
+            txn.exec(
+                "INSERT INTO trust_acceptances (client_id) VALUES ($1)",
+                pqxx::params{ clientId }
+            );
+            txn.commit();
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "createTrustAcceptance error: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    bool serveTicket(const std::string& ticketNumber) {
+        try {
+            pqxx::work txn{ *conn_ };
+            txn.exec(
+                "UPDATE queue_tickets SET status = 'served', served_at = EXTRACT(EPOCH FROM NOW()) WHERE number = $1",
+                pqxx::params{ ticketNumber }
+            );
+            txn.commit();
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "serveTicket error: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    json getQueueStatus(const std::string& queueType) {
+        json status;
+        try {
+            pqxx::work txn{ *conn_ };
+            auto result = txn.exec(
+                "SELECT COUNT(*) as total, MIN(position) as min_pos FROM queue_tickets WHERE queue_type = $1 AND status = 'waiting'",
+                pqxx::params{ queueType }
+            );
+            status["total_waiting"] = result[0]["total"].as<int>();
+            status["min_position"] = result[0]["min_pos"].is_null() ? 0 : result[0]["min_pos"].as<int>();
+        }
+        catch (const std::exception& e) {
+            std::cerr << "getQueueStatus error: " << e.what() << std::endl;
+        }
+        return status;
+    }
+
     static json ticketToJson(const QueueTicket& ticket) {
         json j;
         j["id"] = ticket.id;
@@ -368,6 +418,34 @@ public:
             g_serverLogger.error(std::string("getUnsyncedItems error: ") + e.what());
         }
         return items;
+    }
+
+    bool updateItemSyncStatus(int itemId, bool synced) {
+        try {
+            pqxx::work txn{ *conn_ };
+            txn.exec("UPDATE items SET synced_to_1c = $1 WHERE id = $2", pqxx::params{ synced, itemId });
+            txn.commit();
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "updateItemSyncStatus error: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    void logSync(const std::string& syncType, int recordsCount, const std::string& status, const std::string& errorMessage) {
+        try {
+            pqxx::work txn{ *conn_ };
+            std::optional<std::string> err_opt = errorMessage.empty() ? std::nullopt : std::optional<std::string>(errorMessage);
+            txn.exec(
+                "INSERT INTO sync_log (sync_type, records_count, status, error_message) VALUES ($1, $2, $3, $4)",
+                pqxx::params{ syncType, recordsCount, status, err_opt }
+            );
+            txn.commit();
+        }
+        catch (const std::exception& e) {
+            std::cerr << "logSync error: " << e.what() << std::endl;
+        }
     }
 
     // НОВЫЙ ПУБЛИЧНЫЙ МЕТОД для инкапсулированного сохранения токенов
