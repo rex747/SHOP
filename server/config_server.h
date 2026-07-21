@@ -11,7 +11,7 @@ namespace Config {
 
     // Database
     constexpr const char* DB_HOST = "127.0.0.1"; // <-- Было "localhost"
-    constexpr int DB_PORT = 5432;
+    inline const int DB_PORT = 5432;
     constexpr const char* DB_NAME = "kiosk_db";
     constexpr const char* DB_USER = "kiosk_user";
     constexpr const char* DB_PASSWORD = "123";
@@ -33,7 +33,7 @@ namespace Config {
     constexpr int JWT_REFRESH_EXPIRY_SECONDS = 86400 * 7;
 
     // Ключ шифрования (будет хэширован SHA-256 для гарантии длины 32 байта)
-    inline const std::string ENCRYPTION_KEY = "your_32_byte_encryption_key_here!!";
+    inline const std::string ENCRYPTION_KEY = "123";
 
     // Logging
     constexpr const char* LOG_PATH = "/var/log/kiosk";

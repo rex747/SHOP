@@ -17,9 +17,6 @@
 #include "database.h"
 #include "config_server.h"
 #include "crypto_utils.h"
-#include "logger_server.h"
-
-extern Logger g_serverLogger;
 
 using json = nlohmann::json;
 
@@ -116,7 +113,7 @@ private:
         }
         unsigned char hmacResult[EVP_MAX_MD_SIZE];
         unsigned int hmacLen;
-        HMAC(EVP_sha1(), key.data(), key.size(), counterBytes, 8, hmacResult, &hmacLen);
+        HMAC(EVP_sha1(), key.data(), static_cast<int>(key.size()), counterBytes, 8, hmacResult, &hmacLen);
 
         int offset = hmacResult[hmacLen - 1] & 0x0F;
         int binary = ((hmacResult[offset] & 0x7F) << 24) |
@@ -136,12 +133,14 @@ private:
         int64_t now = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
         json payload = { {"phone", phone}, {"iat", now}, {"exp", now + expirySeconds} };
 
-        std::string headerB64 = base64EncodeJWT((const unsigned char*)header.dump().c_str(), header.dump().size());
-        std::string payloadB64 = base64EncodeJWT((const unsigned char*)payload.dump().c_str(), payload.dump().size());
+        std::string headerB64 = base64EncodeJWT(reinterpret_cast<const unsigned char*>(header.dump().c_str()), header.dump().size());
+        std::string payloadB64 = base64EncodeJWT(reinterpret_cast<const unsigned char*>(payload.dump().c_str()), payload.dump().size());
         std::string message = headerB64 + "." + payloadB64;
 
         unsigned char hmacResult[EVP_MAX_MD_SIZE];
         unsigned int hmacLen;
+
+        // Исправление: явное создание std::string гарантирует наличие методов .data() и .size()
         std::string jwt_secret = Config::JWT_SECRET;
         HMAC(EVP_sha256(), jwt_secret.data(), static_cast<int>(jwt_secret.size()),
             reinterpret_cast<const unsigned char*>(message.data()), message.size(), hmacResult, &hmacLen);
@@ -153,7 +152,7 @@ private:
     std::string hashToken(const std::string& token) {
         unsigned char hash[EVP_MAX_MD_SIZE];
         unsigned int hashLen;
-        EVP_Digest(token.c_str(), token.size(), hash, &hashLen, EVP_sha256(), nullptr);
+        EVP_Digest(token.c_str(), static_cast<int>(token.size()), hash, &hashLen, EVP_sha256(), nullptr);
         std::stringstream ss;
         for (unsigned int i = 0; i < hashLen; i++) {
             ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
@@ -162,8 +161,9 @@ private:
     }
 
 public:
-    AuthService(std::shared_ptr<Database> db)
-        : db_(db), replay_cache_(std::chrono::seconds(90)) {
+    // Внедрение зависимости через конструктор
+    explicit AuthService(std::shared_ptr<Database> db)
+        : db_(std::move(db)), replay_cache_(std::chrono::seconds(90)) {
     }
 
     bool initialize() {
@@ -195,20 +195,15 @@ public:
 
     bool verifyTOTP(const std::string& phone, const std::string& code, int allowedDrift = 1) {
         if (code.length() != 6) return false;
-
         if (replay_cache_.isUsed(phone, code)) {
             return false; // Replay attack detected
         }
-
         auto secretOpt = db_->getTOTPSecret(phone);
         if (!secretOpt) return false;
-
         auto key = base32Decode(*secretOpt);
         if (key.empty()) return false;
-
         int64_t currentTime = std::chrono::system_clock::now().time_since_epoch().count() / 1000 / 1000 / 1000;
         int64_t counter = currentTime / 30;
-
         for (int i = -allowedDrift; i <= allowedDrift; ++i) {
             if (generateTOTPCodeForCounter(key, counter + i) == code) {
                 replay_cache_.markUsed(phone, code);
@@ -221,13 +216,11 @@ public:
     std::pair<std::string, std::string> generateTokens(const std::string& phone) {
         std::string accessToken = generateJWT(phone, Config::JWT_ACCESS_EXPIRY_SECONDS);
         std::string refreshToken = generateJWT(phone, Config::JWT_REFRESH_EXPIRY_SECONDS);
-
         try {
             auto clientOpt = db_->getClientByPhone(phone);
             if (clientOpt) {
                 int64_t now = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
-
-                // ИСПРАВЛЕНИЕ ОШИБКИ E0265: Использование публичного метода вместо прямого доступа к приватному conn_
+                // Исправление: использование публичного метода вместо прямого доступа к приватному conn_
                 db_->saveAuthTokens(
                     clientOpt->id,
                     hashToken(accessToken),

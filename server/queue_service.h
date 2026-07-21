@@ -2,41 +2,22 @@
 #pragma once
 
 #include <string>
-#include <map>
-#include <mutex>
-#include <atomic>
 #include <memory>
 #include <nlohmann/json.hpp>
-
 #include "database.h"
-#include "config_server.h"
-#include "logger_server.h"
 
-extern Logger g_serverLogger;
 using json = nlohmann::json;
 
 class QueueService {
 private:
-    std::map<std::string, int> m_queueCounts;
-    std::mutex m_mutex;
-    std::atomic<int> m_ticketCounter{ 1 };
     std::shared_ptr<Database> db_;
 
-    int getMaxQueueSize(const std::string& queueType) {
-        if (queueType == "general") return Config::MAX_QUEUE_SIZE_GENERAL;
-        if (queueType == "first_time") return Config::MAX_QUEUE_SIZE_FIRST_TIME;
-        if (queueType == "extra_20") return Config::MAX_QUEUE_SIZE_EXTRA_20;
-        if (queueType == "paid") return Config::MAX_QUEUE_SIZE_PAID;
-        if (queueType == "expensive") return Config::MAX_QUEUE_SIZE_EXPENSIVE;
-        return 100;
-    }
-
 public:
-    explicit QueueService(std::shared_ptr<Database> db) : db_(db) {}
-
+    // Внедрение зависимости через конструктор
+    explicit QueueService(std::shared_ptr<Database> db) : db_(std::move(db)) {}
 
     bool initialize() {
-        return true;
+        return true; // Инициализация таблиц теперь полностью в Database::initialize()
     }
 
     json getTicket(int clientId, const std::string& queueType, int itemsCount) {
