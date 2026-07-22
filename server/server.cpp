@@ -42,7 +42,7 @@ using tcp = net::ip::tcp;
 using json = nlohmann::json;
 
 // Глобальный экземпляр логгера (согласно вашей архитектуре)
-extern Logger g_serverLogger;
+
 Logger g_serverLogger("/var/log/kiosk/server.log");
 
 class HttpSession : public std::enable_shared_from_this<HttpSession> {

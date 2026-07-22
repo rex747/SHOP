@@ -8,8 +8,10 @@
 #include <memory>
 #include <pqxx/pqxx>
 #include <nlohmann/json.hpp>
+
 #include "config_server.h"
 #include "crypto_utils.h"
+#include "logger_server.h"
 
 using json = nlohmann::json;
 
@@ -76,7 +78,7 @@ public:
                     id SERIAL PRIMARY KEY,
                     phone VARCHAR(20) NOT NULL,
                     code_hash VARCHAR(256) NOT NULL,
-                    expires_at INTEGER NOT NULL,
+                    expires_at BIGINT NOT NULL,   -- <-- ИСПРАВЛЕНИЕ: BIGINT вместо INTEGER
                     used BOOLEAN DEFAULT FALSE,
                     created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW())
                 );
@@ -84,9 +86,11 @@ public:
                 CREATE INDEX IF NOT EXISTS idx_email_otp_phone ON email_otp(phone);
             )");
             txn.commit();
+            g_serverLogger.info("Database initialized successfully (email_otp.expires_at is BIGINT)");
             return true;
         }
         catch (const std::exception& e) {
+            g_serverLogger.error("Database initialization error: " + std::string(e.what()));
             std::cerr << "Database initialization error: " << e.what() << std::endl;
             return false;
         }

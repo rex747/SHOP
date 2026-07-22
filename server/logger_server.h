@@ -151,3 +151,5 @@ public:
     void error(const std::string& msg) { log(LogLevel::ERROR, msg); }
     void critical(const std::string& msg) { log(LogLevel::CRITICAL, msg); }
 };
+
+extern Logger g_serverLogger;

@@ -46,9 +46,14 @@ public:
         const std::string smtp_server = "smtps://smtp.yandex.ru:465";
         const std::string from_address = "rex747@yandex.ru";
         const std::string username = "rex747";
-        const std::string password = "ohbxywjjaszoqtbh";  // ← Проверьте/обновите app password в Яндекс.ID!
+
+        // !!! ВАЖНО: замените YOUR_OAUTH_TOKEN на действительный OAuth-токен,
+        // полученный через OAuth 2.0 (ClientID: 35ecdbd208a246349f60e064aabb0d04).
+        // Токен должен иметь права на отправку почты.
+        const std::string oauth_token = "8917023fff0a4cff8370a2635b0fa22d";
 
         g_serverLogger.info("[EmailService] SMTP: " + smtp_server + ", From: " + from_address);
+        g_serverLogger.info("[EmailService] Используется аутентификация XOAUTH2 (токен получен)");
 
         // Корректное SMTP-сообщение
         std::string subject = "Subject: Ваш код верификации\r\n";
@@ -61,10 +66,11 @@ public:
 
         struct UploadStatus upload_ctx = { message.c_str(), message.length() };
 
-        // Настройки curl
+        // Настройки curl для XOAUTH2
         curl_easy_setopt(curl, CURLOPT_URL, smtp_server.c_str());
         curl_easy_setopt(curl, CURLOPT_USERNAME, username.c_str());
-        curl_easy_setopt(curl, CURLOPT_PASSWORD, password.c_str());
+        // Вместо пароля передаём OAuth-токен для механизма XOAUTH2
+        curl_easy_setopt(curl, CURLOPT_XOAUTH2_BEARER, oauth_token.c_str());
         curl_easy_setopt(curl, CURLOPT_MAIL_FROM, from_address.c_str());
 
         struct curl_slist* recipients = curl_slist_append(nullptr, email.c_str());
@@ -83,7 +89,7 @@ public:
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 45L);
         curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);  // Максимум диагностики
 
-        g_serverLogger.info("[EmailService] Запуск curl_easy_perform()...");
+        g_serverLogger.info("[EmailService] Запуск curl_easy_perform() с XOAUTH2...");
         CURLcode res = curl_easy_perform(curl);
 
         long response_code = 0;
@@ -93,8 +99,7 @@ public:
             std::string err = curl_easy_strerror(res);
             g_serverLogger.error("[EmailService] SMTP FAILED! CURLcode=" + std::to_string(res) + ", msg=" + err);
             g_serverLogger.error("[EmailService] Response code: " + std::to_string(response_code));
-            // Полный список возможных причин (из оригинала + расширен)
-            g_serverLogger.error("Проверьте: 1. App password Yandex. 2. 2FA включён. 3. Порт 465. 4. CA certificates. 5. TLS.");
+            g_serverLogger.error("Проверьте: 1. OAuth-токен действителен. 2. Токен имеет права на отправку почты. 3. Сертификаты.");
             curl_slist_free_all(recipients);
             curl_easy_cleanup(curl);
             return false;
