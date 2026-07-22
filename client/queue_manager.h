@@ -6,6 +6,10 @@
 #include <vector>
 #include <mutex>
 #include <atomic>
+#include <optional>
+#include <nlohmann/json.hpp>
+#include <cstdint>
+
 #include "config.h"
 #include "https_client.h"
 #include "logger.h"
@@ -69,6 +73,23 @@ private:
     }
 
 public:
+
+    // -------------------------------------------------------------------------
+    // ѕолучить количество выданных сегодн€ талонов дл€ указанного типа очереди
+    // -------------------------------------------------------------------------
+    int getDailyCount(QueueType type, const std::wstring& authToken) {
+        std::wstring typeStr = getQueueTypeName(type);
+        std::wstring path = L"/api/v1/queue/daily_count?queue_type=" + typeStr;
+        auto response = g_httpsClient.get(path, authToken);
+        if (response && response->contains("count") && (*response)["count"].is_number_integer()) {
+            int count = (*response)["count"].get<int>();
+            g_logger.info(L"Daily count for " + typeStr + L": " + std::to_wstring(count));
+            return count;
+        }
+        g_logger.warning(L"Failed to get daily count for " + typeStr);
+        return 0;
+    }
+
     std::optional<QueueTicket> getTicket(int clientId, QueueType type,
         int itemsCount, const std::wstring& authToken) {
         std::lock_guard<std::mutex> lock(m_mutex);

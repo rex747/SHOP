@@ -48,6 +48,9 @@ class AuthManager
 private:
     std::optional<AuthToken> m_token;
     std::string m_phone;  // храним в UTF-8
+    bool m_isLoggedIn = false;
+    int m_clientId = 0;
+    std::wstring m_fullName;
 
     bool refreshAccessToken()
     {
@@ -145,9 +148,27 @@ public:
     void logout() {
         m_token.reset();
         m_phone.clear();
+		m_isLoggedIn = false;
+        m_clientId = 0;
+        m_fullName.clear();
     }
 
     std::wstring getPhone() const {
         return utf8_to_wstring(m_phone);
     }
+
+    void setLoggedIn(bool logged, int clientId = 0, const std::wstring& fullName = L"", const std::wstring& phone = L"") {
+        m_isLoggedIn = logged;
+        m_clientId = clientId;
+        m_fullName = fullName;
+        if (!phone.empty()) {
+            m_phone = wstring_to_utf8(phone);
+        }
+        g_logger.info(L"Login state set: logged=" + std::to_wstring(logged) + L", clientId=" + std::to_wstring(clientId) + L", name=" + fullName);
+    }
+
+    bool isLoggedIn() const { return m_isLoggedIn; }
+    int getClientId() const { return m_clientId; }
+    std::wstring getFullName() const { return m_fullName; }
+
 };

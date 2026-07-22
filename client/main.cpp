@@ -36,6 +36,7 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #include "main_window.h"
 #include "logger.h"
 #include "receipt_printer.h"
+#include "login_window.h"
 
 using namespace std;
 
@@ -46,6 +47,7 @@ HTTPSClient g_httpsClient(L"77.222.32.209", 8443);
 QueueManager g_queueManager;
 AuthManager g_authManager;
 ReceiptPrinter g_printer;
+MainWindow g_mainWindow;
 
 int WINAPI wWinMain(
     _In_ HINSTANCE hInstance,
@@ -106,7 +108,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         WS_EX_TOPMOST,
         L"TerminalKioskClass",
         L"ДОБРО - Комиссионный магазин",
-        WS_POPUP | WS_VISIBLE,
+        WS_POPUP,
         0, 0, screenWidth, screenHeight,
         nullptr, nullptr, hInstance, nullptr
     );
@@ -116,8 +118,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         return 1;
     }
 
+    g_mainWindow.m_hWnd = g_hMainWnd;
+
+    // Показываем диалог входа (модальный)
+    LoginWindow loginWnd;
+    loginWnd.show(g_hMainWnd);   // блокирует выполнение до закрытия
+
     ShowWindow(g_hMainWnd, nCmdShow);
     UpdateWindow(g_hMainWnd);
+    g_mainWindow.create(g_hMainWnd);
+
+    g_logger.log(LogLevel::INFO, L"Main window created after login dialog");
 
     g_logger.log(LogLevel::INFO, L"Main window created successfully");
 

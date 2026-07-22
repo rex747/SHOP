@@ -140,6 +140,7 @@
     <ClInclude Include="database_local.h" />
     <ClInclude Include="https_client.h" />
     <ClInclude Include="logger.h" />
+    <ClInclude Include="login_window.h" />
     <ClInclude Include="main_window.h" />
     <ClInclude Include="queue_manager.h" />
     <ClInclude Include="receipt_printer.h" />

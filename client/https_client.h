@@ -178,4 +178,89 @@ public:
             return std::nullopt;
         }
     }
+
+    // -------------------------------------------------------------------------
+    // GET-запрос с поддержкой авторизации Bearer токеном
+    // -------------------------------------------------------------------------
+    std::optional<json> get(const std::wstring& path, const std::wstring& authToken = L"") {
+        if (!m_hSession) {
+            g_logger.error(L"HTTP Session is not initialized");
+            return std::nullopt;
+        }
+
+        g_logger.info(L"Preparing GET request to: " + path);
+
+        std::wstring headers = L"Content-Type: application/json\r\n";
+        if (!authToken.empty()) {
+            headers += L"Authorization: Bearer " + authToken + L"\r\n";
+            g_logger.info(L"Added Authorization header (Bearer token).");
+        }
+
+        HINTERNET hConnect = WinHttpConnect(m_hSession, m_serverName.c_str(), m_port, 0);
+        if (!hConnect) {
+            g_logger.error(L"WinHttpConnect failed: " + std::to_wstring(GetLastError()));
+            return std::nullopt;
+        }
+
+        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path.c_str(), NULL,
+            WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+        if (!hRequest) {
+            g_logger.error(L"WinHttpOpenRequest failed: " + std::to_wstring(GetLastError()));
+            WinHttpCloseHandle(hConnect);
+            return std::nullopt;
+        }
+
+        DWORD dwFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+            SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+            SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+            SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwFlags, sizeof(dwFlags));
+
+        if (!WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.length(),
+            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+            DWORD err = GetLastError();
+            g_logger.error(L"WinHttpSendRequest failed: " + std::to_wstring(err));
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            return std::nullopt;
+        }
+
+        if (!WinHttpReceiveResponse(hRequest, NULL)) {
+            g_logger.error(L"WinHttpReceiveResponse failed: " + std::to_wstring(GetLastError()));
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            return std::nullopt;
+        }
+
+        std::string responseText;
+        DWORD dwSize = 0;
+        do {
+            dwSize = 0;
+            if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) break;
+            if (dwSize > 0) {
+                std::vector<char> buffer(dwSize + 1, 0);
+                DWORD dwDownloaded = 0;
+                if (WinHttpReadData(hRequest, buffer.data(), dwSize, &dwDownloaded)) {
+                    responseText.append(buffer.data(), dwDownloaded);
+                }
+            }
+        } while (dwSize > 0);
+
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+
+        if (responseText.empty()) {
+            g_logger.warning(L"Empty response received");
+            return std::nullopt;
+        }
+
+        try {
+            return json::parse(responseText);
+        }
+        catch (const json::parse_error& e) {
+            g_logger.error(L"JSON parse error: " + utf8_to_wstring(e.what()));
+            return std::nullopt;
+        }
+    }
+
 };
