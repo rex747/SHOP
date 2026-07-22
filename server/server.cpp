@@ -31,7 +31,7 @@
 #include "queue_service.h"
 #include "onec_integration.h"
 #include "rate_limiter.h"
-#include "logger_server.h" // Предполагается наличие вашего логгера
+#include "logger_server.h" 
 
 using namespace std;
 namespace beast = boost::beast;
@@ -319,46 +319,93 @@ private:
     }
 
     void handleEmailOTPRequest(const std::string& client_ip) {
+        g_serverLogger.info("[handleEmailOTPRequest] === НАЧАЛО ОБРАБОТКИ ЗАПРОСА ===");
+        g_serverLogger.info("[handleEmailOTPRequest] client_ip: " + client_ip);
+
         json body;
-        try { body = json::parse(request_.body()); }
+        try {
+            body = json::parse(request_.body());
+            g_serverLogger.info("[handleEmailOTPRequest] JSON body успешно распарсен: " + body.dump());
+        }
         catch (const json::parse_error& e) {
+            g_serverLogger.error("[handleEmailOTPRequest] JSON parse error: " + std::string(e.what()));
             response_.result(http::status::bad_request);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Invalid JSON"} }.dump();
             response_.prepare_payload();
+            doWrite();
             return;
         }
 
         std::string phone = body.value("phone", "");
         std::string email = body.value("email", "");
 
+        g_serverLogger.info("[handleEmailOTPRequest] Извлечённые поля: phone=[" + phone + "], email=[" + email + "]");
+
         if (phone.empty() || email.empty()) {
+            g_serverLogger.warning("[handleEmailOTPRequest] ОШИБКА ВАЛИДАЦИИ: phone.empty()=" + std::string(phone.empty() ? "true" : "false") +
+                ", email.empty()=" + std::string(email.empty() ? "true" : "false"));
             response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Phone and email are required"} }.dump();
             response_.prepare_payload();
+            doWrite();
             return;
         }
 
-        if (auth_->requestEmailOTP(phone, email)) {
-            response_.result(http::status::ok);
-            response_.set(http::field::content_type, "application/json");
+        g_serverLogger.info("[handleEmailOTPRequest] Валидация пройдена. Вызываем auth_->requestEmailOTP(phone, email)...");
+
+        bool emailSent = false;
+        try {
+            emailSent = auth_->requestEmailOTP(phone, email);
+            g_serverLogger.info("[handleEmailOTPRequest] auth_->requestEmailOTP() вернула: " + std::string(emailSent ? "true" : "false"));
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("[handleEmailOTPRequest] ИСКЛЮЧЕНИЕ при вызове requestEmailOTP: " + std::string(e.what()));
+            // ИСПРАВЛЕНИЕ: Не прячем исключение под fallback — пробрасываем дальше для обработки в catch-блоке handleRequest
+            throw;
+        }
+
+        // ИСПРАВЛЕНИЕ: Убран fallback, который имитировал успех при emailSent == false
+        // Теперь при emailSent == false возвращаем клиенту реальную ошибку
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+
+        if (emailSent) {
             response_.body() = json{ {"success", true}, {"message", "OTP sent to email"} }.dump();
-            g_serverLogger.info("Email OTP requested for: " + phone);
+            g_serverLogger.info("[handleEmailOTPRequest] Email OTP УСПЕШНО отправлен для: " + phone);
         }
         else {
-            response_.result(http::status::internal_server_error);
-            response_.body() = json{ {"error", "Failed to send OTP"} }.dump();
+            // ИСПРАВЛЕНИЕ: УДАЛЕН TEST FALLBACK. При сбое SMTP клиент получает реальную ошибку.
+            // Вызывающий UI ОБЯЗАН обработать success=false и показать пользователю сообщение.
+            g_serverLogger.error("[handleEmailOTPRequest] Email OTP НЕ ОТПРАВЛЕН для: " + phone + ". Причина: auth_->requestEmailOTP() вернула false.");
+            g_serverLogger.error("[handleEmailOTPRequest] Возможные причины:");
+            g_serverLogger.error("  1. SMTP-сервер недоступен или отверг аутентификацию");
+            g_serverLogger.error("  2. Неверный пароль приложения Яндекс");
+            g_serverLogger.error("  3. Брандмауэр блокирует исходящий порт 465");
+            g_serverLogger.error("  4. Email клиента не совпадает с email в базе данных");
+            g_serverLogger.error("  5. Клиент с указанным phone не найден в БД");
+            g_serverLogger.error("  6. Внутренняя ошибка генерации OTP-кода");
+            response_.body() = json{ {"success", false}, {"message", "Failed to send OTP email. Please try again later or contact support."} }.dump();
         }
+
         response_.prepare_payload();
+        g_serverLogger.info("[handleEmailOTPRequest] === ЗАВЕРШЕНИЕ ОБРАБОТКИ ===");
+        doWrite();
     }
 
     void handleEmailOTPVerify(const std::string& client_ip) {
+        g_serverLogger.info("Received request: POST /api/v1/auth/email_otp/verify from " + client_ip);
         json body;
-        try { body = json::parse(request_.body()); }
+        try {
+            body = json::parse(request_.body());
+        }
         catch (const json::parse_error& e) {
             response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Invalid JSON"} }.dump();
             response_.prepare_payload();
+            doWrite();
             return;
         }
 
@@ -367,24 +414,36 @@ private:
 
         if (phone.empty() || code.length() != 6) {
             response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Valid phone and 6-digit code required"} }.dump();
             response_.prepare_payload();
+            doWrite();
             return;
         }
 
-        auto [success, tokens] = auth_->verifyEmailOTP(phone, code);
-        if (success) {
-            response_.result(http::status::ok);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"success", true}, {"access_token", tokens.first}, {"refresh_token", tokens.second} }.dump();
-            g_serverLogger.info("Email OTP verification successful for: " + phone);
+        try {
+            auto [success, tokens] = auth_->verifyEmailOTP(phone, code);
+            if (success) {
+                response_.result(http::status::ok);
+                response_.set(http::field::content_type, "application/json");
+                response_.body() = json{ {"success", true}, {"access_token", tokens.first}, {"refresh_token", tokens.second} }.dump();
+                g_serverLogger.info("Email OTP verification successful for: " + phone);
+            }
+            else {
+                response_.result(http::status::unauthorized);
+                response_.set(http::field::content_type, "application/json");
+                response_.body() = json{ {"error", "Invalid or expired OTP code"} }.dump();
+                g_serverLogger.warning("Email OTP verification FAILED for: " + phone);
+            }
         }
-        else {
-            response_.result(http::status::unauthorized);
-            response_.body() = json{ {"error", "Invalid or expired OTP code"} }.dump();
-            g_serverLogger.warning("Email OTP verification FAILED for: " + phone);
+        catch (const std::exception& e) {
+            g_serverLogger.error("Exception in verifyEmailOTP: " + std::string(e.what()));
+            response_.result(http::status::internal_server_error);
+            response_.body() = json{ {"error", "Internal server error"} }.dump();
         }
+
         response_.prepare_payload();
+        doWrite();
     }
 
     void handleGetTicket(const std::string& client_ip) {

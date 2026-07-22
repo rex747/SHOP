@@ -142,7 +142,6 @@ private:
         unsigned char hmacResult[EVP_MAX_MD_SIZE];
         unsigned int hmacLen;
 
-        // Исправление: явное создание std::string гарантирует наличие методов .data() и .size()
         std::string jwt_secret = Config::JWT_SECRET;
         HMAC(EVP_sha256(), jwt_secret.data(), static_cast<int>(jwt_secret.size()),
             reinterpret_cast<const unsigned char*>(message.data()), message.size(), hmacResult, &hmacLen);
@@ -172,8 +171,19 @@ private:
         return ss.str();
     }
 
+    // Вспомогательная функция: удаляет нулевые байты из строки
+    static std::string sanitizeString(const std::string& input) {
+        std::string result;
+        result.reserve(input.size());
+        for (char c : input) {
+            if (c != '\0') {
+                result.push_back(c);
+            }
+        }
+        return result;
+    }
+
 public:
-    // Внедрение зависимости через конструктор
     explicit AuthService(std::shared_ptr<Database> db)
         : db_(std::move(db)), replay_cache_(std::chrono::seconds(90)) {
     }
@@ -232,7 +242,6 @@ public:
             auto clientOpt = db_->getClientByPhone(phone);
             if (clientOpt) {
                 int64_t now = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
-                // Исправление: использование публичного метода вместо прямого доступа к приватному conn_
                 db_->saveAuthTokens(
                     clientOpt->id,
                     hashToken(accessToken),
@@ -247,28 +256,63 @@ public:
         return { accessToken, refreshToken };
     }
 
-    //Запрос и отправка Email OTP
+    // Запрос и отправка Email OTP
     bool requestEmailOTP(const std::string& phone, const std::string& email) {
-        if (email.empty()) return false;
+        g_serverLogger.info("[AuthService::requestEmailOTP] === НАЧАЛО ===");
+        g_serverLogger.info("[AuthService::requestEmailOTP] Получен phone=[" + phone + "], email=[" + email + "]");
+
+        // ИСПРАВЛЕНИЕ: Очищаем строки от нулевых байтов, которые приходят из JSON
+        std::string clean_phone = sanitizeString(phone);
+        std::string clean_email = sanitizeString(email);
+
+        g_serverLogger.info("[AuthService::requestEmailOTP] После sanitize: phone=[" + clean_phone + "], email=[" + clean_email + "]");
+        g_serverLogger.info("[AuthService::requestEmailOTP] clean_phone.length()=" + std::to_string(clean_phone.length()) +
+            ", clean_email.length()=" + std::to_string(clean_email.length()));
+
+        if (clean_email.empty()) {
+            g_serverLogger.error("[AuthService::requestEmailOTP] ОШИБКА: email пустой после очистки");
+            return false;
+        }
 
         std::string code = generateTOTPSecret();
         std::string code_hash = hashString(code);
         int64_t now = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
         int64_t expires_at = now + 300; // 5 минут
 
-        if (db_->saveEmailOTP(phone, code_hash, expires_at)) {
-            return EmailService::sendOTP(email, code);
+        g_serverLogger.info("[AuthService::requestEmailOTP] Сгенерирован code (длина=" + std::to_string(code.length()) +
+            "), code_hash=" + code_hash + ", expires_at=" + std::to_string(expires_at));
+
+        g_serverLogger.info("[AuthService::requestEmailOTP] Вызываем db_->saveEmailOTP(phone, code_hash, expires_at)...");
+        bool db_saved = db_->saveEmailOTP(clean_phone, code_hash, expires_at);
+        g_serverLogger.info("[AuthService::requestEmailOTP] db_->saveEmailOTP() вернула: " + std::string(db_saved ? "true" : "false"));
+
+        if (db_saved) {
+            g_serverLogger.info("[AuthService::requestEmailOTP] БД сохранена. Вызываем EmailService::sendOTP(email, code)...");
+            bool sent = EmailService::sendOTP(clean_email, code);
+            g_serverLogger.info("[AuthService::requestEmailOTP] EmailService::sendOTP() вернула: " + std::string(sent ? "true" : "false"));
+
+            if (sent) {
+                g_serverLogger.info("[AuthService::requestEmailOTP] Email OTP УСПЕШНО отправлен на: " + clean_email);
+            }
+            else {
+                g_serverLogger.error("[AuthService::requestEmailOTP] EmailService::sendOTP() вернула false. SMTP-ошибка.");
+            }
+
+            g_serverLogger.info("[AuthService::requestEmailOTP] === ЗАВЕРШЕНИЕ ===");
+            return sent;
         }
+
+        g_serverLogger.error("[AuthService::requestEmailOTP] db_->saveEmailOTP() вернула false. OTP не сохранён в БД.");
+        g_serverLogger.error("[AuthService::requestEmailOTP] === ЗАВЕРШЕНИЕ С ОШИБКОЙ ===");
         return false;
     }
 
-    // Проверка Email OTP и выдача токенов
+    // Верификация Email OTP и выдача токенов
     std::pair<bool, std::pair<std::string, std::string>> verifyEmailOTP(const std::string& phone, const std::string& code) {
         std::string code_hash = hashString(code);
 
         if (db_->verifyAndConsumeEmailOTP(phone, code_hash)) {
-            // Код верен, генерируем JWT токены
-            auto tokens = generateTokens(phone); // Используем существующий метод
+            auto tokens = generateTokens(phone);
             return { true, tokens };
         }
         return { false, {"", ""} };
