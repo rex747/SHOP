@@ -1,0 +1,54 @@
+[2026-07-22 10:42:19.840] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-07-22 10:42:19.842] [INFO] Terminal application started
+[2026-07-22 10:42:19.853] [INFO] Local database initialized successfully
+[2026-07-22 10:42:19.915] [INFO] Main window created successfully
+[2026-07-22 10:42:49.205] [INFO] [onSubmit] Starting primary registration flow...
+[2026-07-22 10:42:49.206] [INFO] [onSubmit] Starting primary registration flow...
+[2026-07-22 10:42:49.215] [INFO] Sending registration request for: +79062772347
+[2026-07-22 10:42:49.215] [INFO] Preparing POST request to: /api/v1/clients/register
+[2026-07-22 10:42:49.216] [INFO] Request body size: 210 bytes
+[2026-07-22 10:42:49.216] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/register
+[2026-07-22 10:42:49.217] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-07-22 10:42:49.218] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-07-22 10:42:49.218] [INFO] Sending POST request to: /api/v1/clients/register
+[2026-07-22 10:42:49.665] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-07-22 10:42:49.666] [INFO] Response received successfully. Size: 61 bytes.
+[2026-07-22 10:42:49.667] [INFO] Server response: success=true, already_exists=1
+[2026-07-22 10:42:49.667] [INFO] User exists. Requesting Email OTP for: +79062772347
+[2026-07-22 10:42:49.668] [INFO] Preparing POST request to: /api/v1/auth/email_otp/request
+[2026-07-22 10:42:49.668] [INFO] Request body size: 59 bytes
+[2026-07-22 10:42:49.669] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/auth/email_otp/request
+[2026-07-22 10:42:49.669] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-07-22 10:42:49.670] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-07-22 10:42:49.670] [INFO] Sending POST request to: /api/v1/auth/email_otp/request
+[2026-07-22 10:42:50.313] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-07-22 10:42:50.314] [INFO] Response received successfully. Size: 98 bytes.
+[2026-07-22 10:42:50.315] [ERROR] Failed to request Email OTP
+[2026-07-22 10:42:50.322] [INFO] Sending registration request for: +79062772347
+[2026-07-22 10:42:50.323] [INFO] Preparing POST request to: /api/v1/clients/register
+[2026-07-22 10:42:50.323] [INFO] Request body size: 210 bytes
+[2026-07-22 10:42:50.324] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/register
+[2026-07-22 10:42:50.325] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-07-22 10:42:50.325] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-07-22 10:42:50.326] [INFO] Sending POST request to: /api/v1/clients/register
+[2026-07-22 10:42:50.589] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-07-22 10:42:50.590] [INFO] Response received successfully. Size: 61 bytes.
+[2026-07-22 10:42:50.590] [INFO] Server response: success=true, already_exists=1
+[2026-07-22 10:42:50.591] [INFO] User exists. Requesting Email OTP for: +79062772347
+[2026-07-22 10:42:50.592] [INFO] Preparing POST request to: /api/v1/auth/email_otp/request
+[2026-07-22 10:42:50.592] [INFO] Request body size: 59 bytes
+[2026-07-22 10:42:50.593] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/auth/email_otp/request
+[2026-07-22 10:42:50.593] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-07-22 10:42:50.594] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-07-22 10:42:50.594] [INFO] Sending POST request to: /api/v1/auth/email_otp/request
+[2026-07-22 10:42:51.133] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-07-22 10:42:51.134] [INFO] Response received successfully. Size: 98 bytes.
+[2026-07-22 10:42:51.135] [ERROR] Failed to request Email OTP
+[2026-07-22 10:42:53.753] [INFO] Terminal application shutdown
+[2026-07-22 10:42:53.754] [INFO] HTTPSClient session closed
+[2026-07-22 12:25:23.397] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-07-22 12:25:23.400] [INFO] Terminal application started
+[2026-07-22 12:25:23.407] [INFO] Local database initialized successfully
+[2026-07-22 12:25:23.450] [INFO] Main window created successfully
+[2026-07-22 12:25:52.789] [INFO] Terminal application shutdown
+[2026-07-22 12:25:52.790] [INFO] HTTPSClient session closed
