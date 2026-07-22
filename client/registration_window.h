@@ -1,4 +1,5 @@
-﻿// client/registration_window.h
+﻿// registration_window.h
+// Окно регистрации клиента с бесшовным переходом к Email OTP / TOTP аутентификации
 #pragma once
 #include <windows.h>
 #include <commctrl.h>
@@ -23,15 +24,23 @@ extern HINSTANCE g_hInstance;
 namespace RegUtils {
     inline std::wstring extractDigits(const std::wstring& input) {
         std::wstring digits;
-        for (wchar_t ch : input) if (ch >= L'0' && ch <= L'9') digits += ch;
+        digits.reserve(input.size());
+        for (wchar_t ch : input) {
+            if (ch >= L'0' && ch <= L'9') digits += ch;
+        }
         return digits;
     }
+
     inline std::wstring normalizePhone(const std::wstring& input) {
         std::wstring digits = extractDigits(input);
-        if (digits.length() == 11 && (digits[0] == L'7' || digits[0] == L'8')) return L"+7" + digits.substr(1);
+        if (digits.length() == 11) {
+            if (digits[0] == L'7' || digits[0] == L'8') return L"+7" + digits.substr(1);
+            return L"";
+        }
         if (digits.length() == 10) return L"+7" + digits;
         return L"";
     }
+
     inline bool isValidName(const std::wstring& name, size_t maxLen) {
         if (name.empty() || name.length() > maxLen) return false;
         bool hasLetter = false;
@@ -41,6 +50,7 @@ namespace RegUtils {
         }
         return hasLetter;
     }
+
     inline bool isValidEmail(const std::wstring& email) {
         if (email.empty() || email.length() > 30) return false;
         auto atPos = email.find(L'@');
@@ -49,11 +59,13 @@ namespace RegUtils {
         if (dotPos == std::wstring::npos || dotPos == email.length() - 1) return false;
         return true;
     }
+
     inline std::wstring trim(const std::wstring& s) {
         size_t start = s.find_first_not_of(L" \t");
         size_t end = s.find_last_not_of(L" \t");
         return (start == std::wstring::npos) ? L"" : s.substr(start, end - start + 1);
     }
+
     inline std::string wstring_to_utf8(const std::wstring& wstr) {
         if (wstr.empty()) return "";
         int size = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
@@ -61,6 +73,7 @@ namespace RegUtils {
         WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &str[0], size, nullptr, nullptr);
         return str;
     }
+
     inline std::wstring utf8_to_wstring(const std::string& str) {
         if (str.empty()) return L"";
         int size = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
@@ -97,6 +110,8 @@ private:
     HFONT m_hFontTitle, m_hFontButton, m_hFontLabel, m_hFontEdit;
     HBRUSH m_hGreenBrush, m_hRedBrush, m_hWhiteBrush;
     std::vector<HWND> m_buttons;
+
+    // ✅ Переменные состояния
     bool m_isOtpMode;
     std::wstring m_currentPhone;
     std::wstring m_currentEmail;
@@ -152,7 +167,7 @@ private:
         m_hStatusLabel = CreateWindowExW(0, L"STATIC", L"", WS_VISIBLE | WS_CHILD | SS_CENTER, startX, startY + 5 * rowHeight + 10, labelWidth + editWidth + 20, 40, m_hWnd, (HMENU)(INT_PTR)IDC_REG_STATUS, g_hInstance, nullptr);
         SendMessageW(m_hStatusLabel, WM_SETFONT, (WPARAM)m_hFontLabel, TRUE);
 
-        // ✅ ЭЛЕМЕНТЫ OTP (ИЗНАЧАЛЬНО СКРЫТЫ)
+        // Элементы OTP (изначально скрыты)
         m_hOtpCodeLabel = CreateWindowExW(0, L"STATIC", L"Введите 6-ти значный код:", WS_CHILD | SS_RIGHT, startX, startY + 100, labelWidth, editHeight, m_hWnd, (HMENU)(INT_PTR)IDC_OTP_CODE_LABEL, g_hInstance, nullptr);
         SendMessageW(m_hOtpCodeLabel, WM_SETFONT, (WPARAM)m_hFontLabel, TRUE);
         m_hOtpCodeEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL | ES_NUMBER, startX + labelWidth + 20, startY + 100, editWidth, editHeight, m_hWnd, (HMENU)(INT_PTR)IDC_OTP_CODE_EDIT, g_hInstance, nullptr);
@@ -176,15 +191,17 @@ private:
     }
 
     void onSubmit() {
+        // ✅ ВЕТВЛЕНИЕ 1: Мы уже в режиме ввода OTP?
         if (m_isOtpMode) {
+            g_logger.info(L"[onSubmit] OTP mode active. Verifying code...");
             wchar_t code[10]; GetWindowTextW(m_hOtpCodeEdit, code, 10);
             std::wstring codeStr(code);
+
             if (codeStr.length() != 6) {
                 SetWindowTextW(m_hStatusLabel, L"Код должен состоять ровно из 6 цифр");
                 SetFocus(m_hOtpCodeEdit); return;
             }
 
-            g_logger.info(L"Verifying Email OTP for: " + m_currentPhone);
             SetWindowTextW(m_hStatusLabel, L"Проверка кода...");
             EnableWindow(m_hOtpVerifyBtn, FALSE);
 
@@ -195,9 +212,7 @@ private:
             auto response = g_httpsClient.post(L"/api/v1/auth/email_otp/verify", request);
             if (response && response->contains("success") && (*response)["success"].get<bool>()) {
                 SetWindowTextW(m_hStatusLabel, L"Успешная аутентификация!");
-                g_logger.info(L"Email OTP verified successfully. JWT acquired.");
-                // Токены автоматически сохранятся в AuthManager, если вы доработаете https_client 
-                // для перехвата заголовка Authorization, или сохраните их здесь вручную из ответа.
+                g_logger.info(L"[onSubmit] Email OTP verified successfully. JWT acquired.");
                 Sleep(1000);
                 DestroyWindow(m_hWnd);
             }
@@ -206,12 +221,13 @@ private:
                 SetWindowTextW(m_hOtpCodeEdit, L"");
                 SetFocus(m_hOtpCodeEdit);
                 EnableWindow(m_hOtpVerifyBtn, TRUE);
-                g_logger.warning(L"Email OTP verification FAILED");
+                g_logger.warning(L"[onSubmit] Email OTP verification FAILED");
             }
-            return;
+            return; // ✅ КРИТИЧЕСКИ ВАЖНО: выход из функции, чтобы не провалиться вниз
         }
 
-        // --- ЛОГИКА ПЕРВИЧНОЙ РЕГИСТРАЦИИ ---
+        // ✅ ВЕТВЛЕНИЕ 2: Обычная первичная регистрация
+        g_logger.info(L"[onSubmit] Starting primary registration flow...");
         wchar_t buf[128];
         GetWindowTextW(m_hPhoneEdit, buf, 128);     std::wstring phone = RegUtils::trim(buf);
         GetWindowTextW(m_hLastNameEdit, buf, 128);  std::wstring lastName = RegUtils::trim(buf);
@@ -245,19 +261,21 @@ private:
 
         if (response && response->contains("success") && (*response)["success"].get<bool>()) {
             bool alreadyExists = response->contains("already_exists") && (*response)["already_exists"].get<bool>();
+            g_logger.info(L"Server response: success=true, already_exists=" + std::to_wstring(alreadyExists ? 1 : 0));
 
             if (alreadyExists) {
+                // ✅ БЛОК ДЛЯ СУЩЕСТВУЮЩЕГО ПОЛЬЗОВАТЕЛЯ
                 g_logger.info(L"User exists. Requesting Email OTP for: " + normalizedPhone);
                 m_currentPhone = normalizedPhone;
                 m_currentEmail = email;
 
-                // ✅ ЗАПРОС ОТПРАВКИ КОДА НА ПОЧТУ
                 json otpRequest;
                 otpRequest["phone"] = RegUtils::wstring_to_utf8(normalizedPhone);
                 otpRequest["email"] = RegUtils::wstring_to_utf8(email);
+
                 auto otpResponse = g_httpsClient.post(L"/api/v1/auth/email_otp/request", otpRequest);
 
-                if (otpResponse && (*otpResponse)["success"].get<bool>()) {
+                if (otpResponse && otpResponse->contains("success") && (*otpResponse)["success"].get<bool>()) {
                     m_isOtpMode = true;
 
                     // 1. Скрываем поля регистрации
@@ -268,45 +286,52 @@ private:
                     ShowWindow(m_hEmailEdit, SW_HIDE); ShowWindow(GetDlgItem(m_hWnd, IDC_REG_EMAIL_LABEL), SW_HIDE);
                     ShowWindow(GetDlgItem(m_hWnd, IDC_REG_SUBMIT), SW_HIDE);
 
-                    // 2. Перестраиваем UI (поднимаем надписи выше, выравниваем кнопки)
+                    // 2. Перестраиваем UI
                     RECT rc; GetClientRect(m_hWnd, &rc);
                     int clientWidth = rc.right - rc.left;
                     const int labelWidth = 200, editWidth = 400;
                     const int startX = (clientWidth - labelWidth - editWidth) / 2;
                     const int startY = 140;
 
-                    // Поднимаем статусную надпись выше
                     SetWindowPos(m_hStatusLabel, NULL, startX, startY + 10, labelWidth + editWidth + 20, 60, SWP_NOZORDER);
                     SetWindowTextW(m_hStatusLabel, (L"Пользователь уже зарегистрирован.\nКод отправлен на: " + email).c_str());
 
-                    // Показываем и позиционируем элементы OTP
                     SetWindowPos(m_hOtpCodeLabel, NULL, startX, startY + 80, labelWidth, 40, SWP_NOZORDER | SWP_SHOWWINDOW);
                     SetWindowPos(m_hOtpCodeEdit, NULL, startX + labelWidth + 20, startY + 80, editWidth, 40, SWP_NOZORDER | SWP_SHOWWINDOW);
 
-                    // ✅ Выравниваем кнопки "Подтвердить вход" и "Назад" на один уровень (Y = startY + 160)
                     const int btnWidth = 300, btnHeight = Config::BUTTON_HEIGHT, btnY = startY + 160;
                     SetWindowPos(m_hOtpVerifyBtn, NULL, startX, btnY, btnWidth, btnHeight, SWP_NOZORDER | SWP_SHOWWINDOW);
                     SetWindowPos(GetDlgItem(m_hWnd, IDC_REG_BACK), NULL, startX + labelWidth + editWidth + 20 - btnWidth, btnY, btnWidth, btnHeight, SWP_NOZORDER | SWP_SHOWWINDOW);
 
                     SetWindowTextW(m_hOtpCodeEdit, L"");
                     SetFocus(m_hOtpCodeEdit);
-                    g_logger.info(L"UI switched to Email OTP input mode");
+                    g_logger.info(L"UI successfully switched to Email OTP input mode");
                 }
                 else {
-                    SetWindowTextW(m_hStatusLabel, L"Ошибка отправки кода на почту.");
+                    SetWindowTextW(m_hStatusLabel, L"Ошибка отправки кода на почту. Попробуйте позже.");
+                    g_logger.error(L"Failed to request Email OTP");
                     EnableWindow(GetDlgItem(m_hWnd, IDC_REG_SUBMIT), TRUE);
                 }
             }
             else {
+                // ✅ БЛОК ДЛЯ НОВОГО ПОЛЬЗОВАТЕЛЯ (Строгий else!)
+                g_logger.info(L"New user registered successfully: " + normalizedPhone);
                 SetWindowTextW(m_hStatusLabel, L"Регистрация прошла успешно!");
+
+                auto totpResult = g_authManager.setupTOTP(normalizedPhone);
+                if (totpResult.success) {
+                    g_logger.info(L"TOTP initialized successfully for new user");
+                }
+
                 Sleep(1500);
-                DestroyWindow(m_hWnd);
+                DestroyWindow(m_hWnd); // ✅ Закрываем окно ТОЛЬКО для новых пользователей
             }
         }
         else {
             std::wstring errMsg = L"Ошибка регистрации";
             if (response && response->contains("error")) errMsg = RegUtils::utf8_to_wstring((*response)["error"].get<std::string>());
             SetWindowTextW(m_hStatusLabel, errMsg.c_str());
+            g_logger.error(L"Server registration failed: " + normalizedPhone);
             EnableWindow(GetDlgItem(m_hWnd, IDC_REG_SUBMIT), TRUE);
         }
     }
