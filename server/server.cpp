@@ -125,6 +125,17 @@ private:
             else if (target == "/api/v1/auth/totp/verify" && method == http::verb::post) {
                 handleTOTPVerify(client_ip);
             }
+            else if (target == "/api/v1/clients/by_phone" && method == http::verb::post) {
+                handleClientByPhone(client_ip);
+            }
+            // получаем данные об общей очереди (ограничение на 20 единиц товара)
+            else if (target.find("/api/v1/queue/daily_count") == 0 && method == http::verb::get) {
+                handleDailyCount(client_ip);
+            }
+			// получаем данные о текущем пользователе в очереди по id
+            else if (target.find("/api/v1/clients/by_id") == 0 && method == http::verb::get) {
+                handleClientById(client_ip);
+            }
             else if (target == "/api/v1/queue/get_ticket" && method == http::verb::post) {
                 handleGetTicket(client_ip);
             }
@@ -444,6 +455,138 @@ private:
 
         response_.prepare_payload();
         doWrite();
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /api/v1/clients/by_phone (post-метод)
+    // -------------------------------------------------------------------------
+    void handleClientByPhone(const std::string& client_ip) {
+        json body;
+        try {
+            body = json::parse(request_.body());
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("JSON parse error in /clients/by_phone: " + std::string(e.what()));
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        if (!body.contains("phone") || !body["phone"].is_string()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "phone field required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("Missing phone in /clients/by_phone from " + client_ip);
+            return;
+        }
+
+        std::string phone = body["phone"].get<std::string>();
+        g_serverLogger.info("Checking client by phone: " + phone + " from " + client_ip);
+
+        auto clientOpt = db_->getClientByPhone(phone);
+        if (!clientOpt) {
+            response_.result(http::status::not_found);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Client not found"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("Client not found for phone: " + phone);
+            return;
+        }
+
+        json resp;
+        resp["id"] = clientOpt->id;
+        resp["name"] = clientOpt->name;
+        resp["phone"] = clientOpt->phone;
+
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = resp.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("Client data returned for phone: " + phone + " (id=" + std::to_string(clientOpt->id) + ")");
+    }
+
+    // -------------------------------------------------------------------------
+    // Обработчик GET /api/v1/queue/daily_count?queue_type=...
+    // -------------------------------------------------------------------------
+    void handleDailyCount(const std::string& client_ip) {
+        std::string query = request_.target();
+        std::string queueType;
+        size_t pos = query.find("?queue_type=");
+        if (pos != std::string::npos) {
+            queueType = query.substr(pos + 12);
+            size_t end = queueType.find('&');
+            if (end != std::string::npos) queueType = queueType.substr(0, end);
+        }
+        if (queueType.empty()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "queue_type required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("DailyCount request missing queue_type from " + client_ip);
+            return;
+        }
+
+        int count = db_->getDailyTicketCount(queueType);
+        g_serverLogger.info("Daily count for " + queueType + ": " + std::to_string(count) + " (from " + client_ip + ")");
+
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{ {"count", count} }.dump();
+        response_.prepare_payload();
+    }
+
+    // -------------------------------------------------------------------------
+    // Обработчик GET /api/v1/clients/by_id?id=...
+    // -------------------------------------------------------------------------
+    void handleClientById(const std::string& client_ip) {
+        std::string query = request_.target();
+        std::string idStr;
+        size_t pos = query.find("?id=");
+        if (pos != std::string::npos) {
+            idStr = query.substr(pos + 4);
+            size_t end = idStr.find('&');
+            if (end != std::string::npos) idStr = idStr.substr(0, end);
+        }
+        if (idStr.empty()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "id required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("ClientById request missing id from " + client_ip);
+            return;
+        }
+
+        int id = 0;
+        try { id = std::stoi(idStr); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid id"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        auto clientOpt = db_->getClientById(id);
+        if (!clientOpt) {
+            response_.result(http::status::not_found);
+            response_.body() = json{ {"error", "Client not found"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("Client not found by id " + std::to_string(id) + " from " + client_ip);
+            return;
+        }
+
+        json resp;
+        resp["id"] = clientOpt->id;
+        resp["phone"] = clientOpt->phone;
+        resp["name"] = clientOpt->name;
+        resp["email"] = clientOpt->email;
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = resp.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("Client data returned for id " + std::to_string(id) + " (" + clientOpt->phone + ")");
     }
 
     void handleGetTicket(const std::string& client_ip) {

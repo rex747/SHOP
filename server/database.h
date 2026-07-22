@@ -249,6 +249,55 @@ public:
         }
     }
 
+    // -------------------------------------------------------------------------
+// Получить клиента по id
+// -------------------------------------------------------------------------
+    std::optional<Client> getClientById(int id) {
+        try {
+            pqxx::work txn{ *conn_ };
+            auto result = txn.exec(
+                "SELECT id, phone, last_name, first_name, middle_name, email, created_at FROM clients WHERE id = $1",
+                pqxx::params{ id }
+            );
+            if (result.empty()) return std::nullopt;
+            Client client;
+            client.id = result[0]["id"].as<int>();
+            client.phone = result[0]["phone"].as<std::string>();
+            std::string last = result[0]["last_name"].as<std::string>();
+            std::string first = result[0]["first_name"].as<std::string>();
+            std::string mid = result[0]["middle_name"].is_null() ? "" : result[0]["middle_name"].as<std::string>();
+            client.name = last + " " + first + (mid.empty() ? "" : " " + mid);
+            client.email = result[0]["email"].is_null() ? "" : result[0]["email"].as<std::string>();
+            client.createdAt = result[0]["created_at"].as<int64_t>();
+            client.active = true;
+            return client;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getClientById error: " + std::string(e.what()));
+            return std::nullopt;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Получить количество выданных сегодня талонов для указанного типа очереди
+    // -------------------------------------------------------------------------
+    int getDailyTicketCount(const std::string& queueType) {
+        try {
+            pqxx::work txn{ *conn_ };
+            // Начало сегодняшнего дня по UTC
+            auto result = txn.exec(
+                "SELECT COUNT(*) FROM queue_tickets "
+                "WHERE queue_type = $1 AND created_at >= EXTRACT(EPOCH FROM date_trunc('day', NOW() AT TIME ZONE 'UTC'))",
+                pqxx::params{ queueType }
+            );
+            return result[0][0].as<int>();
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getDailyTicketCount error: " + std::string(e.what()));
+            return 0;
+        }
+    }
+
     QueueTicket createTicket(int clientId, const std::string& queueType, int itemsCount) {
         QueueTicket ticket;
         try {

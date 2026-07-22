@@ -46,9 +46,6 @@ public:
         const std::string smtp_server = "smtps://smtp.yandex.ru:465";
         const std::string from_address = "rex747@yandex.ru";
         const std::string username = "rex747";
-
-        // !!! ВАЖНО: замените YOUR_OAUTH_TOKEN на действительный OAuth-токен,
-        // полученный через OAuth 2.0 (ClientID: 35ecdbd208a246349f60e064aabb0d04).
         // Токен должен иметь права на отправку почты.
         const std::string oauth_token = "8917023fff0a4cff8370a2635b0fa22d";
 
