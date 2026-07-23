@@ -747,44 +747,41 @@ private:
         g_logger.info(L"Extra20 payment page shown");
     }
 
+    // === ИСПРАВЛЕННЫЙ МЕТОД ===
     void onExtra20PaymentSuccess() {
         g_logger.info(L"[onExtra20PaymentSuccess] Starting extra 20 payment flow...");
 
-        // 1. Попытка получить действующий токен
         std::wstring authToken = g_authManager.getAuthToken();
-        // ✅ Исправление IntelliSense: явное приведение к std::wstring
         g_logger.info(L"[onExtra20PaymentSuccess] Current authToken: " +
-            (authToken.empty() ? std::wstring(L"<empty>") : std::wstring(L"<present>")));
+            (authToken.empty() ? std::wstring(L"<empty>") : std::wstring(L"<present> (length=" + std::to_wstring(authToken.length()) + L")")));
 
-        // 2. Если токен не получен – предлагаем регистрацию/вход
-        if (authToken.empty()) {
-            g_logger.info(L"[onExtra20PaymentSuccess] No valid token. Showing registration dialog...");
+        int clientId = g_authManager.getClientId();
+        bool isLogged = g_authManager.isLoggedIn();
+
+        g_logger.info(L"[onExtra20PaymentSuccess] Login status: isLoggedIn=" + std::to_wstring(isLogged) +
+            L", clientId=" + std::to_wstring(clientId));
+
+        if (!isLogged || clientId == 0) {
+            g_logger.info(L"[onExtra20PaymentSuccess] No valid login. Showing registration dialog...");
             RegistrationDialog regDlg;
             if (regDlg.show(m_hWnd) != IDOK) {
                 g_logger.warning(L"[onExtra20PaymentSuccess] Registration cancelled by user");
                 return;
             }
-            // 3. После успешной регистрации снова пробуем получить токен
             authToken = g_authManager.getAuthToken();
-            g_logger.info(L"[onExtra20PaymentSuccess] After registration, authToken: " +
-                (authToken.empty() ? std::wstring(L"<empty>") : std::wstring(L"<present>")));
-            if (authToken.empty()) {
-                MessageBoxW(m_hWnd, L"Не удалось авторизоваться. Попробуйте позже.", L"Ошибка", MB_OK);
-                g_logger.error(L"[onExtra20PaymentSuccess] Still not authenticated after registration");
-                return;
-            }
+            clientId = g_authManager.getClientId();
+            g_logger.info(L"[onExtra20PaymentSuccess] After registration: clientId=" + std::to_wstring(clientId));
         }
 
-        // 4. Проверяем clientId
-        int clientId = g_authManager.getClientId();
         if (clientId == 0) {
-            MessageBoxW(m_hWnd, L"Не удалось определить ID клиента", L"Ошибка", MB_OK);
-            g_logger.error(L"[onExtra20PaymentSuccess] clientId is 0");
+            MessageBoxW(m_hWnd, L"Не удалось определить ID клиента. Попробуйте войти заново.", L"Ошибка", MB_OK);
+            g_logger.error(L"[onExtra20PaymentSuccess] clientId is still 0");
             return;
         }
-        g_logger.info(L"[onExtra20PaymentSuccess] clientId: " + std::to_wstring(clientId));
 
-        // 5. Получаем талон для очереди extra_20
+        g_logger.info(L"[onExtra20PaymentSuccess] Proceeding with clientId: " + std::to_wstring(clientId));
+
+        // Получаем талон (токен может быть пустым — QueueManager обработает)
         auto ticketOpt = g_queueManager.getTicket(clientId, QueueType::EXTRA_20, 20, authToken);
         if (!ticketOpt) {
             MessageBoxW(m_hWnd, L"Не удалось получить талон. Проверьте соединение с сервером.", L"Ошибка", MB_OK);
@@ -793,9 +790,8 @@ private:
         }
 
         m_currentTicket = ticketOpt.value();
-        g_logger.info(L"[onExtra20PaymentSuccess] Ticket obtained: " + m_currentTicket.ticketNumber);
+        g_logger.info(L"[onExtra20PaymentSuccess] Ticket obtained successfully: " + m_currentTicket.ticketNumber);
 
-        // 6. Печать талона
         bool printed = g_printer.printTicket(m_currentTicket,
             g_authManager.getFullName(),
             g_authManager.getPhone());
@@ -807,8 +803,7 @@ private:
             MessageBoxW(m_hWnd, L"Талон не напечатан, но сохранён в файл.", L"Предупреждение", MB_OK);
         }
 
-        // 7. Показываем страницу с выданным талоном
-        showTicketIssued();
+        showTicketIssued();  // Переход к экрану с талоном
         g_logger.info(L"[onExtra20PaymentSuccess] Extra 20 payment flow completed successfully.");
     }
 
@@ -881,7 +876,7 @@ public:
         case ID_BTN_EXTRA_20:
             showExtra20Payment();
             break;
-
+        
         case ID_BTN_TRUST:
             handleQueueSelection(QueueType::TRUST);
             break;
