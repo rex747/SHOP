@@ -136,9 +136,37 @@ private:
             else if (target.find("/api/v1/clients/by_id") == 0 && method == http::verb::get) {
                 handleClientById(client_ip);
             }
+			// получаем талон для текущего пользователя в очереди
             else if (target == "/api/v1/queue/get_ticket" && method == http::verb::post) {
                 handleGetTicket(client_ip);
             }
+			// получаем талон если пользователь пришел впервые и его нет в базе
+            else if (target == "/api/v1/queue/first_time/create" && method == http::verb::post) {
+                handleFirstTimeCreate(client_ip);
+            }
+			// получаем статус талона если пользователь пришел впервые и его нет в базе
+            else if (target == "/api/v1/queue/first_time/waiting" && method == http::verb::get) {
+                handleFirstTimeWaiting(client_ip);
+            }
+			// принимаем талон (товаровед вносит в базу) если пользователь пришел впервые и его нет в базе
+            else if (target == "/api/v1/queue/first_time/accept" && method == http::verb::post) {
+                handleFirstTimeAccept(client_ip);
+            }
+            // внесли в базу пользователя и помечаем талон как обслуженный 
+            else if (target == "/api/v1/queue/first_time/serve" && method == http::verb::post) {
+                handleFirstTimeServe(client_ip);
+            }
+            // получаем талон для пользователя, который есть в базе и принес +20 товаров
+            else if (target == "/api/v1/queue/waiting" && method == http::verb::get) {
+                handleQueueWaiting(client_ip);
+            }
+            else if (target == "/api/v1/queue/accept" && method == http::verb::post) {
+                handleQueueAccept(client_ip);
+            }
+            else if (target == "/api/v1/queue/serve" && method == http::verb::post) {
+                handleQueueServe(client_ip);
+            }
+            // получаем талон если пользователь решил оставить товар на доверии
             else if (target == "/api/v1/queue/trust_acceptance" && method == http::verb::post) {
                 handleTrustAcceptance(client_ip);
             }
@@ -612,6 +640,172 @@ private:
         response_.body() = json{ {"success", true}, {"ticket", ticket} }.dump();
         response_.prepare_payload();
     }
+	// --- методы для работы с очередью для пользователей, пришедших впервые (first_time) ---
+    void handleFirstTimeCreate(const std::string& client_ip) {
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) { /* ignore */ }
+        std::string window = body.value("window", "1");
+        std::string ticketNumber = queue_->createFirstTimeTicket(window);
+        if (ticketNumber.empty()) {
+            response_.result(http::status::internal_server_error);
+            response_.body() = json{ {"error", "Failed to create ticket"} }.dump();
+        }
+        else {
+            response_.result(http::status::ok);
+            response_.body() = json{ {"ticket_number", ticketNumber} }.dump();
+        }
+        response_.prepare_payload();
+    }
+
+    void handleFirstTimeWaiting(const std::string& client_ip) {
+        auto tickets = queue_->getWaitingFirstTimeTickets();
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{ {"tickets", tickets} }.dump();
+        response_.prepare_payload();
+    }
+
+    void handleFirstTimeAccept(const std::string& client_ip) {
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string ticketNumber = body.value("ticket_number", "");
+        if (ticketNumber.empty()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "ticket_number required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string windowNumber;
+        if (queue_->acceptFirstTimeTicket(ticketNumber, windowNumber)) {
+            response_.result(http::status::ok);
+            response_.body() = json{ {"success", true}, {"window_number", windowNumber} }.dump();
+        }
+        else {
+            response_.result(http::status::not_found);
+            response_.body() = json{ {"error", "Ticket not found or already accepted"} }.dump();
+        }
+        response_.prepare_payload();
+    }
+
+    void handleFirstTimeServe(const std::string& client_ip) {
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string ticketNumber = body.value("ticket_number", "");
+        if (ticketNumber.empty()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "ticket_number required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        if (queue_->serveFirstTimeTicket(ticketNumber)) {
+            response_.result(http::status::ok);
+            response_.body() = json{ {"success", true} }.dump();
+        }
+        else {
+            response_.result(http::status::not_found);
+            response_.body() = json{ {"error", "Ticket not found or not accepted"} }.dump();
+        }
+        response_.prepare_payload();
+    }
+	// -------------------------------------------------------------------------
+
+	// --- методы для пользователей, которые уже есть в базе и пришли с +20 товарами ---
+    void handleQueueWaiting(const std::string& client_ip) {
+        std::string query = request_.target();
+        std::string queueType;
+        size_t pos = query.find("?type=");
+        if (pos != std::string::npos) {
+            queueType = query.substr(pos + 6);
+            size_t end = queueType.find('&');
+            if (end != std::string::npos) queueType = queueType.substr(0, end);
+        }
+        if (queueType.empty()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "type required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleQueueWaiting: missing type from " + client_ip);
+            return;
+        }
+        auto tickets = queue_->getWaitingTickets(queueType);
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{ {"tickets", tickets} }.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("handleQueueWaiting: returned " + std::to_string(tickets.size()) + " tickets for " + queueType);
+    }
+
+    void handleQueueAccept(const std::string& client_ip) {
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string ticketNumber = body.value("ticket_number", "");
+        if (ticketNumber.empty()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "ticket_number required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string windowNumber;
+        if (queue_->acceptTicket(ticketNumber, windowNumber)) {
+            response_.result(http::status::ok);
+            response_.body() = json{ {"success", true}, {"window_number", windowNumber} }.dump();
+            g_serverLogger.info("handleQueueAccept: accepted " + ticketNumber + " from " + client_ip);
+        }
+        else {
+            response_.result(http::status::not_found);
+            response_.body() = json{ {"error", "Ticket not found or already accepted"} }.dump();
+            g_serverLogger.warning("handleQueueAccept: failed to accept " + ticketNumber);
+        }
+        response_.prepare_payload();
+    }
+
+    void handleQueueServe(const std::string& client_ip) {
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string ticketNumber = body.value("ticket_number", "");
+        if (ticketNumber.empty()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "ticket_number required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        if (queue_->serveTicket(ticketNumber)) {
+            response_.result(http::status::ok);
+            response_.body() = json{ {"success", true} }.dump();
+            g_serverLogger.info("handleQueueServe: served " + ticketNumber + " from " + client_ip);
+        }
+        else {
+            response_.result(http::status::not_found);
+            response_.body() = json{ {"error", "Ticket not found or not accepted"} }.dump();
+            g_serverLogger.warning("handleQueueServe: failed to serve " + ticketNumber);
+        }
+        response_.prepare_payload();
+    }
+    //-------------------------------------------------------------------------
 
     void handleTrustAcceptance(const std::string& client_ip) {
         json body;

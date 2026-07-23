@@ -73,7 +73,7 @@ public:
                     expires_at INTEGER NOT NULL,
                     revoked BOOLEAN DEFAULT FALSE
                 );
-                -- ✅ НОВАЯ ТАБЛИЦА ДЛЯ EMAIL OTP
+                -- ТАБЛИЦА ДЛЯ EMAIL OTP
                 CREATE TABLE IF NOT EXISTS email_otp (
                     id SERIAL PRIMARY KEY,
                     phone VARCHAR(20) NOT NULL,
@@ -82,8 +82,35 @@ public:
                     used BOOLEAN DEFAULT FALSE,
                     created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW())
                 );
+                -- ТАБЛИЦА ДЛЯ тех, кто приходит впервые и получает номерок
+                CREATE TABLE IF NOT EXISTS first_time_tickets (
+                    id SERIAL PRIMARY KEY,
+                    ticket_number VARCHAR(20) UNIQUE NOT NULL,
+                    window_number VARCHAR(10) DEFAULT '1',
+                    status VARCHAR(20) DEFAULT 'waiting',
+                    created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),
+                    accepted_at BIGINT,
+                    served_at BIGINT
+                );
+                --- таблица для записи тех кто принес +20 товаров и получил талон на обслуживание
+                CREATE TABLE IF NOT EXISTS queue_tickets (
+                    id SERIAL PRIMARY KEY,
+                    number VARCHAR(20) UNIQUE NOT NULL,
+                    client_id INTEGER REFERENCES clients(id),
+                    queue_type VARCHAR(20) NOT NULL,
+                    position INTEGER DEFAULT 0,
+                    items_count INTEGER DEFAULT 0,
+                    window_number VARCHAR(10) DEFAULT '1',
+                    estimated_wait_time INTEGER DEFAULT 0,
+                    created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),
+                    status VARCHAR(20) DEFAULT 'waiting',
+                    accepted_at BIGINT,
+                    served_at BIGINT
+                );
                 CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(phone);
                 CREATE INDEX IF NOT EXISTS idx_email_otp_phone ON email_otp(phone);
+                CREATE INDEX IF NOT EXISTS idx_first_time_status ON first_time_tickets(status);
+                CREATE INDEX IF NOT EXISTS idx_queue_status_type ON queue_tickets(queue_type, status);
             )");
             txn.commit();
             g_serverLogger.info("Database initialized successfully (email_otp.expires_at is BIGINT)");
@@ -250,8 +277,8 @@ public:
     }
 
     // -------------------------------------------------------------------------
-// Получить клиента по id
-// -------------------------------------------------------------------------
+    // Получить клиента по id
+    // -------------------------------------------------------------------------
     std::optional<Client> getClientById(int id) {
         try {
             pqxx::work txn{ *conn_ };
@@ -357,6 +384,103 @@ public:
         }
     }
 
+    // Создание временного талона для "Первый раз"
+    std::string createFirstTimeTicket(const std::string& windowNumber = "1") {
+        try {
+            pqxx::work txn{ *conn_ };
+            // Генерируем уникальный номер: F-<timestamp>-<random>
+            auto now = std::chrono::system_clock::now();
+            auto ts = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+            std::string ticketNumber = "F-" + std::to_string(ts) + "-" +
+                std::to_string(rand() % 10000);
+
+            auto result = txn.exec(
+                "INSERT INTO first_time_tickets (ticket_number, window_number) "
+                "VALUES ($1, $2) RETURNING id",
+                pqxx::params{ ticketNumber, windowNumber }
+            );
+            txn.commit();
+            g_serverLogger.info("Created FIRST_TIME ticket: " + ticketNumber);
+            return ticketNumber;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("createFirstTimeTicket error: " + std::string(e.what()));
+            return "";
+        }
+    }
+
+    // Получение списка ожидающих (status = 'waiting')
+    std::vector<json> getWaitingFirstTimeTickets() {
+        std::vector<json> result;
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT id, ticket_number, window_number, created_at "
+                "FROM first_time_tickets WHERE status = 'waiting' ORDER BY created_at"
+            );
+            for (const auto& row : res) {
+                json item;
+                item["id"] = row["id"].as<int>();
+                item["ticket_number"] = row["ticket_number"].as<std::string>();
+                item["window_number"] = row["window_number"].as<std::string>();
+                item["created_at"] = row["created_at"].as<int64_t>();
+                result.push_back(item);
+            }
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getWaitingFirstTimeTickets error: " + std::string(e.what()));
+        }
+        return result;
+    }
+
+    // Принять клиента (изменить статус на 'accepted', вернуть номер окна)
+    bool acceptFirstTimeTicket(const std::string& ticketNumber, std::string& windowNumber) {
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "UPDATE first_time_tickets SET status = 'accepted', accepted_at = EXTRACT(EPOCH FROM NOW()) "
+                "WHERE ticket_number = $1 AND status = 'waiting' "
+                "RETURNING window_number",
+                pqxx::params{ ticketNumber }
+            );
+            if (res.empty()) {
+                g_serverLogger.warning("acceptFirstTimeTicket: ticket not found or already accepted: " + ticketNumber);
+                return false;
+            }
+            windowNumber = res[0]["window_number"].as<std::string>();
+            txn.commit();
+            g_serverLogger.info("Accepted FIRST_TIME ticket: " + ticketNumber + ", window: " + windowNumber);
+            return true;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("acceptFirstTimeTicket error: " + std::string(e.what()));
+            return false;
+        }
+    }
+
+    // Обслужить клиента (удалить запись или пометить как served)
+    bool serveFirstTimeTicket(const std::string& ticketNumber) {
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "UPDATE first_time_tickets SET status = 'served', served_at = EXTRACT(EPOCH FROM NOW()) "
+                "WHERE ticket_number = $1 AND status = 'accepted'",
+                pqxx::params{ ticketNumber }
+            );
+            if (res.affected_rows() == 0) {
+                g_serverLogger.warning("serveFirstTimeTicket: ticket not accepted or already served: " + ticketNumber);
+                return false;
+            }
+            txn.commit();
+            g_serverLogger.info("Served FIRST_TIME ticket: " + ticketNumber);
+            return true;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("serveFirstTimeTicket error: " + std::string(e.what()));
+            return false;
+        }
+    }
+
     bool serveTicket(const std::string& ticketNumber) {
         try {
             pqxx::work txn{ *conn_ };
@@ -449,4 +573,61 @@ public:
             std::cerr << "logSync error: " << e.what() << std::endl;
         }
     }
+	// Метод для очереди +20 товаров
+    // Получить список ожидающих талонов для указанного типа очереди
+    std::vector<json> getWaitingTickets(const std::string& queueType) {
+        std::vector<json> result;
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT id, number, client_id, queue_type, position, items_count, window_number, estimated_wait_time, created_at "
+                "FROM queue_tickets WHERE queue_type = $1 AND status = 'waiting' ORDER BY created_at",
+                pqxx::params{ queueType }
+            );
+            for (const auto& row : res) {
+                json item;
+                item["id"] = row["id"].as<int>();
+                item["ticket_number"] = row["number"].as<std::string>();
+                item["client_id"] = row["client_id"].as<int>();
+                item["queue_type"] = row["queue_type"].as<std::string>();
+                item["position"] = row["position"].as<int>();
+                item["items_count"] = row["items_count"].as<int>();
+                item["window_number"] = row["window_number"].as<std::string>();
+                item["estimated_wait_time"] = row["estimated_wait_time"].as<int>();
+                item["created_at"] = row["created_at"].as<int64_t>();
+                result.push_back(item);
+            }
+            g_serverLogger.info("getWaitingTickets for " + queueType + ": " + std::to_string(result.size()) + " tickets");
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getWaitingTickets error: " + std::string(e.what()));
+        }
+        return result;
+    }
+
+    // Принять талон (изменить статус на 'accepted')
+    bool acceptTicket(const std::string& ticketNumber, std::string& windowNumber) {
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "UPDATE queue_tickets SET status = 'accepted', accepted_at = EXTRACT(EPOCH FROM NOW()) "
+                "WHERE number = $1 AND status = 'waiting' RETURNING window_number",
+                pqxx::params{ ticketNumber }
+            );
+            if (res.empty()) {
+                g_serverLogger.warning("acceptTicket: ticket not found or already accepted: " + ticketNumber);
+                return false;
+            }
+            windowNumber = res[0]["window_number"].as<std::string>();
+            txn.commit();
+            g_serverLogger.info("Accepted ticket: " + ticketNumber + ", window: " + windowNumber);
+            return true;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("acceptTicket error: " + std::string(e.what()));
+            return false;
+        }
+    }
+
+    
 };
