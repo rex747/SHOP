@@ -38,6 +38,7 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #include "receipt_printer.h"
 #include "login_window.h"
 
+
 using namespace std;
 
 HINSTANCE g_hInstance;

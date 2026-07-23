@@ -16,8 +16,6 @@
 extern HTTPSClient g_httpsClient;
 extern Logger g_logger;
 
-
-
 // -----------------------------------------------------------------------------
 // AuthToken — полное определение ДО использования в AuthManager
 // -----------------------------------------------------------------------------
@@ -79,7 +77,6 @@ private:
 
         return false;
     }
-      
 
 public:
     struct TOTPSetupResult {
@@ -125,10 +122,25 @@ public:
                 exp
             );
             m_phone = wstring_to_utf8(phone);
+            // Устанавливаем флаг входа, но clientId и fullName будут установлены позже
+            m_isLoggedIn = true;
             return true;
         }
 
         return false;
+    }
+
+    // -------------------------------------------------------------------------
+    // НОВЫЙ ПУБЛИЧНЫЙ МЕТОД для установки токенов извне (без нарушения инкапсуляции)
+    // -------------------------------------------------------------------------
+    void setAuthTokens(const std::string& accessToken,
+        const std::string& refreshToken,
+        std::int64_t expiresAt,
+        const std::string& phone) {
+        m_token.emplace(accessToken, refreshToken, expiresAt);
+        m_phone = phone;
+        m_isLoggedIn = true;   // токен получен — считаем пользователя вошедшим
+        g_logger.info(L"AuthManager::setAuthTokens: tokens set for phone " + utf8_to_wstring(phone));
     }
 
     std::wstring getAuthToken() {
@@ -148,7 +160,7 @@ public:
     void logout() {
         m_token.reset();
         m_phone.clear();
-		m_isLoggedIn = false;
+        m_isLoggedIn = false;
         m_clientId = 0;
         m_fullName.clear();
     }
@@ -171,4 +183,7 @@ public:
     int getClientId() const { return m_clientId; }
     std::wstring getFullName() const { return m_fullName; }
 
+    // Для отладки (не используется в продакшене)
+    friend class RegistrationWindow; // разрешаем доступ только для тестирования,
+    // но лучше использовать публичный метод
 };

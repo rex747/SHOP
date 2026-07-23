@@ -111,7 +111,6 @@ private:
     HBRUSH m_hGreenBrush, m_hRedBrush, m_hWhiteBrush;
     std::vector<HWND> m_buttons;
 
-    // ✅ Переменные состояния
     bool m_isOtpMode;
     std::wstring m_currentPhone;
     std::wstring m_currentEmail;
@@ -190,8 +189,36 @@ private:
         for (HWND btn : m_buttons) SendMessageW(btn, WM_SETFONT, (WPARAM)m_hFontButton, TRUE);
     }
 
+    // -------------------------------------------------------------------------
+    // Вспомогательный метод для установки токенов в AuthManager
+    // -------------------------------------------------------------------------
+    void setAuthTokensFromResponse(const json& response) {
+        if (!response.contains("access_token") || !response["access_token"].is_string()) {
+            g_logger.error(L"[setAuthTokensFromResponse] access_token missing in response");
+            return;
+        }
+        if (!response.contains("refresh_token") || !response["refresh_token"].is_string()) {
+            g_logger.error(L"[setAuthTokensFromResponse] refresh_token missing in response");
+            return;
+        }
+
+        std::string accessToken = response["access_token"].get<std::string>();
+        std::string refreshToken = response["refresh_token"].get<std::string>();
+
+        auto now = std::chrono::system_clock::now();
+        std::int64_t expiresAt = std::chrono::duration_cast<std::chrono::seconds>(
+            now.time_since_epoch()).count() + 3600;
+
+        // ✅ Используем публичный метод вместо прямого доступа к приватным членам
+        g_authManager.setAuthTokens(accessToken, refreshToken, expiresAt,
+            RegUtils::wstring_to_utf8(m_currentPhone));
+
+        g_logger.info(L"[setAuthTokensFromResponse] Auth tokens successfully set for phone: " + m_currentPhone);
+        g_logger.info(L"[setAuthTokensFromResponse] access_token: " + RegUtils::utf8_to_wstring(accessToken.substr(0, 20)) + L"...");
+    }
+
     void onSubmit() {
-        // ✅ ВЕТВЛЕНИЕ 1: Мы уже в режиме ввода OTP?
+        // ВЕТВЛЕНИЕ 1: Мы уже в режиме ввода OTP?
         if (m_isOtpMode) {
             g_logger.info(L"[onSubmit] OTP mode active. Verifying code...");
             wchar_t code[10]; GetWindowTextW(m_hOtpCodeEdit, code, 10);
@@ -211,8 +238,13 @@ private:
 
             auto response = g_httpsClient.post(L"/api/v1/auth/email_otp/verify", request);
             if (response && response->contains("success") && (*response)["success"].get<bool>()) {
+                // =============================================================
+                // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Сохраняем токены в AuthManager
+                // =============================================================
+                setAuthTokensFromResponse(*response);
+
                 SetWindowTextW(m_hStatusLabel, L"Успешная аутентификация!");
-                g_logger.info(L"[onSubmit] Email OTP verified successfully. JWT acquired.");
+                g_logger.info(L"[onSubmit] Email OTP verified successfully. JWT acquired and stored in AuthManager.");
                 Sleep(1000);
                 DestroyWindow(m_hWnd);
             }
@@ -223,10 +255,10 @@ private:
                 EnableWindow(m_hOtpVerifyBtn, TRUE);
                 g_logger.warning(L"[onSubmit] Email OTP verification FAILED");
             }
-            return; // ✅ КРИТИЧЕСКИ ВАЖНО: выход из функции, чтобы не провалиться вниз
+            return;
         }
 
-        // ✅ ВЕТВЛЕНИЕ 2: Обычная первичная регистрация
+        // ВЕТВЛЕНИЕ 2: Обычная первичная регистрация
         g_logger.info(L"[onSubmit] Starting primary registration flow...");
         wchar_t buf[128];
         GetWindowTextW(m_hPhoneEdit, buf, 128);     std::wstring phone = RegUtils::trim(buf);
@@ -264,7 +296,7 @@ private:
             g_logger.info(L"Server response: success=true, already_exists=" + std::to_wstring(alreadyExists ? 1 : 0));
 
             if (alreadyExists) {
-                // ✅ БЛОК ДЛЯ СУЩЕСТВУЮЩЕГО ПОЛЬЗОВАТЕЛЯ
+                // БЛОК ДЛЯ СУЩЕСТВУЮЩЕГО ПОЛЬЗОВАТЕЛЯ
                 g_logger.info(L"User exists. Requesting Email OTP for: " + normalizedPhone);
                 m_currentPhone = normalizedPhone;
                 m_currentEmail = email;
@@ -314,17 +346,34 @@ private:
                 }
             }
             else {
-                // ✅ БЛОК ДЛЯ НОВОГО ПОЛЬЗОВАТЕЛЯ (Строгий else!)
+                // БЛОК ДЛЯ НОВОГО ПОЛЬЗОВАТЕЛЯ
                 g_logger.info(L"New user registered successfully: " + normalizedPhone);
                 SetWindowTextW(m_hStatusLabel, L"Регистрация прошла успешно!");
 
+                // Инициализируем TOTP для нового пользователя
                 auto totpResult = g_authManager.setupTOTP(normalizedPhone);
                 if (totpResult.success) {
                     g_logger.info(L"TOTP initialized successfully for new user");
                 }
+                else {
+                    g_logger.warning(L"TOTP setup failed for new user: " + normalizedPhone);
+                }
+
+                // =============================================================
+                // ✅ ДОПОЛНИТЕЛЬНО: Для нового пользователя также устанавливаем
+                //    токен, если сервер вернул его в ответе на регистрацию.
+                //    (Предполагаем, что сервер может сразу вернуть токены)
+                // =============================================================
+                if (response->contains("access_token") && response->contains("refresh_token")) {
+                    setAuthTokensFromResponse(*response);
+                    g_logger.info(L"[onSubmit] Auth tokens set for new user from registration response.");
+                }
+                else {
+                    g_logger.warning(L"[onSubmit] No tokens in registration response. User will need to login.");
+                }
 
                 Sleep(1500);
-                DestroyWindow(m_hWnd); // ✅ Закрываем окно ТОЛЬКО для новых пользователей
+                DestroyWindow(m_hWnd);
             }
         }
         else {

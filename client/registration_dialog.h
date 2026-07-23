@@ -164,4 +164,5 @@ public:
         return DialogBoxParamW(g_hInstance, MAKEINTRESOURCE(IDD_REGISTRATION_DIALOG),
             hParent, DialogProc, reinterpret_cast<LPARAM>(this));
     }
+
 };
