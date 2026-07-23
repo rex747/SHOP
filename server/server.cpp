@@ -157,7 +157,8 @@ private:
                 handleFirstTimeServe(client_ip);
             }
             // получаем талон для пользователя, который есть в базе и принес +20 товаров
-            else if (target == "/api/v1/queue/waiting" && method == http::verb::get) {
+            else if (target.find("/api/v1/queue/waiting") == 0 && method == http::verb::get) {
+                g_serverLogger.info("Routing to handleQueueWaiting for target: " + std::string(target));
                 handleQueueWaiting(client_ip);
             }
             else if (target == "/api/v1/queue/accept" && method == http::verb::post) {
