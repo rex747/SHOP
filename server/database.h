@@ -50,70 +50,192 @@ public:
     bool initialize() {
         try {
             pqxx::work txn{ *conn_ };
+
+            // ========================================================================
+            // Создание таблиц с полной структурой через CREATE TABLE IF NOT EXISTS
+            // ========================================================================
             txn.exec(R"(
-                CREATE TABLE IF NOT EXISTS clients (
-                    id SERIAL PRIMARY KEY,
-                    phone VARCHAR(20) UNIQUE NOT NULL,
-                    last_name VARCHAR(64) NOT NULL,
-                    first_name VARCHAR(64) NOT NULL,
-                    middle_name VARCHAR(64),
-                    email VARCHAR(64),
-                    totp_secret_encrypted TEXT,
-                    items_submitted INTEGER DEFAULT 0,
-                    items_sold INTEGER DEFAULT 0,
-                    created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
-                    updated_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW())
-                );
-                CREATE TABLE IF NOT EXISTS auth_tokens (
-                    id SERIAL PRIMARY KEY,
-                    client_id INTEGER REFERENCES clients(id),
-                    access_token_hash VARCHAR(256) NOT NULL,
-                    refresh_token_hash VARCHAR(256) NOT NULL,
-                    created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
-                    expires_at INTEGER NOT NULL,
-                    revoked BOOLEAN DEFAULT FALSE
-                );
-                -- ТАБЛИЦА ДЛЯ EMAIL OTP
-                CREATE TABLE IF NOT EXISTS email_otp (
-                    id SERIAL PRIMARY KEY,
-                    phone VARCHAR(20) NOT NULL,
-                    code_hash VARCHAR(256) NOT NULL,
-                    expires_at BIGINT NOT NULL,   -- <-- ИСПРАВЛЕНИЕ: BIGINT вместо INTEGER
-                    used BOOLEAN DEFAULT FALSE,
-                    created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW())
-                );
-                -- ТАБЛИЦА ДЛЯ тех, кто приходит впервые и получает номерок
-                CREATE TABLE IF NOT EXISTS first_time_tickets (
-                    id SERIAL PRIMARY KEY,
-                    ticket_number VARCHAR(20) UNIQUE NOT NULL,
-                    window_number VARCHAR(10) DEFAULT '1',
-                    status VARCHAR(20) DEFAULT 'waiting',
-                    created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),
-                    accepted_at BIGINT,
-                    served_at BIGINT
-                );
-                --- таблица для записи тех кто принес +20 товаров и получил талон на обслуживание
-                CREATE TABLE IF NOT EXISTS queue_tickets (
-                    id SERIAL PRIMARY KEY,
-                    number VARCHAR(20) UNIQUE NOT NULL,
-                    client_id INTEGER REFERENCES clients(id),
-                    queue_type VARCHAR(20) NOT NULL,
-                    position INTEGER DEFAULT 0,
-                    items_count INTEGER DEFAULT 0,
-                    window_number VARCHAR(10) DEFAULT '1',
-                    estimated_wait_time INTEGER DEFAULT 0,
-                    created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),
-                    status VARCHAR(20) DEFAULT 'waiting',
-                    accepted_at BIGINT,
-                    served_at BIGINT
-                );
-                CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(phone);
-                CREATE INDEX IF NOT EXISTS idx_email_otp_phone ON email_otp(phone);
-                CREATE INDEX IF NOT EXISTS idx_first_time_status ON first_time_tickets(status);
-                CREATE INDEX IF NOT EXISTS idx_queue_status_type ON queue_tickets(queue_type, status);
+            CREATE TABLE IF NOT EXISTS clients (
+                id SERIAL PRIMARY KEY,
+                phone VARCHAR(20) UNIQUE NOT NULL,
+                last_name VARCHAR(64) NOT NULL,
+                first_name VARCHAR(64) NOT NULL,
+                middle_name VARCHAR(64),
+                email VARCHAR(64),
+                totp_secret_encrypted TEXT,
+                items_submitted INTEGER DEFAULT 0,
+                items_sold INTEGER DEFAULT 0,
+                created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
+                updated_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW())
+            )
+        )");
+
+            txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS auth_tokens (
+                id SERIAL PRIMARY KEY,
+                client_id INTEGER REFERENCES clients(id),
+                access_token_hash VARCHAR(256) NOT NULL,
+                refresh_token_hash VARCHAR(256) NOT NULL,
+                created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW()),
+                expires_at INTEGER NOT NULL,
+                revoked BOOLEAN DEFAULT FALSE
+            )
+        )");
+
+            txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS email_otp (
+                id SERIAL PRIMARY KEY,
+                phone VARCHAR(20) NOT NULL,
+                code_hash VARCHAR(256) NOT NULL,
+                expires_at BIGINT NOT NULL,
+                used BOOLEAN DEFAULT FALSE,
+                created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW())
+            )
+        )");
+
+            txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS first_time_tickets (
+                id SERIAL PRIMARY KEY,
+                ticket_number VARCHAR(20) UNIQUE NOT NULL,
+                window_number VARCHAR(10) DEFAULT '1',
+                status VARCHAR(20) DEFAULT 'waiting',
+                created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),
+                accepted_at BIGINT,
+                served_at BIGINT
+            )
+        )");
+
+            txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS queue_tickets (
+                id SERIAL PRIMARY KEY,
+                number VARCHAR(20) UNIQUE NOT NULL,
+                client_id INTEGER REFERENCES clients(id),
+                queue_type VARCHAR(20) NOT NULL,
+                position INTEGER DEFAULT 0,
+                items_count INTEGER DEFAULT 0,
+                window_number VARCHAR(10) DEFAULT '1',
+                estimated_wait_time INTEGER DEFAULT 0,
+                created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),
+                status VARCHAR(20) DEFAULT 'waiting',
+                accepted_at BIGINT,
+                served_at BIGINT
+            )
+        )");
+
+            txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS trust_acceptances (
+                id SERIAL PRIMARY KEY,
+                client_id INTEGER REFERENCES clients(id),
+                ticket_number VARCHAR(20) UNIQUE NOT NULL,
+                window_number VARCHAR(10) DEFAULT '1',
+                status VARCHAR(20) DEFAULT 'pending',
+                created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),
+                accepted_at BIGINT,
+                served_at BIGINT
+            )
+        )");
+
+            txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS sync_log (
+                id SERIAL PRIMARY KEY,
+                sync_type VARCHAR(50) NOT NULL,
+                records_count INTEGER DEFAULT 0,
+                status VARCHAR(20) NOT NULL,
+                error_message TEXT,
+                created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())
+            )
+        )");
+
+            txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS items (
+                id SERIAL PRIMARY KEY,
+                client_id INTEGER REFERENCES clients(id),
+                description TEXT NOT NULL,
+                estimated_price DECIMAL(10,2) DEFAULT 0,
+                synced_to_1c BOOLEAN DEFAULT FALSE,
+                created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())
+            )
+        )");
+
+            // ========================================================================
+            // Миграции — добавляем отсутствующие колонки БЕЗОПАСНО
+            // ========================================================================
+
+            // Миграция для queue_tickets
+            txn.exec(R"(
+            DO $$
+            BEGIN
+                ALTER TABLE queue_tickets ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'waiting';
+                ALTER TABLE queue_tickets ADD COLUMN IF NOT EXISTS accepted_at BIGINT;
+                ALTER TABLE queue_tickets ADD COLUMN IF NOT EXISTS served_at BIGINT;
+            EXCEPTION WHEN duplicate_column THEN
+                -- колонка уже существует, ничего не делаем
+            END $$;
+        )");
+
+            // Миграция для first_time_tickets
+            txn.exec(R"(
+            DO $$
+            BEGIN
+                ALTER TABLE first_time_tickets ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'waiting';
+                ALTER TABLE first_time_tickets ADD COLUMN IF NOT EXISTS accepted_at BIGINT;
+                ALTER TABLE first_time_tickets ADD COLUMN IF NOT EXISTS served_at BIGINT;
+            EXCEPTION WHEN duplicate_column THEN
+                -- колонка уже существует, ничего не делаем
+            END $$;
+        )");
+
+        // ========================================================================
+        // ИСПРАВЛЕННАЯ МИГРАЦИЯ для trust_acceptances (безопасное создание ограничений)
+        // ========================================================================
+        txn.exec(R"(
+            DO $$
+            BEGIN
+                -- Добавляем колонку ticket_number, если её нет
+                ALTER TABLE trust_acceptances ADD COLUMN IF NOT EXISTS ticket_number VARCHAR(20);
+    
+                -- Заполняем уникальными значениями для существующих записей (если NULL)
+                UPDATE trust_acceptances SET ticket_number = 'TR-' || id::text WHERE ticket_number IS NULL;
+    
+                -- Делаем колонку NOT NULL
+                ALTER TABLE trust_acceptances ALTER COLUMN ticket_number SET NOT NULL;
+    
+                -- Добавляем UNIQUE ограничение, ТОЛЬКО ЕСЛИ ЕГО НЕТ
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint 
+                    WHERE conname = 'trust_acceptances_ticket_number_unique' 
+                      AND conrelid = 'trust_acceptances'::regclass
+                ) THEN
+                    ALTER TABLE trust_acceptances ADD CONSTRAINT trust_acceptances_ticket_number_unique UNIQUE (ticket_number);
+                END IF;
+    
+                -- Остальные колонки (добавляем, если отсутствуют)
+                ALTER TABLE trust_acceptances ADD COLUMN IF NOT EXISTS window_number VARCHAR(10) DEFAULT '1';
+                ALTER TABLE trust_acceptances ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending';
+                ALTER TABLE trust_acceptances ADD COLUMN IF NOT EXISTS accepted_at BIGINT;
+                ALTER TABLE trust_acceptances ADD COLUMN IF NOT EXISTS served_at BIGINT;
+    
+            EXCEPTION 
+                WHEN duplicate_column THEN
+                    -- колонка уже существует (этот блок перехватывает ошибки ADD COLUMN, если вдруг не сработает IF NOT EXISTS)
+                    NULL;
+            END $$;
             )");
+
+            // ========================================================================
+            // Индексы
+            // ========================================================================
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(phone)");
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_email_otp_phone ON email_otp(phone)");
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_first_time_status ON first_time_tickets(status)");
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_queue_status_type ON queue_tickets(queue_type, status)");
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_trust_acceptances_client ON trust_acceptances(client_id)");
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_trust_acceptances_status ON trust_acceptances(status)");
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_queue_tickets_status ON queue_tickets(status)");
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_first_time_tickets_status ON first_time_tickets(status)");
+
             txn.commit();
-            g_serverLogger.info("Database initialized successfully (email_otp.expires_at is BIGINT)");
+            g_serverLogger.info("Database initialized successfully");
             return true;
         }
         catch (const std::exception& e) {
@@ -166,7 +288,7 @@ public:
                     pqxx::params{ phone, last_name, first_name, mid_opt, email_opt, items_submitted, items_sold }
                 );
                 txn.commit();
-                return { true, true }; // Успех, уже существует
+                return { true, true };
             }
             txn.exec(
                 "INSERT INTO clients (phone, last_name, first_name, middle_name, email, items_submitted, items_sold) "
@@ -174,7 +296,7 @@ public:
                 pqxx::params{ phone, last_name, first_name, mid_opt, email_opt, items_submitted, items_sold }
             );
             txn.commit();
-            return { true, false }; // Успех, новый пользователь
+            return { true, false };
         }
         catch (const std::exception& e) {
             std::cerr << "registerClient error: " << e.what() << std::endl;
@@ -217,11 +339,10 @@ public:
             return std::nullopt;
         }
     }
-    
+
     bool saveEmailOTP(const std::string& phone, const std::string& code_hash, int64_t expires_at) {
         try {
             pqxx::work txn{ *conn_ };
-            // Сначала аннулируем старые неиспользованные коды для этого телефона
             txn.exec("UPDATE email_otp SET used = TRUE WHERE phone = $1 AND used = FALSE", pqxx::params{ phone });
             txn.exec(
                 "INSERT INTO email_otp (phone, code_hash, expires_at) VALUES ($1, $2, $3)",
@@ -245,9 +366,8 @@ public:
                 pqxx::params{ phone, code_hash, now }
             );
             if (result.empty()) {
-                return false; // Код неверный, истек или уже использован
+                return false;
             }
-            // Помечаем как использованный
             txn.exec("UPDATE email_otp SET used = TRUE WHERE id = $1", pqxx::params{ result[0]["id"].as<int>() });
             txn.commit();
             return true;
@@ -276,9 +396,6 @@ public:
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Получить клиента по id
-    // -------------------------------------------------------------------------
     std::optional<Client> getClientById(int id) {
         try {
             pqxx::work txn{ *conn_ };
@@ -305,13 +422,9 @@ public:
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Получить количество выданных сегодня талонов для указанного типа очереди
-    // -------------------------------------------------------------------------
     int getDailyTicketCount(const std::string& queueType) {
         try {
             pqxx::work txn{ *conn_ };
-            // Начало сегодняшнего дня по UTC
             auto result = txn.exec(
                 "SELECT COUNT(*) FROM queue_tickets "
                 "WHERE queue_type = $1 AND created_at >= EXTRACT(EPOCH FROM date_trunc('day', NOW() AT TIME ZONE 'UTC'))",
@@ -367,28 +480,132 @@ public:
         }
         return ticket;
     }
+    // Обработчики очереди "На доверии"
+    // ===== ДОПОЛНЕНИЯ ДЛЯ ОЧЕРЕДИ trust =====
 
-    bool createTrustAcceptance(int clientId) {
+// Получить список ожидающих талонов trust
+    std::vector<json> getWaitingTrustTickets() {
+        std::vector<json> result;
         try {
             pqxx::work txn{ *conn_ };
-            txn.exec(
-                "INSERT INTO trust_acceptances (client_id) VALUES ($1)",
-                pqxx::params{ clientId }
+            auto res = txn.exec(
+                "SELECT id, ticket_number, client_id, window_number, created_at "
+                "FROM trust_acceptances WHERE status = 'pending' ORDER BY created_at"
             );
+            for (const auto& row : res) {
+                json item;
+                item["id"] = row["id"].as<int>();
+                item["ticket_number"] = row["ticket_number"].as<std::string>();
+                item["client_id"] = row["client_id"].as<int>();
+                item["window_number"] = row["window_number"].as<std::string>();
+                item["created_at"] = row["created_at"].as<int64_t>();
+                result.push_back(item);
+            }
+            g_serverLogger.info("getWaitingTrustTickets: " + std::to_string(result.size()) + " tickets");
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getWaitingTrustTickets error: " + std::string(e.what()));
+        }
+        return result;
+    }
+
+    // Принять талон trust
+    bool acceptTrustTicket(const std::string& ticketNumber, std::string& windowNumber) {
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "UPDATE trust_acceptances SET status = 'accepted', accepted_at = EXTRACT(EPOCH FROM NOW()) "
+                "WHERE ticket_number = $1 AND status = 'pending' RETURNING window_number",
+                pqxx::params{ ticketNumber }
+            );
+            if (res.empty()) {
+                g_serverLogger.warning("acceptTrustTicket: ticket not found or already accepted: " + ticketNumber);
+                return false;
+            }
+            windowNumber = res[0]["window_number"].as<std::string>();
             txn.commit();
+            g_serverLogger.info("Accepted TRUST ticket: " + ticketNumber + ", window: " + windowNumber);
             return true;
         }
         catch (const std::exception& e) {
-            std::cerr << "createTrustAcceptance error: " << e.what() << std::endl;
+            g_serverLogger.error("acceptTrustTicket error: " + std::string(e.what()));
             return false;
         }
     }
 
-    // Создание временного талона для "Первый раз"
+    // Обслужить талон trust
+    bool serveTrustTicket(const std::string& ticketNumber) {
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "UPDATE trust_acceptances SET status = 'served', served_at = EXTRACT(EPOCH FROM NOW()) "
+                "WHERE ticket_number = $1 AND status = 'accepted'",
+                pqxx::params{ ticketNumber }
+            );
+            if (res.affected_rows() == 0) {
+                g_serverLogger.warning("serveTrustTicket: ticket not accepted or already served: " + ticketNumber);
+                return false;
+            }
+            txn.commit();
+            g_serverLogger.info("Served TRUST ticket: " + ticketNumber);
+            return true;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("serveTrustTicket error: " + std::string(e.what()));
+            return false;
+        }
+    }
+
+    std::optional<std::string> createTrustAcceptance(int clientId) {
+        try {
+            pqxx::work txn{ *conn_ };
+            auto now = std::chrono::system_clock::now();
+            auto ts = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+            std::string ticketNumber = "TR-" + std::to_string(ts) + "-" +
+                std::to_string(rand() % 10000);
+            g_serverLogger.info("Creating TRUST acceptance ticket: " + ticketNumber + " for client " + std::to_string(clientId));
+
+            auto result = txn.exec(
+                "INSERT INTO trust_acceptances (client_id, ticket_number) "
+                "VALUES ($1, $2) RETURNING ticket_number",
+                pqxx::params{ clientId, ticketNumber }
+            );
+            g_serverLogger.info("Inserted TRUST acceptance ticket into database: " + ticketNumber + " for client " + std::to_string(clientId));
+            txn.commit();
+            g_serverLogger.info("Created TRUST acceptance ticket: " + ticketNumber + " for client " + std::to_string(clientId));
+            return result[0]["ticket_number"].as<std::string>();
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("createTrustAcceptance error: " + std::string(e.what()));
+            return std::nullopt;
+        }
+    }
+
+    std::optional<json> getTrustTicketInfo(const std::string& ticketNumber) {
+        try {
+            g_serverLogger.info("Get Trust Ticket info");
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT ticket_number, window_number, created_at FROM trust_acceptances WHERE ticket_number = $1",
+                pqxx::params{ ticketNumber }
+            );
+            g_serverLogger.info("Ticket number:" + ticketNumber);
+            if (res.empty()) return std::nullopt;
+            json info;
+            info["ticket_number"] = res[0]["ticket_number"].as<std::string>();
+            info["window_number"] = res[0]["window_number"].as<std::string>();
+            info["created_at"] = res[0]["created_at"].as<int64_t>();
+            return info;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getTrustTicketInfo error: " + std::string(e.what()));
+            return std::nullopt;
+        }
+    }
+
     std::string createFirstTimeTicket(const std::string& windowNumber = "1") {
         try {
             pqxx::work txn{ *conn_ };
-            // Генерируем уникальный номер: F-<timestamp>-<random>
             auto now = std::chrono::system_clock::now();
             auto ts = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
             std::string ticketNumber = "F-" + std::to_string(ts) + "-" +
@@ -409,7 +626,6 @@ public:
         }
     }
 
-    // Получение списка ожидающих (status = 'waiting')
     std::vector<json> getWaitingFirstTimeTickets() {
         std::vector<json> result;
         try {
@@ -433,7 +649,6 @@ public:
         return result;
     }
 
-    // Принять клиента (изменить статус на 'accepted', вернуть номер окна)
     bool acceptFirstTimeTicket(const std::string& ticketNumber, std::string& windowNumber) {
         try {
             pqxx::work txn{ *conn_ };
@@ -458,7 +673,6 @@ public:
         }
     }
 
-    // Обслужить клиента (удалить запись или пометить как served)
     bool serveFirstTimeTicket(const std::string& ticketNumber) {
         try {
             pqxx::work txn{ *conn_ };
@@ -545,7 +759,6 @@ public:
         return items;
     }
 
-    // ЕДИНСТВЕННОЕ объявление и определение этого метода (дубликат удален)
     bool updateItemSyncStatus(int itemId, bool synced) {
         try {
             pqxx::work txn{ *conn_ };
@@ -573,8 +786,7 @@ public:
             std::cerr << "logSync error: " << e.what() << std::endl;
         }
     }
-	// Метод для очереди +20 товаров
-    // Получить список ожидающих талонов для указанного типа очереди
+
     std::vector<json> getWaitingTickets(const std::string& queueType) {
         std::vector<json> result;
         try {
@@ -605,7 +817,6 @@ public:
         return result;
     }
 
-    // Принять талон (изменить статус на 'accepted')
     bool acceptTicket(const std::string& ticketNumber, std::string& windowNumber) {
         try {
             pqxx::work txn{ *conn_ };
@@ -628,6 +839,4 @@ public:
             return false;
         }
     }
-
-    
 };

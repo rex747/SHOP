@@ -168,8 +168,14 @@ private:
                 handleQueueServe(client_ip);
             }
             // получаем талон если пользователь решил оставить товар на доверии
-            else if (target == "/api/v1/queue/trust_acceptance" && method == http::verb::post) {
-                handleTrustAcceptance(client_ip);
+            else if (target == "/api/v1/queue/trust/waiting" && method == http::verb::get) {
+                handleTrustWaiting(client_ip);
+            }
+            else if (target == "/api/v1/queue/trust/accept" && method == http::verb::post) {
+                handleTrustAccept(client_ip);
+            }
+            else if (target == "/api/v1/queue/trust/serve" && method == http::verb::post) {
+                handleTrustServe(client_ip);
             }
             else if (target == "/api/v1/onec/sync" && method == http::verb::post) {
                 handleOneCSync(client_ip);
@@ -808,25 +814,129 @@ private:
     }
     //-------------------------------------------------------------------------
 
+	// --- метод для пользователей, которые пришли оставить товар на доверии ---
     void handleTrustAcceptance(const std::string& client_ip) {
+        g_serverLogger.info("Start method handleTrustAcceptance");
         json body;
         try {
             body = json::parse(request_.body());
+            g_serverLogger.info("Parsed body: " + body.dump());
         }
         catch (const json::parse_error& e) {
             response_.result(http::status::bad_request);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
             response_.prepare_payload();
+            g_serverLogger.info("Parse error!");
+            return;
+        }
+
+        if (!body.contains("client_id") || !body["client_id"].is_number()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "client_id required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.info("Body does not contain client_id");
             return;
         }
 
         int clientId = body["client_id"].get<int>();
-        bool success = queue_->createTrustAcceptance(clientId);
+        auto ticketNumberOpt = db_->createTrustAcceptance(clientId);
+
+        if (!ticketNumberOpt) {
+            response_.result(http::status::internal_server_error);
+            response_.body() = json{ {"error", "Failed to create trust acceptance"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.info("ticketNumberOpt is empty");
+            return;
+        }
+
+        // Получаем информацию о созданном талоне (окно)
+        auto info = db_->getTrustTicketInfo(*ticketNumberOpt);
+        if (!info) {
+            response_.result(http::status::internal_server_error);
+            response_.body() = json{ {"error", "Failed to retrieve ticket info"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        json resp;
+        resp["success"] = true;
+        resp["ticket_number"] = *ticketNumberOpt;
+        resp["window_number"] = (*info)["window_number"];
+        resp["position"] = 0; // для доверия позиция всегда 0
+        resp["created_at"] = (*info)["created_at"];
 
         response_.result(http::status::ok);
         response_.set(http::field::content_type, "application/json");
-        response_.body() = json{ {"success", success} }.dump();
+        response_.body() = resp.dump();
+        response_.prepare_payload();
+
+        g_serverLogger.info("Trust acceptance created for client " + std::to_string(clientId) +
+            ", ticket: " + *ticketNumberOpt + " from " + client_ip);
+    }
+
+    void handleTrustWaiting(const std::string& client_ip) {
+        auto tickets = queue_->getWaitingTrustTickets();
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{ {"tickets", tickets} }.dump();
+        response_.prepare_payload();
+    }
+
+    void handleTrustAccept(const std::string& client_ip) {
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string ticketNumber = body.value("ticket_number", "");
+        if (ticketNumber.empty()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "ticket_number required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string windowNumber;
+        if (queue_->acceptTrustTicket(ticketNumber, windowNumber)) {
+            response_.result(http::status::ok);
+            response_.body() = json{ {"success", true}, {"window_number", windowNumber} }.dump();
+            g_serverLogger.info("handleTrustAccept: accepted " + ticketNumber + " from " + client_ip);
+        }
+        else {
+            response_.result(http::status::not_found);
+            response_.body() = json{ {"error", "Ticket not found or already accepted"} }.dump();
+        }
+        response_.prepare_payload();
+    }
+
+    void handleTrustServe(const std::string& client_ip) {
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string ticketNumber = body.value("ticket_number", "");
+        if (ticketNumber.empty()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "ticket_number required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        if (queue_->serveTrustTicket(ticketNumber)) {
+            response_.result(http::status::ok);
+            response_.body() = json{ {"success", true} }.dump();
+            g_serverLogger.info("handleTrustServe: served " + ticketNumber + " from " + client_ip);
+        }
+        else {
+            response_.result(http::status::not_found);
+            response_.body() = json{ {"error", "Ticket not found or not accepted"} }.dump();
+        }
         response_.prepare_payload();
     }
 

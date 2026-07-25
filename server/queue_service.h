@@ -59,9 +59,15 @@ public:
     bool acceptTicket(const std::string& ticketNumber, std::string& windowNumber) {
         return db_->acceptTicket(ticketNumber, windowNumber);
     }
-    // Метод для сдачи вещей на доверии
-    bool createTrustAcceptance(int clientId) {
-        return db_->createTrustAcceptance(clientId);
+    // Методы для сдачи вещей на доверии
+    std::vector<json> getWaitingTrustTickets() {
+        return db_->getWaitingTrustTickets();
+    }
+    bool acceptTrustTicket(const std::string& ticketNumber, std::string& windowNumber) {
+        return db_->acceptTrustTicket(ticketNumber, windowNumber);
+    }
+    bool serveTrustTicket(const std::string& ticketNumber) {
+        return db_->serveTrustTicket(ticketNumber);
     }
 	// Метод для обслуживания номерка
     bool serveTicket(const std::string& ticketNumber) {
