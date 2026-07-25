@@ -1,3 +1,4 @@
+п»ї// worker_window.h
 #pragma once
 
 #include <windows.h>
@@ -9,6 +10,7 @@
 #include <sapi.h>
 #include <sphelper.h>
 #include <nlohmann/json.hpp>
+
 #include "config.h"
 #include "logger.h"
 #include "https_client.h"
@@ -40,250 +42,382 @@ private:
     bool m_running;
     std::thread m_refreshThread;
 
-    std::wstring m_currentQueueType;  // "general", "first_time", "extra_20", "paid", "expensive"
+    std::wstring m_currentQueueType;
 
     ISpVoice* m_pVoice = nullptr;
 
-    static constexpr int REFRESH_INTERVAL_MS = 5000;
+    static constexpr int REFRESH_INTERVAL_MS = 2000;
 
     // ------------------------------------------------------------------------
-    // Инициализация TTS (голосовой синтез)
+    // РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ TTS РІ MTA-РїРѕС‚РѕРєРµ
     // ------------------------------------------------------------------------
     void initializeTTS() {
-        if (FAILED(CoInitialize(NULL))) {
-            g_logger.error(L"CoInitialize failed for TTS");
+        HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+        if (FAILED(hr)) {
+            g_logger.error(L"CoInitializeEx(MULTITHREADED) failed for TTS: HRESULT=0x" + std::to_wstring(hr));
             return;
         }
-        HRESULT hr = CoCreateInstance(CLSID_SpVoice, NULL, CLSCTX_ALL, IID_ISpVoice, (void**)&m_pVoice);
+        hr = CoCreateInstance(CLSID_SpVoice, NULL, CLSCTX_ALL, IID_ISpVoice, (void**)&m_pVoice);
         if (FAILED(hr)) {
-            g_logger.error(L"Failed to create TTS voice");
+            g_logger.error(L"Failed to create TTS voice, HRESULT=0x" + std::to_wstring(hr));
         }
         else {
-            g_logger.info(L"TTS initialized successfully");
+            g_logger.info(L"TTS initialized successfully in MTA mode");
         }
     }
 
     // ------------------------------------------------------------------------
-    // Голосовое оповещение: номер (ticket или client_id) и номер окна
+    // РћР·РІСѓС‡РёРІР°РЅРёРµ РЅРѕРјРµСЂР° С‚Р°Р»РѕРЅР° Рё РѕРєРЅР°
     // ------------------------------------------------------------------------
     void speak(const std::wstring& number, const std::wstring& windowNumber) {
-        if (m_pVoice) {
-            std::wstring full = L"Клиент с номером " + number + L" пройдите к окну номер " + windowNumber;
-            m_pVoice->Speak(full.c_str(), SPF_ASYNC, NULL);
-            g_logger.info(L"TTS: " + full);
+        if (!m_pVoice) {
+            g_logger.warning(L"TTS not available, skipping speak");
+            return;
         }
-        else {
-            g_logger.warning(L"TTS not available");
+
+        std::wstring full = L"РљР»РёРµРЅС‚ СЃ РЅРѕРјРµСЂРѕРј " + number + L" РїСЂРѕСЃРёРј РїРѕРґРѕР№С‚Рё Рє РѕРєРЅСѓ РЅРѕРјРµСЂ " + windowNumber;
+        g_logger.info(L"TTS attempt: " + full);
+
+        try {
+            HRESULT hr = m_pVoice->Speak(full.c_str(), SPF_ASYNC | SPF_PURGEBEFORESPEAK, NULL);
+            if (FAILED(hr)) {
+                g_logger.error(L"TTS Speak failed: HRESULT=0x" + std::to_wstring(hr));
+            }
+            else {
+                g_logger.info(L"TTS Speak initiated successfully");
+            }
+        }
+        catch (const std::exception& e) {
+            g_logger.error(L"TTS Speak exception: " + utf8_to_wstring(e.what()));
+        }
+        catch (...) {
+            g_logger.error(L"TTS Speak unknown exception");
         }
     }
 
     // ------------------------------------------------------------------------
-    // Обновление списка ожидающих из сервера (универсально для любого типа)
+    // РџРѕР»СѓС‡РµРЅРёРµ СЃРїРёСЃРєР° РѕР¶РёРґР°СЋС‰РёС… С‚Р°Р»РѕРЅРѕРІ СЃ СЃРµСЂРІРµСЂР° (С‚РѕР»СЊРєРѕ РґР°РЅРЅС‹Рµ, Р±РµР· UI)
     // ------------------------------------------------------------------------
-    void refreshList() {
-        std::lock_guard<std::mutex> lock(m_mutex);
-
-        // Для first_time используем старый эндпоинт (он не требует параметра type)
+    std::vector<json> fetchTicketsFromServer(const std::wstring& queueType) {
         std::wstring path;
-        if (m_currentQueueType == L"first_time") {
+        g_logger.info(L"Fetching tickets for queue type: " + queueType);
+
+        if (queueType == L"first_time") {
             path = L"/api/v1/queue/first_time/waiting";
+            g_logger.info(L"Using first_time endpoint");
+        }
+        else if (queueType == L"trust") {
+            path = L"/api/v1/queue/trust/waiting";   
         }
         else {
-            path = L"/api/v1/queue/waiting?type=" + m_currentQueueType;
+            path = L"/api/v1/queue/waiting?type=" + queueType;
+            g_logger.info(L"Using waiting?type endpoint");
         }
 
         auto response = g_httpsClient.get(path, L"");
+        g_logger.info(L"GET response received for " + queueType);
+
         if (response && response->contains("tickets") && (*response)["tickets"].is_array()) {
-            m_tickets = (*response)["tickets"].get<std::vector<json>>();
-            g_logger.info(L"refreshList: fetched " + std::to_wstring(m_tickets.size()) + L" tickets for " + m_currentQueueType);
+            size_t count = (*response)["tickets"].size();
+            g_logger.info(L"Response contains " + std::to_wstring(count) + L" tickets");
+            auto tickets = (*response)["tickets"].get<std::vector<json>>();
+            g_logger.info(L"fetchTicketsFromServer: fetched " + std::to_wstring(tickets.size()) +
+                L" tickets for " + queueType);
+            return tickets;
         }
         else {
-            g_logger.warning(L"Failed to fetch waiting tickets for " + m_currentQueueType);
-            m_tickets.clear();
+            g_logger.warning(L"Failed to fetch waiting tickets for " + queueType);
+            return {};
         }
-        updateUI();
     }
 
     // ------------------------------------------------------------------------
-    // Обновление UI: список, статус, кнопки
+    // РћР±РЅРѕРІР»РµРЅРёРµ UI: РїРµСЂРµСЃС‚СЂРѕРµРЅРёРµ ListBox, СЃС‚Р°С‚СѓСЃР°, РґРѕСЃС‚СѓРїРЅРѕСЃС‚Рё РєРЅРѕРїРѕРє
+    // Р’Р«Р—Р«Р’РђР•РўРЎРЇ РўРћР›Р¬РљРћ РР— UI-РџРћРўРћРљРђ
     // ------------------------------------------------------------------------
     void updateUI() {
-        SendMessageW(m_hListBox, LB_RESETCONTENT, 0, 0);
+        g_logger.info(L"updateUI started for queue type: " + m_currentQueueType);
 
-        for (const auto& ticket : m_tickets) {
+        SendMessageW(m_hListBox, LB_RESETCONTENT, 0, 0);
+        g_logger.info(L"ListBox reset");
+
+        for (size_t i = 0; i < m_tickets.size(); ++i) {
+            const auto& ticket = m_tickets[i];
             std::string ticketNumber = ticket["ticket_number"].get<std::string>();
+            g_logger.info(L"Processing ticket " + std::to_wstring(i) + L": " + utf8_to_wstring(ticketNumber));
+
             std::wstring displayText = utf8_to_wstring(ticketNumber);
 
-            // Если есть client_id и это не first_time, добавляем его в скобках
             if (m_currentQueueType != L"first_time" && ticket.contains("client_id")) {
                 int clientId = ticket["client_id"].get<int>();
                 displayText += L" (id: " + std::to_wstring(clientId) + L")";
+                g_logger.info(L"Appended client_id: " + std::to_wstring(clientId));
             }
 
-            SendMessageW(m_hListBox, LB_ADDSTRING, 0, (LPARAM)displayText.c_str());
+            int index = (int)SendMessageW(m_hListBox, LB_ADDSTRING, 0, (LPARAM)displayText.c_str());
+            if (index != LB_ERR) {
+                SendMessageW(m_hListBox, LB_SETITEMDATA, index, (LPARAM)i);
+                g_logger.info(L"Added ticket to ListBox at index " + std::to_wstring(index));
+            }
         }
 
         int count = (int)m_tickets.size();
-        std::wstring status = L"Ожидают: " + std::to_wstring(count);
+        std::wstring status = L"РћР¶РёРґР°СЋС‚: " + std::to_wstring(count);
+        g_logger.info(L"Setting status label: " + status);
+
         SetWindowTextW(m_hStatusLabel, status.c_str());
+        g_logger.info(L"Status label set");
+
         EnableWindow(m_hAcceptBtn, count > 0);
+        EnableWindow(m_hServeBtn, count > 0);
+        g_logger.info(L"Buttons enabled state updated");
+
+        g_logger.info(L"UI updated for queue type: " + m_currentQueueType);
     }
 
     // ------------------------------------------------------------------------
-    // Обработчик "Принять" (вызов соответствующего эндпоинта и голос)
+    // РџРѕР»РЅР°СЏ РїРµСЂРµР·Р°РіСЂСѓР·РєР° СЃРїРёСЃРєР°: РїРѕР»СѓС‡РµРЅРёРµ РґР°РЅРЅС‹С… + Р·Р°РїСЂРѕСЃ РѕР±РЅРѕРІР»РµРЅРёСЏ UI С‡РµСЂРµР· PostMessage
+    // ------------------------------------------------------------------------
+    void refreshList() {
+        std::wstring queueType;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            queueType = m_currentQueueType;
+        }
+
+        g_logger.info(L"refreshList started for queue type: " + queueType);
+
+        auto newTickets = fetchTicketsFromServer(queueType);
+        g_logger.info(L"Server data fetched: " + std::to_wstring(newTickets.size()) + L" tickets");
+
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_currentQueueType != queueType) {
+                g_logger.info(L"Queue type changed during fetch, discarding results");
+                return;
+            }
+            m_tickets = std::move(newTickets);
+            g_logger.info(L"Local tickets updated under mutex");
+        }
+
+        g_logger.info(L"Posting WM_APP_REFRESH_UI message to UI thread");
+        if (!PostMessageW(m_hWnd, WM_APP + 1, 0, 0)) {
+            g_logger.error(L"PostMessage failed: " + std::to_wstring(GetLastError()));
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // РћР±СЂР°Р±РѕС‚С‡РёРє РєРЅРѕРїРєРё "РџСЂРёРЅСЏС‚СЊ"
     // ------------------------------------------------------------------------
     void onAccept() {
+        g_logger.info(L"Accept button clicked for queue type: " + m_currentQueueType);
+
         int sel = (int)SendMessageW(m_hListBox, LB_GETCURSEL, 0, 0);
+        g_logger.info(L"Selected index in listbox: " + std::to_wstring(sel));
+
         if (sel == LB_ERR) {
-            MessageBoxW(m_hWnd, L"Выберите талон из списка", L"Информация", MB_OK);
+            g_logger.error(L"No ticket selected to accept");
+            MessageBoxW(m_hWnd, L"Р’С‹Р±РµСЂРёС‚Рµ С‚Р°Р»РѕРЅ РёР· СЃРїРёСЃРєР°", L"Р’РЅРёРјР°РЅРёРµ", MB_OK);
             return;
         }
 
-        // Получаем текст выбранной строки
-        wchar_t buf[256]{};
-        SendMessageW(m_hListBox, LB_GETTEXT, sel, (LPARAM)buf);
-        std::wstring line(buf);
+        LRESULT itemData = SendMessageW(m_hListBox, LB_GETITEMDATA, sel, 0);
+        g_logger.info(L"ItemData for selected index: " + std::to_wstring(itemData));
 
-        // Извлекаем ticket_number (первое слово до пробела)
-        size_t spacePos = line.find(L' ');
-        std::wstring ticketNumber = (spacePos != std::wstring::npos) ? line.substr(0, spacePos) : line;
-        std::string ticketNumberUtf8 = wstring_to_utf8(ticketNumber);
-
-        // Находим соответствующий json в m_tickets
-        auto it = std::find_if(m_tickets.begin(), m_tickets.end(),
-            [&](const json& j) { return j["ticket_number"].get<std::string>() == ticketNumberUtf8; });
-        if (it == m_tickets.end()) {
-            MessageBoxW(m_hWnd, L"Талон не найден в списке", L"Ошибка", MB_OK);
+        if (itemData == LB_ERR || itemData < 0 || itemData >= (LRESULT)m_tickets.size()) {
+            g_logger.error(L"Invalid item data for selected ticket");
+            MessageBoxW(m_hWnd, L"РћС€РёР±РєР° РёРґРµРЅС‚РёС„РёРєР°С†РёРё С‚Р°Р»РѕРЅР°", L"РћС€РёР±РєР°", MB_OK);
             return;
         }
 
-        // Определяем эндпоинт
+        std::string ticketNumberUtf8;
+        int clientId = -1;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (itemData >= (LRESULT)m_tickets.size()) {
+                g_logger.error(L"Ticket index out of bounds after mutex lock");
+                MessageBoxW(m_hWnd, L"РўР°Р»РѕРЅ СѓСЃС‚Р°СЂРµР», РѕР±РЅРѕРІРёС‚Рµ СЃРїРёСЃРѕРє", L"РћС€РёР±РєР°", MB_OK);
+                return;
+            }
+            const json& selectedTicket = m_tickets[itemData];
+            ticketNumberUtf8 = selectedTicket["ticket_number"].get<std::string>();
+            if (selectedTicket.contains("client_id")) {
+                clientId = selectedTicket["client_id"].get<int>();
+            }
+        }
+
+        std::wstring ticketNumber = utf8_to_wstring(ticketNumberUtf8);
+        g_logger.info(L"Selected ticket_number: " + ticketNumber + L", client_id: " + std::to_wstring(clientId));
+
         std::wstring endpoint;
         if (m_currentQueueType == L"first_time") {
             endpoint = L"/api/v1/queue/first_time/accept";
         }
+        else if (m_currentQueueType == L"trust") {
+            endpoint = L"/api/v1/queue/trust/accept";
+        }
         else {
             endpoint = L"/api/v1/queue/accept";
         }
+        g_logger.info(L"Using endpoint: " + endpoint);
 
         json request;
         request["ticket_number"] = ticketNumberUtf8;
+
+        g_logger.info(L"Sending POST to " + endpoint + L" with ticket: " + ticketNumber);
         auto response = g_httpsClient.post(endpoint, request, L"");
+        g_logger.info(L"POST response received");
 
         if (response && response->contains("success") && (*response)["success"].get<bool>()) {
-            // Получаем номер окна (по умолчанию "1")
             std::string windowNumber = response->value("window_number", "1");
             std::wstring windowW = utf8_to_wstring(windowNumber);
+            g_logger.info(L"Window number: " + windowW);
 
-            // Голосовое оповещение:
-            // - для first_time говорим номер талона
-            // - для остальных – client_id
             std::wstring numberToSpeak;
             if (m_currentQueueType == L"first_time") {
                 numberToSpeak = ticketNumber;
             }
             else {
-                // client_id есть в json
-                if (it->contains("client_id")) {
-                    int clientId = (*it)["client_id"].get<int>();
+                if (clientId >= 0) {
                     numberToSpeak = std::to_wstring(clientId);
                 }
                 else {
-                    // fallback – номер талона
                     numberToSpeak = ticketNumber;
                 }
             }
-
+            g_logger.info(L"Speaking: " + numberToSpeak + L" to window: " + windowW);
             speak(numberToSpeak, windowW);
 
-            // Удаляем из локального списка
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
-                auto it2 = std::find_if(m_tickets.begin(), m_tickets.end(),
-                    [&](const json& j) { return j["ticket_number"].get<std::string>() == ticketNumberUtf8; });
-                if (it2 != m_tickets.end()) m_tickets.erase(it2);
-                updateUI();
+                if (itemData < (LRESULT)m_tickets.size()) {
+                    m_tickets.erase(m_tickets.begin() + itemData);
+                    g_logger.info(L"Ticket removed from local list");
+                }
             }
 
-            // Через 5 минут обновим список (чтобы убедиться, что талон ушёл с сервера)
-            std::thread([this]() {
-                std::this_thread::sleep_for(std::chrono::minutes(5));
-                refreshList();
-                }).detach();
-
-            g_logger.info(L"Accepted ticket: " + ticketNumber + L" (type: " + m_currentQueueType + L")");
+            updateUI();
+            g_logger.info(L"Accepted ticket: " + ticketNumber);
         }
         else {
-            MessageBoxW(m_hWnd, L"Не удалось принять талон. Возможно, он уже принят.", L"Ошибка", MB_OK);
+            g_logger.error(L"Failed to accept ticket: " + ticketNumber);
+            std::wstring errorMsg = L"РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРёРЅСЏС‚СЊ С‚Р°Р»РѕРЅ. Р’РѕР·РјРѕР¶РЅРѕ, РѕРЅ СѓР¶Рµ СѓСЃС‚Р°СЂРµР».";
+            if (response && response->contains("error")) {
+                errorMsg += L"\n" + utf8_to_wstring((*response)["error"].get<std::string>());
+            }
+            MessageBoxW(m_hWnd, errorMsg.c_str(), L"РћС€РёР±РєР°", MB_OK);
             refreshList();
         }
     }
 
     // ------------------------------------------------------------------------
-    // Обработчик "Обслужен (Следующий)"
+    // РћР±СЂР°Р±РѕС‚С‡РёРє РєРЅРѕРїРєРё "РћР±СЃР»СѓР¶РµРЅ (РЎР»РµРґСѓСЋС‰РёР№)"
     // ------------------------------------------------------------------------
     void onServe() {
+        g_logger.info(L"Serve button clicked for queue type: " + m_currentQueueType);
+
         int sel = (int)SendMessageW(m_hListBox, LB_GETCURSEL, 0, 0);
+        g_logger.info(L"Selected index in listbox: " + std::to_wstring(sel));
+
         if (sel == LB_ERR) {
-            MessageBoxW(m_hWnd, L"Выберите талон", L"Информация", MB_OK);
+            g_logger.info(L"No ticket selected to serve");
+            MessageBoxW(m_hWnd, L"Р’С‹Р±РµСЂРёС‚Рµ С‚Р°Р»РѕРЅ", L"Р’РЅРёРјР°РЅРёРµ", MB_OK);
             return;
         }
 
-        wchar_t buf[256]{};
-        SendMessageW(m_hListBox, LB_GETTEXT, sel, (LPARAM)buf);
-        std::wstring line(buf);
-        size_t spacePos = line.find(L' ');
-        std::wstring ticketNumber = (spacePos != std::wstring::npos) ? line.substr(0, spacePos) : line;
-        std::string ticketNumberUtf8 = wstring_to_utf8(ticketNumber);
+        LRESULT itemData = SendMessageW(m_hListBox, LB_GETITEMDATA, sel, 0);
+        g_logger.info(L"ItemData for selected index: " + std::to_wstring(itemData));
 
-        // Определяем эндпоинт
+        if (itemData == LB_ERR || itemData < 0) {
+            g_logger.error(L"Invalid item data for selected ticket");
+            MessageBoxW(m_hWnd, L"РћС€РёР±РєР° РёРґРµРЅС‚РёС„РёРєР°С†РёРё С‚Р°Р»РѕРЅР°", L"РћС€РёР±РєР°", MB_OK);
+            return;
+        }
+
+        std::string ticketNumberUtf8;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (itemData >= (LRESULT)m_tickets.size()) {
+                g_logger.error(L"Ticket index out of bounds");
+                MessageBoxW(m_hWnd, L"РўР°Р»РѕРЅ СѓСЃС‚Р°СЂРµР», РѕР±РЅРѕРІРёС‚Рµ СЃРїРёСЃРѕРє", L"РћС€РёР±РєР°", MB_OK);
+                return;
+            }
+            ticketNumberUtf8 = m_tickets[itemData]["ticket_number"].get<std::string>();
+        }
+
+        std::wstring ticketNumber = utf8_to_wstring(ticketNumberUtf8);
+        g_logger.info(L"Selected ticket: " + ticketNumber);
+
         std::wstring endpoint;
         if (m_currentQueueType == L"first_time") {
             endpoint = L"/api/v1/queue/first_time/serve";
         }
+        else if (m_currentQueueType == L"trust") {
+            endpoint = L"/api/v1/queue/trust/serve";
+        }
         else {
             endpoint = L"/api/v1/queue/serve";
         }
+        g_logger.info(L"Using endpoint: " + endpoint);
 
         json request;
         request["ticket_number"] = ticketNumberUtf8;
+
         auto response = g_httpsClient.post(endpoint, request, L"");
+        g_logger.info(L"POST response received for serve");
 
         if (response && response->contains("success") && (*response)["success"].get<bool>()) {
-            g_logger.info(L"Served ticket: " + ticketNumber + L" (type: " + m_currentQueueType + L")");
-            // Удаляем из локального списка
+            g_logger.info(L"Served ticket: " + ticketNumber);
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
-                auto it = std::find_if(m_tickets.begin(), m_tickets.end(),
-                    [&](const json& j) { return j["ticket_number"].get<std::string>() == ticketNumberUtf8; });
-                if (it != m_tickets.end()) m_tickets.erase(it);
-                updateUI();
+                if (itemData < (LRESULT)m_tickets.size()) {
+                    m_tickets.erase(m_tickets.begin() + itemData);
+                }
             }
+            updateUI();
         }
         else {
-            MessageBoxW(m_hWnd, L"Не удалось отметить как обслуженный.", L"Ошибка", MB_OK);
+            g_logger.error(L"Failed to serve ticket: " + ticketNumber);
+            std::wstring errorMsg = L"РќРµ СѓРґР°Р»РѕСЃСЊ РѕР±СЃР»СѓР¶РёС‚СЊ РёР»Рё РѕС‚РјРµРЅРёС‚СЊ РїСЂРёРЅСЏС‚РёРµ.";
+            if (response && response->contains("error")) {
+                errorMsg += L"\n" + utf8_to_wstring((*response)["error"].get<std::string>());
+            }
+            MessageBoxW(m_hWnd, errorMsg.c_str(), L"РћС€РёР±РєР°", MB_OK);
             refreshList();
         }
     }
 
     // ------------------------------------------------------------------------
-    // Оконная процедура
+    // РћРєРѕРЅРЅР°СЏ РїСЂРѕС†РµРґСѓСЂР°
     // ------------------------------------------------------------------------
     static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         WorkerWindow* pThis = nullptr;
+
         if (msg == WM_CREATE) {
             CREATESTRUCT* cs = (CREATESTRUCT*)lParam;
             pThis = (WorkerWindow*)cs->lpCreateParams;
             SetWindowLongPtr(hWnd, GWLP_USERDATA, (LONG_PTR)pThis);
             pThis->m_hWnd = hWnd;
             pThis->createControls();
-            pThis->refreshList();
+
+            {
+                std::lock_guard<std::mutex> lock(pThis->m_mutex);
+                pThis->m_tickets = pThis->fetchTicketsFromServer(pThis->m_currentQueueType);
+            }
+            pThis->updateUI();
+
+            g_logger.info(L"Initial list loaded and UI updated");
             pThis->m_running = true;
+
             pThis->m_refreshThread = std::thread([pThis]() {
                 while (pThis->m_running) {
+                    g_logger.info(L"Periodic refresh triggered");
                     std::this_thread::sleep_for(std::chrono::milliseconds(REFRESH_INTERVAL_MS));
-                    pThis->refreshList();
+                    if (pThis->m_running) {
+                        pThis->refreshList();
+                    }
                 }
+                g_logger.info(L"Refresh thread stopped");
                 });
             return 0;
         }
@@ -291,26 +425,64 @@ private:
         pThis = (WorkerWindow*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
         if (!pThis) return DefWindowProc(hWnd, msg, wParam, lParam);
 
+        if (msg != WM_MOUSEMOVE && msg != WM_SETCURSOR && msg != WM_NCHITTEST) {
+            std::wstring msgName;
+            switch (msg) {
+            case WM_NOTIFY: msgName = L"WM_NOTIFY"; break;
+            case WM_COMMAND: msgName = L"WM_COMMAND"; break;
+            case WM_PAINT: msgName = L"WM_PAINT"; break;
+            case WM_DESTROY: msgName = L"WM_DESTROY"; break;
+            case WM_CREATE: msgName = L"WM_CREATE"; break;
+            case WM_SIZE: msgName = L"WM_SIZE"; break;
+            case WM_TIMER: msgName = L"WM_TIMER"; break;
+                // РґСЂСѓРіРёРµ РєРµР№СЃС‹ РїСЂРё РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё
+            default: msgName = L"0x" + std::to_wstring(msg);
+            }
+            g_logger.info(L"WndProc received message: " + msgName);
+            // Р”Р»СЏ WM_NOTIFY РґРѕРїРѕР»РЅРёС‚РµР»СЊРЅРѕ РІС‹РІРѕРґРёРј РєРѕРґ СѓРІРµРґРѕРјР»РµРЅРёСЏ
+            if (msg == WM_NOTIFY) {
+                NMHDR* pNmhdr = reinterpret_cast<NMHDR*>(lParam);
+                if (pNmhdr) {
+                    g_logger.info(L"  WM_NOTIFY: idFrom=" + std::to_wstring(pNmhdr->idFrom) +
+                        L", code=" + std::to_wstring(pNmhdr->code));
+                }
+            }
+        }
+
         switch (msg) {
+        case WM_APP + 1: {
+            g_logger.info(L"WM_APP_REFRESH_UI received in UI thread");
+            pThis->updateUI();
+            return 0;
+        }
+
         case WM_COMMAND: {
             WORD id = LOWORD(wParam);
             WORD code = HIWORD(wParam);
-            HWND hCtrl = (HWND)lParam;
+            g_logger.info(L"WM_COMMAND received with id: " + std::to_wstring(id) +
+                L", code: " + std::to_wstring(code));
 
-            // Обработка смены типа очереди в комбобоксе
             if (id == 200 && code == CBN_SELCHANGE) {
+                g_logger.info(L"Queue type selection changed");
                 LRESULT idx = SendMessageW(pThis->m_hComboQueue, CB_GETCURSEL, 0, 0);
+                g_logger.info(L"CB_GETCURSEL returned: " + std::to_wstring(idx));
+
                 if (idx != CB_ERR) {
-                    wchar_t typeBuf[64]{};
+                    wchar_t typeBuf[64] = {};
                     SendMessageW(pThis->m_hComboQueue, CB_GETLBTEXT, (WPARAM)idx, (LPARAM)typeBuf);
-                    pThis->m_currentQueueType = typeBuf;
+                    g_logger.info(L"CB_GETLBTEXT returned: " + std::wstring(typeBuf));
+
+                    {
+                        std::lock_guard<std::mutex> lock(pThis->m_mutex);
+                        pThis->m_currentQueueType = typeBuf;
+                    }
+
                     g_logger.info(L"Queue type changed to: " + pThis->m_currentQueueType);
                     pThis->refreshList();
                 }
                 return 0;
             }
 
-            // Кнопки
             if (code == BN_CLICKED) {
                 switch (id) {
                 case 1: pThis->onAccept(); break;
@@ -324,8 +496,13 @@ private:
 
         case WM_DESTROY:
             pThis->m_running = false;
-            if (pThis->m_refreshThread.joinable()) pThis->m_refreshThread.join();
-            if (pThis->m_pVoice) { pThis->m_pVoice->Release(); pThis->m_pVoice = nullptr; }
+            if (pThis->m_refreshThread.joinable()) {
+                pThis->m_refreshThread.join();
+            }
+            if (pThis->m_pVoice) {
+                pThis->m_pVoice->Release();
+                pThis->m_pVoice = nullptr;
+            }
             CoUninitialize();
             PostQuitMessage(0);
             return 0;
@@ -335,10 +512,12 @@ private:
     }
 
     // ------------------------------------------------------------------------
-    // Создание элементов управления
+    // РЎРѕР·РґР°РЅРёРµ СЌР»РµРјРµРЅС‚РѕРІ СѓРїСЂР°РІР»РµРЅРёСЏ РѕРєРЅР°
+    // РљР РРўРР§Р•РЎРљРћР• РРЎРџР РђР’Р›Р•РќРР•: Р’С‹СЃРѕС‚Р° ComboBox СѓРІРµР»РёС‡РµРЅР° РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ РІСЃРµС… 5 СЌР»РµРјРµРЅС‚РѕРІ
     // ------------------------------------------------------------------------
     void createControls() {
-        RECT rc; GetClientRect(m_hWnd, &rc);
+        RECT rc;
+        GetClientRect(m_hWnd, &rc);
         int width = rc.right - rc.left;
         int height = rc.bottom - rc.top;
 
@@ -347,52 +526,80 @@ private:
             DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
         m_hBrush = CreateSolidBrush(RGB(240, 240, 240));
 
-        // Комбобокс для выбора очереди
+        // ========================================================================
+        // РРЎРџР РђР’Р›Р•РќРР•: Р’С‹СЃРѕС‚Р° ComboBox СѓРІРµР»РёС‡РµРЅР° СЃ 100 РґРѕ 200
+        // РџСЂРё С€СЂРёС„С‚Рµ 24px Bold РІС‹СЃРѕС‚Р° РѕРґРЅРѕРіРѕ СЌР»РµРјРµРЅС‚Р° ~36px
+        // Р”Р»СЏ 5 СЌР»РµРјРµРЅС‚РѕРІ РЅСѓР¶РЅРѕ РјРёРЅРёРјСѓРј 5 * 36 = 180px
+        // РЈСЃС‚Р°РЅР°РІР»РёРІР°РµРј 200px СЃ Р·Р°РїР°СЃРѕРј РЅР° СЂР°РјРєРё Рё СЃРєСЂРѕР»Р»Р±Р°СЂ
+        // ========================================================================
         m_hComboQueue = CreateWindowExW(0, L"COMBOBOX", L"",
             WS_VISIBLE | WS_CHILD | CBS_DROPDOWNLIST | CBS_HASSTRINGS,
-            20, 10, 200, 100,
+            20, 10, 200, 200,  // в†ђ РРЎРџР РђР’Р›Р•РќРћ: 100 в†’ 200
             m_hWnd, (HMENU)200, g_hInstance, nullptr);
         SendMessageW(m_hComboQueue, WM_SETFONT, (WPARAM)m_hFont, TRUE);
-        SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"general");
-        SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"first_time");
-        SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"extra_20");
-        SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"paid");
-        SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"expensive");
+
+        // Р”РѕР±Р°РІР»СЏРµРј РІСЃРµ 5 С‚РёРїРѕРІ РѕС‡РµСЂРµРґРµР№
+        g_logger.info(L"Adding queue types to ComboBox");
+
+        LRESULT idxGeneral = SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"general");
+        g_logger.info(L"Added 'general' at index: " + std::to_wstring(idxGeneral));
+
+        LRESULT idxFirstTime = SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"first_time");
+        g_logger.info(L"Added 'first_time' at index: " + std::to_wstring(idxFirstTime));
+
+        LRESULT idxExtra20 = SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"extra_20");
+        g_logger.info(L"Added 'extra_20' at index: " + std::to_wstring(idxExtra20));
+
+        LRESULT idxTrust = SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"trust");
+        g_logger.info(L"Added 'trust' at index: " + std::to_wstring(idxTrust));
+
+        LRESULT idxPaid = SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"paid");
+        g_logger.info(L"Added 'paid' at index: " + std::to_wstring(idxPaid));
+
+        LRESULT idxExpensive = SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"expensive");
+        g_logger.info(L"Added 'expensive' at index: " + std::to_wstring(idxExpensive));
+
+        // РЈСЃС‚Р°РЅР°РІР»РёРІР°РµРј РЅР°С‡Р°Р»СЊРЅС‹Р№ РІС‹Р±РѕСЂ вЂ” general (РёРЅРґРµРєСЃ 0)
         SendMessageW(m_hComboQueue, CB_SETCURSEL, 0, 0);
         m_currentQueueType = L"general";
+        g_logger.info(L"ComboBox initialized with " +
+            std::to_wstring(SendMessageW(m_hComboQueue, CB_GETCOUNT, 0, 0)) + L" items, selected: general");
 
-        // Список (смещаем вниз)
+        // ListBox РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ С‚Р°Р»РѕРЅРѕРІ
         m_hListBox = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
             WS_VISIBLE | WS_CHILD | WS_VSCROLL | WS_HSCROLL | LBS_NOTIFY,
             20, 60, width - 40, height - 190,
             m_hWnd, (HMENU)100, g_hInstance, nullptr);
         SendMessageW(m_hListBox, WM_SETFONT, (WPARAM)m_hFont, TRUE);
 
-        // Статус
-        m_hStatusLabel = CreateWindowExW(0, L"STATIC", L"Ожидают: 0",
+        // Label РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ РєРѕР»РёС‡РµСЃС‚РІР° РѕР¶РёРґР°СЋС‰РёС…
+        m_hStatusLabel = CreateWindowExW(0, L"STATIC", L"РћР¶РёРґР°СЋС‚: 0",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             20, height - 120, width - 40, 30,
             m_hWnd, (HMENU)101, g_hInstance, nullptr);
         SendMessageW(m_hStatusLabel, WM_SETFONT, (WPARAM)m_hFont, TRUE);
 
-        // Кнопки
+        // Р Р°СЃС‡С‘С‚ РїРѕР·РёС†РёРё РєРЅРѕРїРѕРє
         int btnW = 250, btnH = 50;
         int x1 = (width - 3 * btnW - 20) / 2;
         int yBtn = height - 80;
 
-        m_hAcceptBtn = CreateWindowExW(0, L"BUTTON", L"Принять",
+        // РљРЅРѕРїРєР° "РџСЂРёРЅСЏС‚СЊ"
+        m_hAcceptBtn = CreateWindowExW(0, L"BUTTON", L"РџСЂРёРЅСЏС‚СЊ",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             x1, yBtn, btnW, btnH,
             m_hWnd, (HMENU)1, g_hInstance, nullptr);
         SendMessageW(m_hAcceptBtn, WM_SETFONT, (WPARAM)m_hFont, TRUE);
 
-        m_hServeBtn = CreateWindowExW(0, L"BUTTON", L"Обслужен (Следующий)",
+        // РљРЅРѕРїРєР° "РћР±СЃР»СѓР¶РµРЅ (РЎР»РµРґСѓСЋС‰РёР№)"
+        m_hServeBtn = CreateWindowExW(0, L"BUTTON", L"РћР±СЃР»СѓР¶РµРЅ (РЎР»РµРґСѓСЋС‰РёР№)",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             x1 + btnW + 10, yBtn, btnW, btnH,
             m_hWnd, (HMENU)2, g_hInstance, nullptr);
         SendMessageW(m_hServeBtn, WM_SETFONT, (WPARAM)m_hFont, TRUE);
 
-        HWND hCloseBtn = CreateWindowExW(0, L"BUTTON", L"Закрыть",
+        // РљРЅРѕРїРєР° "Р—Р°РєСЂС‹С‚СЊ"
+        HWND hCloseBtn = CreateWindowExW(0, L"BUTTON", L"Р—Р°РєСЂС‹С‚СЊ",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             x1 + 2 * (btnW + 10), yBtn, btnW, btnH,
             m_hWnd, (HMENU)3, g_hInstance, nullptr);
@@ -425,7 +632,7 @@ public:
 
         int screenW = GetSystemMetrics(SM_CXSCREEN);
         int screenH = GetSystemMetrics(SM_CYSCREEN);
-        m_hWnd = CreateWindowExW(0, L"WorkerWindowClass", L"Товаровед - Управление очередями",
+        m_hWnd = CreateWindowExW(0, L"WorkerWindowClass", L"РўРѕРІР°СЂРѕРІРµРґ - РЈРїСЂР°РІР»РµРЅРёРµ РѕС‡РµСЂРµРґСЏРјРё",
             WS_OVERLAPPEDWINDOW,
             0, 0, screenW, screenH,
             nullptr, nullptr, g_hInstance, this);
