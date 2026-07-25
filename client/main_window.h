@@ -79,6 +79,29 @@ static HWND g_hCloseBtn = nullptr;
 #define ID_STATIC_EXTRA20_TITLE 5013
 #define ID_STATIC_EXTRA20_SUBTITLE 5014
 
+// New IDs for trustAcceptains
+#define ID_STATIC_TRUST_TITLE      6001
+#define ID_STATIC_TRUST_SUBTITLE   6002
+#define IDC_STATIC_TRUST_TEXT      6003
+#define ID_BTN_TRUST_PRINT         6004
+#define ID_BTN_TRUST_BACK          6005
+
+// ID для окна платного приёма
+#define ID_BTN_PAID_PRINT           6006
+#define ID_BTN_PAID_BACK            6007
+#define ID_STATIC_PAID_TITLE        6008
+#define ID_STATIC_PAID_SUBTITLE     6009
+#define IDC_STATIC_PAID_TEXT        6010
+#define ID_STATIC_PAID_QUEUE_COUNT  6011
+
+// ID для окна приема дорогих вещей
+#define ID_BTN_EXPENSIVE_PRINT       6012
+#define ID_BTN_EXPENSIVE_BACK        6013
+#define ID_STATIC_EXPENSIVE_TITLE    6014
+#define ID_STATIC_EXPENSIVE_SUBTITLE 6015
+#define IDC_STATIC_EXPENSIVE_TEXT    6016
+#define ID_STATIC_EXPENSIVE_QUEUE_COUNT 6017
+
 // Window states
 enum class WindowState {
     MAIN_MENU,
@@ -620,7 +643,7 @@ private:
     }
 
     // ------------------------------------------------------------
-    // Обработчик "Печать талона"
+    // Обработчик "Печать талона" общей очереди
     // ------------------------------------------------------------
     void onGeneralQueuePrint() {
         if (!m_nameConfirmed || m_currentClientId == 0) {
@@ -807,6 +830,360 @@ private:
         g_logger.info(L"[onExtra20PaymentSuccess] Extra 20 payment flow completed successfully.");
     }
 
+    // обработчик для сдачи вещей на доверии
+    void showTrustAcceptanceWindow() {
+        clearWindow();
+        m_currentState = WindowState::SUBMIT_MENU; // или добавим новое состояние, но можно использовать существующее
+
+        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        int centerX = screenWidth / 2;
+        int centerY = screenHeight / 2;
+
+        // Заголовок "ДОБРО"
+        HWND hTitle1 = CreateWindowExW(0, L"STATIC", L"ДОБРО",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, 30, screenWidth - 100, 80,
+            m_hWnd, (HMENU)ID_STATIC_TRUST_TITLE, g_hInstance, nullptr);
+        SendMessageW(hTitle1, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
+
+        HWND hTitle2 = CreateWindowExW(0, L"STATIC", L"Комиссионный магазин",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, 110, screenWidth - 100, 60,
+            m_hWnd, (HMENU)ID_STATIC_TRUST_SUBTITLE, g_hInstance, nullptr);
+        SendMessageW(hTitle2, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+
+        // Текст в зелёном прямоугольнике (как в +20 позиций)
+        HWND hText = CreateWindowExW(0, L"STATIC",
+            L"Вы выбрали НА ДОВЕРИИ.\n"
+            L"Вы без очереди оставляете товар и сведения о себе.\n"
+            L"Мы оформим их без Вашего участия.\n"
+            L"Вещам БЕЗ ОЦЕНКИ будет присвоена цена 1 рубль.\n"
+            L"ВАЖНО: магазин НЕ несет ответственности за количество, качество и сохранность Ваших вещей.",
+            WS_VISIBLE | WS_CHILD | SS_CENTER | SS_NOTIFY,
+            centerX - 400, centerY - 180, 800, 200,
+            m_hWnd, (HMENU)IDC_STATIC_TRUST_TEXT, g_hInstance, nullptr);
+        SendMessageW(hText, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+        // Установим зелёный фон для этого статика (обрабатывается в WM_CTLCOLORSTATIC)
+
+        // Кнопка "Печать талона"
+        int btnW = 300, btnH = 70, gap = 20;
+        int startY = centerY + 30;
+        HWND btnPrint = CreateWindowExW(0, L"BUTTON", L"Печать талона",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX - btnW / 2, startY, btnW, btnH,
+            m_hWnd, (HMENU)ID_BTN_TRUST_PRINT, g_hInstance, nullptr);
+        m_buttons.push_back(btnPrint);
+
+        // Кнопка "Назад" (красная)
+        HWND btnBack = CreateWindowExW(0, L"BUTTON", L"Назад",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX - btnW / 2, startY + btnH + gap, btnW, btnH,
+            m_hWnd, (HMENU)ID_BTN_TRUST_BACK, g_hInstance, nullptr);
+        m_buttons.push_back(btnBack);
+
+        styleButtons();
+        g_logger.info(L"Trust acceptance window shown");
+    }
+
+    // обработчик печати талона сдачи на доверии
+    void onTrustAcceptancePrint() {
+        if (!g_authManager.isLoggedIn() || g_authManager.getClientId() == 0) {
+            MessageBoxW(m_hWnd, L"Вы не авторизованы. Пожалуйста, войдите.", L"Ошибка", MB_OK);
+            g_logger.warning(L"Trust acceptance print attempted without valid login");
+            return;
+        }
+
+        int clientId = g_authManager.getClientId();
+        std::wstring authToken = g_authManager.getAuthToken();
+
+        g_logger.info(L"Trust acceptance print requested for client ID: " + std::to_wstring(clientId));
+
+        auto ticketOpt = g_queueManager.getTrustAcceptance(clientId, authToken);
+        if (!ticketOpt) {
+            MessageBoxW(m_hWnd, L"Не удалось получить талон. Проверьте соединение с сервером.", L"Ошибка", MB_OK);
+            g_logger.error(L"Failed to get trust acceptance ticket for client " + std::to_wstring(clientId));
+            return;
+        }
+
+        m_currentTicket = ticketOpt.value();
+
+        // Печать талона с дополнительной фразой
+        bool printed = g_printer.printTicketWithExtraMessage(
+            m_currentTicket,
+            g_authManager.getFullName(),
+            g_authManager.getPhone(),
+            L"(Фамилия, имя и отчество пользователя) прикрепите данный талон к пакету с товаром. Пакет оставьте у окна № " + m_currentTicket.windowNumber
+        );
+
+
+        if (printed) {
+            g_logger.info(L"Trust acceptance ticket printed: " + m_currentTicket.ticketNumber);
+        }
+        else {
+            g_logger.warning(L"Trust acceptance ticket print failed, saved to file: " + m_currentTicket.ticketNumber);
+            MessageBoxW(m_hWnd, L"Талон не напечатан, но сохранён в файл.", L"Предупреждение", MB_OK);
+        }
+
+        // Показываем экран с талоном
+        showTicketIssued();
+    }
+
+    // Обработчик для платной очереди
+    void showPaidAcceptanceWindow() {
+        // 1. Проверка авторизации
+        if (!g_authManager.isLoggedIn() || g_authManager.getClientId() == 0) {
+            g_logger.info(L"PaidAcceptance: user not logged in, showing registration dialog");
+            RegistrationDialog regDlg;
+            if (regDlg.show(m_hWnd) != IDOK) {
+                // Пользователь отменил регистрацию – возврат в меню выбора очереди
+                createSubmitMenu();
+                return;
+            }
+            // После успешной регистрации токены установлены в AuthManager
+            g_logger.info(L"PaidAcceptance: user registered, proceeding to paid window");
+        }
+
+        // Очищаем окно и устанавливаем новое состояние (можно использовать существующее или добавить новое,
+        // но для простоты используем состояние SUBMIT_MENU, оно подходит)
+        clearWindow();
+        m_currentState = WindowState::SUBMIT_MENU; // или создать новое, но не обязательно
+
+        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        int centerX = screenWidth / 2;
+        int centerY = screenHeight / 2;
+
+        // Заголовок "ДОБРО" (верхний)
+        HWND hTitle1 = CreateWindowExW(0, L"STATIC", L"ДОБРО",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, 30, screenWidth - 100, 80,
+            m_hWnd, (HMENU)ID_STATIC_PAID_TITLE, g_hInstance, nullptr);
+        SendMessageW(hTitle1, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
+
+        // Подзаголовок "КОМИССИОННЫЙ МАГАЗИН"
+        HWND hTitle2 = CreateWindowExW(0, L"STATIC", L"КОМИССИОННЫЙ МАГАЗИН",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, 110, screenWidth - 100, 60,
+            m_hWnd, (HMENU)ID_STATIC_PAID_SUBTITLE, g_hInstance, nullptr);
+        SendMessageW(hTitle2, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+
+        // Основной текст в зелёном прямоугольнике
+        HWND hText = CreateWindowExW(0, L"STATIC",
+            L"Вы выбрали ПЛАТНЫЙ ПРИЕМ (200 руб.).\n"
+            L"При выборе данной опции, очередь короче, но постановка в данную очередь возможна при оплате 200 руб.\n"
+            L"Количество товаров ограничено 20 наименованиями.\n\n"
+            L"Стоимость услуги 200 руб.",
+            WS_VISIBLE | WS_CHILD | SS_CENTER | SS_NOTIFY,
+            centerX - 400, centerY - 220, 800, 220,
+            m_hWnd, (HMENU)IDC_STATIC_PAID_TEXT, g_hInstance, nullptr);
+        SendMessageW(hText, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+
+        // Количество ожидающих в очереди (зелёный прямоугольник)
+        std::wstring authToken = g_authManager.getAuthToken();
+        int queueCount = g_queueManager.getDailyCount(QueueType::PAID, authToken);
+        std::wstring countText = L"Количество ожидающих в очереди: " + std::to_wstring(queueCount);
+        HWND hQueueCount = CreateWindowExW(0, L"STATIC", countText.c_str(),
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            centerX - 300, centerY - 10, 600, 50,
+            m_hWnd, (HMENU)ID_STATIC_PAID_QUEUE_COUNT, g_hInstance, nullptr);
+        SendMessageW(hQueueCount, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+        // Установим зелёный фон для этого статика (обрабатывается в WM_CTLCOLORSTATIC)
+        // Для этого добавим обработку ID_STATIC_PAID_QUEUE_COUNT в WM_CTLCOLORSTATIC
+
+        // Кнопка "Оплатить"
+        int btnW = 300, btnH = 70, gap = 20;
+        int startY = centerY + 70;
+        HWND btnPrint = CreateWindowExW(0, L"BUTTON", L"Оплатить",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX - btnW / 2, startY, btnW, btnH,
+            m_hWnd, (HMENU)ID_BTN_PAID_PRINT, g_hInstance, nullptr);
+        m_buttons.push_back(btnPrint);
+
+        // Кнопка "Назад" (красная)
+        HWND btnBack = CreateWindowExW(0, L"BUTTON", L"Назад",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX - btnW / 2, startY + btnH + gap, btnW, btnH,
+            m_hWnd, (HMENU)ID_BTN_PAID_BACK, g_hInstance, nullptr);
+        m_buttons.push_back(btnBack);
+
+        styleButtons();
+        g_logger.info(L"Paid acceptance window shown, queue count: " + std::to_wstring(queueCount));
+    }
+
+    // Обработчик кнопки "Оплатить" для платной очереди, распечатывает талон
+    void onPaidAcceptancePrint() {
+        g_logger.info(L"PaidAcceptance: start printing ticket");
+
+        // Дополнительная проверка авторизации (на случай, если окно было открыто без неё)
+        if (!g_authManager.isLoggedIn() || g_authManager.getClientId() == 0) {
+            MessageBoxW(m_hWnd, L"Вы не авторизованы. Пожалуйста, войдите.", L"Ошибка", MB_OK);
+            g_logger.warning(L"PaidAcceptance print attempted without valid login");
+            createSubmitMenu();
+            return;
+        }
+
+        int clientId = g_authManager.getClientId();
+        std::wstring authToken = g_authManager.getAuthToken();
+        int itemsCount = Config::MAX_ITEMS_GENERAL_QUEUE; // 20
+
+        g_logger.info(L"PaidAcceptance: client ID " + std::to_wstring(clientId) +
+            L", items count " + std::to_wstring(itemsCount));
+
+        // Получение талона
+        auto ticketOpt = g_queueManager.getTicket(clientId, QueueType::PAID, itemsCount, authToken);
+        if (!ticketOpt) {
+            MessageBoxW(m_hWnd, L"Не удалось получить талон. Проверьте соединение с сервером.", L"Ошибка", MB_OK);
+            g_logger.error(L"PaidAcceptance: failed to get ticket for client " + std::to_wstring(clientId));
+            return;
+        }
+
+        m_currentTicket = ticketOpt.value();
+        g_logger.info(L"PaidAcceptance: ticket obtained: " + m_currentTicket.ticketNumber);
+
+        // Печать талона
+        bool printed = g_printer.printTicket(m_currentTicket,
+            g_authManager.getFullName(),
+            g_authManager.getPhone());
+        if (printed) {
+            g_logger.info(L"PaidAcceptance: ticket printed successfully: " + m_currentTicket.ticketNumber);
+        }
+        else {
+            g_logger.warning(L"PaidAcceptance: ticket print failed, saved to file: " + m_currentTicket.ticketNumber);
+            MessageBoxW(m_hWnd, L"Талон не напечатан, но сохранён в файл.", L"Предупреждение", MB_OK);
+        }
+
+        // Показать экран с талоном
+        showTicketIssued();
+        g_logger.info(L"PaidAcceptance: completed successfully");
+    }
+
+    // Обработчик приема дорогого товара (>5000 руб)
+    void showExpensiveAcceptanceWindow() {
+        // 1. Проверка авторизации
+        if (!g_authManager.isLoggedIn() || g_authManager.getClientId() == 0) {
+            g_logger.info(L"ExpensiveAcceptance: user not logged in, showing registration dialog");
+            RegistrationDialog regDlg;
+            if (regDlg.show(m_hWnd) != IDOK) {
+                // Пользователь отменил регистрацию – возврат в меню выбора очереди
+                createSubmitMenu();
+                return;
+            }
+            // После успешной регистрации токены установлены в AuthManager
+            g_logger.info(L"ExpensiveAcceptance: user registered, proceeding to expensive window");
+        }
+
+        // Очищаем окно и устанавливаем состояние (используем SUBMIT_MENU для единообразия)
+        clearWindow();
+        m_currentState = WindowState::SUBMIT_MENU;
+
+        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        int centerX = screenWidth / 2;
+        int centerY = screenHeight / 2;
+
+        // Заголовок "ДОБРО" (верхний)
+        HWND hTitle1 = CreateWindowExW(0, L"STATIC", L"ДОБРО",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, 30, screenWidth - 100, 80,
+            m_hWnd, (HMENU)ID_STATIC_EXPENSIVE_TITLE, g_hInstance, nullptr);
+        SendMessageW(hTitle1, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
+
+        // Подзаголовок "КОМИССИОННЫЙ МАГАЗИН"
+        HWND hTitle2 = CreateWindowExW(0, L"STATIC", L"КОМИССИОННЫЙ МАГАЗИН",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, 110, screenWidth - 100, 60,
+            m_hWnd, (HMENU)ID_STATIC_EXPENSIVE_SUBTITLE, g_hInstance, nullptr);
+        SendMessageW(hTitle2, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+
+        // Основной текст в зелёном прямоугольнике
+        HWND hText = CreateWindowExW(0, L"STATIC",
+            L"Вы выбрали ДОРОГОЙ ТОВАР (>5000 руб.).\n"
+            L"Если у Вас есть вещи стоимостью более 5000 руб., то смело выбирайте этот вариант.\n"
+            L"В течение 10-15 минут Вас примет самый опытный товаровед нашего магазина\n"
+            L"(в данном случае принимаются вещи, оценочная стоимость каждой из которых более 5000 руб.).",
+            WS_VISIBLE | WS_CHILD | SS_CENTER | SS_NOTIFY,
+            centerX - 400, centerY - 220, 800, 220,
+            m_hWnd, (HMENU)IDC_STATIC_EXPENSIVE_TEXT, g_hInstance, nullptr);
+        SendMessageW(hText, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+
+        // Количество ожидающих в очереди (зелёный прямоугольник)
+        std::wstring authToken = g_authManager.getAuthToken();
+        int queueCount = g_queueManager.getDailyCount(QueueType::EXPENSIVE, authToken);
+        std::wstring countText = L"Количество ожидающих в очереди: " + std::to_wstring(queueCount);
+        HWND hQueueCount = CreateWindowExW(0, L"STATIC", countText.c_str(),
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            centerX - 300, centerY - 10, 600, 50,
+            m_hWnd, (HMENU)ID_STATIC_EXPENSIVE_QUEUE_COUNT, g_hInstance, nullptr);
+        SendMessageW(hQueueCount, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+
+        // Кнопка "Взять талон"
+        int btnW = 300, btnH = 70, gap = 20;
+        int startY = centerY + 70;
+        HWND btnPrint = CreateWindowExW(0, L"BUTTON", L"Взять талон",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX - btnW / 2, startY, btnW, btnH,
+            m_hWnd, (HMENU)ID_BTN_EXPENSIVE_PRINT, g_hInstance, nullptr);
+        m_buttons.push_back(btnPrint);
+
+        // Кнопка "Назад" (красная)
+        HWND btnBack = CreateWindowExW(0, L"BUTTON", L"Назад",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX - btnW / 2, startY + btnH + gap, btnW, btnH,
+            m_hWnd, (HMENU)ID_BTN_EXPENSIVE_BACK, g_hInstance, nullptr);
+        m_buttons.push_back(btnBack);
+
+        styleButtons();
+        g_logger.info(L"Expensive acceptance window shown, queue count: " + std::to_wstring(queueCount));
+    }
+
+    // Обработчик кнопки "Взять талон" для дорогих вещей (> 5000 руб)
+    void onExpensiveAcceptancePrint() {
+        g_logger.info(L"ExpensiveAcceptance: start printing ticket");
+
+        // Дополнительная проверка авторизации
+        if (!g_authManager.isLoggedIn() || g_authManager.getClientId() == 0) {
+            MessageBoxW(m_hWnd, L"Вы не авторизованы. Пожалуйста, войдите.", L"Ошибка", MB_OK);
+            g_logger.warning(L"ExpensiveAcceptance print attempted without valid login");
+            createSubmitMenu();
+            return;
+        }
+
+        int clientId = g_authManager.getClientId();
+        std::wstring authToken = g_authManager.getAuthToken();
+        int itemsCount = 1; // для дорогого товара – 1 позиция
+
+        g_logger.info(L"ExpensiveAcceptance: client ID " + std::to_wstring(clientId) +
+            L", items count " + std::to_wstring(itemsCount));
+
+        // Получение талона
+        auto ticketOpt = g_queueManager.getTicket(clientId, QueueType::EXPENSIVE, itemsCount, authToken);
+        if (!ticketOpt) {
+            MessageBoxW(m_hWnd, L"Не удалось получить талон. Проверьте соединение с сервером.", L"Ошибка", MB_OK);
+            g_logger.error(L"ExpensiveAcceptance: failed to get ticket for client " + std::to_wstring(clientId));
+            return;
+        }
+
+        m_currentTicket = ticketOpt.value();
+        g_logger.info(L"ExpensiveAcceptance: ticket obtained: " + m_currentTicket.ticketNumber);
+
+        // Печать талона
+        bool printed = g_printer.printTicket(m_currentTicket,
+            g_authManager.getFullName(),
+            g_authManager.getPhone());
+        if (printed) {
+            g_logger.info(L"ExpensiveAcceptance: ticket printed successfully: " + m_currentTicket.ticketNumber);
+        }
+        else {
+            g_logger.warning(L"ExpensiveAcceptance: ticket print failed, saved to file: " + m_currentTicket.ticketNumber);
+            MessageBoxW(m_hWnd, L"Талон не напечатан, но сохранён в файл.", L"Предупреждение", MB_OK);
+        }
+
+        // Показать экран с талоном
+        showTicketIssued();
+        g_logger.info(L"ExpensiveAcceptance: completed successfully");
+    }
+
 public:
     HWND m_hWnd;
 
@@ -878,15 +1255,42 @@ public:
             break;
         
         case ID_BTN_TRUST:
-            handleQueueSelection(QueueType::TRUST);
+            showTrustAcceptanceWindow();
+            break;
+
+        case ID_BTN_TRUST_PRINT:
+            onTrustAcceptancePrint();
+            break;
+
+        case ID_BTN_TRUST_BACK:
+            // Возврат на экран выбора типа сдачи товара
+            createSubmitMenu();
             break;
 
         case ID_BTN_PAID:
-            handleQueueSelection(QueueType::PAID);
+            showPaidAcceptanceWindow();
+            break;
+
+        case ID_BTN_PAID_PRINT:
+            onPaidAcceptancePrint();
+            break;
+
+        case ID_BTN_PAID_BACK:
+            // Возврат на экран выбора типа сдачи товара
+            createSubmitMenu();
             break;
 
         case ID_BTN_EXPENSIVE:
-            handleQueueSelection(QueueType::EXPENSIVE);
+            showExpensiveAcceptanceWindow();
+            break;
+
+        case ID_BTN_EXPENSIVE_PRINT:
+            onExpensiveAcceptancePrint();
+            break;
+
+        case ID_BTN_EXPENSIVE_BACK:
+            // Возврат на экран выбора типа сдачи товара
+            createSubmitMenu();
             break;
 
         case ID_BTN_PAY_CARD:
@@ -1021,7 +1425,9 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         HWND hStatic = (HWND)lParam;
         DWORD id = GetDlgCtrlID(hStatic);
 
-        if (id == IDC_STATIC_EXTRA20_TEXT) {
+        if (id == IDC_STATIC_EXTRA20_TEXT || id == IDC_STATIC_TRUST_TEXT ||
+            id == IDC_STATIC_PAID_TEXT || id == ID_STATIC_PAID_QUEUE_COUNT ||
+            id == IDC_STATIC_EXPENSIVE_TEXT || id == ID_STATIC_EXPENSIVE_QUEUE_COUNT) {
             SetBkColor(hdc, Config::PRIMARY_COLOR);
             SetTextColor(hdc, RGB(255, 255, 255));
             return (LRESULT)g_hBrushGreen;

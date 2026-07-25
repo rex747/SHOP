@@ -41,7 +41,7 @@ public:
 
     HTTPSClient(const std::wstring& serverName, INTERNET_PORT port)
         : m_serverName(serverName), m_port(port) {
-        m_hSession = WinHttpOpen(L"KioskClient/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        m_hSession = WinHttpOpen(L"KioskClient/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
 		g_logger.info(L"HTTPSClient initialized for server: " + serverName + L":" + std::to_wstring(port));
         if (!m_hSession) {
             g_logger.error(L"WinHttpOpen failed: " + std::to_wstring(GetLastError()));
@@ -94,11 +94,24 @@ public:
 
         g_logger.info(L"Opening HTTPS request (WINHTTP_FLAG_SECURE)...");
         HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", path.c_str(), NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+                
         if (!hRequest) {
             g_logger.error(L"WinHttpOpenRequest failed: " + std::to_wstring(GetLastError()));
             WinHttpCloseHandle(hConnect);
             return std::nullopt;
         }
+
+        // Принудительно задаем TLS 1.2
+        DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+        if (!WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols))) {
+            g_logger.warning(L"WinHttpSetOption (SECURE_PROTOCOLS) failed: " + std::to_wstring(GetLastError()) + L". TLS 1.2 may not be available.");
+        }
+
+        // Увеличиваем таймауты для соединения, отправки и получения
+        DWORD dwTimeout = 60000; // 60 секунд
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_CONNECT_TIMEOUT, &dwTimeout, sizeof(dwTimeout));
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SEND_TIMEOUT, &dwTimeout, sizeof(dwTimeout));
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT, &dwTimeout, sizeof(dwTimeout));
 
         // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ ОШИБКИ 12029/12045:
         // Игнорируем ошибки проверки сертификата (неизвестный CA, несовпадение имени, истекший срок).
@@ -204,12 +217,25 @@ public:
 
         HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path.c_str(), NULL,
             WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+
         if (!hRequest) {
             g_logger.error(L"WinHttpOpenRequest failed: " + std::to_wstring(GetLastError()));
             WinHttpCloseHandle(hConnect);
             return std::nullopt;
         }
 
+        // Принудительно задаем TLS 1.2
+        DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+        if (!WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols))) {
+            g_logger.warning(L"WinHttpSetOption (SECURE_PROTOCOLS) failed: " + std::to_wstring(GetLastError()) + L". TLS 1.2 may not be available.");
+        }
+
+        // Увеличиваем таймауты для соединения, отправки и получения
+        DWORD dwTimeout = 60000; // 60 секунд
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_CONNECT_TIMEOUT, &dwTimeout, sizeof(dwTimeout));
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SEND_TIMEOUT, &dwTimeout, sizeof(dwTimeout));
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT, &dwTimeout, sizeof(dwTimeout));
+        
         DWORD dwFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
             SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
             SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |

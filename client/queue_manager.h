@@ -129,30 +129,43 @@ public:
         return ticket;
     }
 
-    std::optional<QueueTicket> getTrustAcceptance(int clientId,
-        const std::wstring& authToken) {
-        // Trust acceptance doesn't need a queue
+    // метод очереди на доверии
+    std::optional<QueueTicket> getTrustAcceptance(int clientId, const std::wstring& authToken) {
+
+        g_logger.info(L"Start method queue_manager::getTrustAcceptance");
+        std::lock_guard<std::mutex> lock(m_mutex);
+
         json request;
         request["client_id"] = clientId;
-        request["queue_type"] = wstring_to_utf8(L"trust");
+        g_logger.info(L"Client_id: "+ clientId);
 
         auto response = g_httpsClient.post(L"/api/v1/queue/trust_acceptance", request, authToken);
 
-        if (response && response->contains("success")) {
+        if (response && response->contains("success") && (*response)["success"].get<bool>()) {
             QueueTicket ticket;
-            ticket.ticketNumber = L"TRUST-" + std::to_wstring(
-                std::chrono::system_clock::now().time_since_epoch().count());
+            ticket.ticketNumber = utf8_to_wstring((*response)["ticket_number"].get<std::string>());
             ticket.type = QueueType::TRUST;
-            ticket.position = 0;
-            ticket.itemsCount = 1;
-            ticket.windowNumber = L"N/A";
+            ticket.position = (*response)["position"].get<int>();
+            ticket.itemsCount = 1; // для доверия 1
+            ticket.windowNumber = utf8_to_wstring((*response)["window_number"].get<std::string>());
             ticket.estimatedWaitTime = 0;
-            ticket.createdAt = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
+            ticket.createdAt = (*response)["created_at"].get<int64_t>();
 
+            g_logger.info(L"Trust acceptance ticket issued: " + ticket.ticketNumber);
             return ticket;
         }
 
-        return std::nullopt;
+        // Fallback: если сервер недоступен, генерируем локальный талон
+        g_logger.warning(L"Server unavailable for trust acceptance, generating local ticket");
+        QueueTicket ticket;
+        ticket.ticketNumber = generateLocalTicketNumber(QueueType::TRUST);
+        ticket.type = QueueType::TRUST;
+        ticket.position = 0;
+        ticket.itemsCount = 1;
+        ticket.windowNumber = L"Offline";
+        ticket.estimatedWaitTime = 0;
+        ticket.createdAt = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
+        return ticket;
     }
 
     bool cancelTicket(const std::wstring& ticketNumber, const std::wstring& authToken) {
