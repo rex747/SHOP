@@ -81,18 +81,7 @@ public:
                 revoked BOOLEAN DEFAULT FALSE
             )
         )");
-
-            txn.exec(R"(
-            CREATE TABLE IF NOT EXISTS email_otp (
-                id SERIAL PRIMARY KEY,
-                phone VARCHAR(20) NOT NULL,
-                code_hash VARCHAR(256) NOT NULL,
-                expires_at BIGINT NOT NULL,
-                used BOOLEAN DEFAULT FALSE,
-                created_at INTEGER DEFAULT EXTRACT(EPOCH FROM NOW())
-            )
-        )");
-
+            
             txn.exec(R"(
             CREATE TABLE IF NOT EXISTS first_time_tickets (
                 id SERIAL PRIMARY KEY,
@@ -225,8 +214,7 @@ public:
             // ========================================================================
             // Индексы
             // ========================================================================
-            txn.exec("CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(phone)");
-            txn.exec("CREATE INDEX IF NOT EXISTS idx_email_otp_phone ON email_otp(phone)");
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(phone)");            
             txn.exec("CREATE INDEX IF NOT EXISTS idx_first_time_status ON first_time_tickets(status)");
             txn.exec("CREATE INDEX IF NOT EXISTS idx_queue_status_type ON queue_tickets(queue_type, status)");
             txn.exec("CREATE INDEX IF NOT EXISTS idx_trust_acceptances_client ON trust_acceptances(client_id)");
@@ -337,44 +325,6 @@ public:
         catch (const std::exception& e) {
             std::cerr << "getTOTPSecret error: " << e.what() << std::endl;
             return std::nullopt;
-        }
-    }
-
-    bool saveEmailOTP(const std::string& phone, const std::string& code_hash, int64_t expires_at) {
-        try {
-            pqxx::work txn{ *conn_ };
-            txn.exec("UPDATE email_otp SET used = TRUE WHERE phone = $1 AND used = FALSE", pqxx::params{ phone });
-            txn.exec(
-                "INSERT INTO email_otp (phone, code_hash, expires_at) VALUES ($1, $2, $3)",
-                pqxx::params{ phone, code_hash, expires_at }
-            );
-            txn.commit();
-            return true;
-        }
-        catch (const std::exception& e) {
-            std::cerr << "saveEmailOTP error: " << e.what() << std::endl;
-            return false;
-        }
-    }
-
-    bool verifyAndConsumeEmailOTP(const std::string& phone, const std::string& code_hash) {
-        try {
-            pqxx::work txn{ *conn_ };
-            int64_t now = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
-            auto result = txn.exec(
-                "SELECT id FROM email_otp WHERE phone = $1 AND code_hash = $2 AND expires_at > $3 AND used = FALSE",
-                pqxx::params{ phone, code_hash, now }
-            );
-            if (result.empty()) {
-                return false;
-            }
-            txn.exec("UPDATE email_otp SET used = TRUE WHERE id = $1", pqxx::params{ result[0]["id"].as<int>() });
-            txn.commit();
-            return true;
-        }
-        catch (const std::exception& e) {
-            std::cerr << "verifyAndConsumeEmailOTP error: " << e.what() << std::endl;
-            return false;
         }
     }
 

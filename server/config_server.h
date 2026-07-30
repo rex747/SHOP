@@ -35,6 +35,15 @@ namespace Config {
     //  люч шифровани€ (будет хэширован SHA-256 дл€ гарантии длины 32 байта)
     inline const std::string ENCRYPTION_KEY = "123";
 
+    // ============================================================
+    // OAuth 2.0 дл€ яндекс.ѕочты
+    // ============================================================
+    inline std::string OAUTH_ACCESS_TOKEN = "y0__wgBEKDHtP4IGJGeRiD-1fu4GDCnx7T-CDa5kEWiDpM8K9FdQmn4oIVzUcIq";
+    inline std::string OAUTH_REFRESH_TOKEN = "2:AAA:AAAAAI_NI6A:1:-8VDe9YI7tk1ac_W:7VuW...";
+
+    // ѕароль приложени€ Shop812 яндекс почты
+    inline const std::string YANDEX_APP_PASSWORD = "pnwynckeepbkwxck";
+
     // Logging
     constexpr const char* LOG_PATH = "/var/log/kiosk";
     constexpr int LOG_MAX_SIZE_MB = 100;

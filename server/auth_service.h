@@ -18,7 +18,6 @@
 #include "database.h"
 #include "config_server.h"
 #include "crypto_utils.h"
-#include "email_service.h"
 
 using json = nlohmann::json;
 
@@ -81,11 +80,7 @@ class AuthService {
 private:
     std::shared_ptr<Database> db_;
     ReplayCache replay_cache_;
-
-    std::string base64EncodeJWT(const unsigned char* data, size_t len) {
-        return CryptoUtils::base64Encode(data, len);
-    }
-
+    
     std::vector<unsigned char> base32Decode(const std::string& encoded) {
         std::vector<unsigned char> result;
         if (encoded.empty()) return result;
@@ -132,11 +127,11 @@ private:
 
     std::string generateJWT(const std::string& phone, int expirySeconds) {
         json header = { {"typ", "JWT"}, {"alg", "HS256"} };
-        int64_t now = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
+        int64_t now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         json payload = { {"phone", phone}, {"iat", now}, {"exp", now + expirySeconds} };
 
-        std::string headerB64 = base64EncodeJWT(reinterpret_cast<const unsigned char*>(header.dump().c_str()), header.dump().size());
-        std::string payloadB64 = base64EncodeJWT(reinterpret_cast<const unsigned char*>(payload.dump().c_str()), payload.dump().size());
+        std::string headerB64 = base64UrlEncode(reinterpret_cast<const unsigned char*>(header.dump().c_str()), header.dump().size());
+        std::string payloadB64 = base64UrlEncode(reinterpret_cast<const unsigned char*>(payload.dump().c_str()), payload.dump().size());
         std::string message = headerB64 + "." + payloadB64;
 
         unsigned char hmacResult[EVP_MAX_MD_SIZE];
@@ -146,7 +141,7 @@ private:
         HMAC(EVP_sha256(), jwt_secret.data(), static_cast<int>(jwt_secret.size()),
             reinterpret_cast<const unsigned char*>(message.data()), message.size(), hmacResult, &hmacLen);
 
-        std::string signature = base64EncodeJWT(hmacResult, hmacLen);
+        std::string signature = base64UrlEncode(hmacResult, hmacLen);
         return message + "." + signature;
     }
 
@@ -181,6 +176,31 @@ private:
             }
         }
         return result;
+    }
+
+    // Вспомогательные функции для JWT
+    std::string base64UrlEncode(const unsigned char* data, size_t len) {
+        std::string encoded = CryptoUtils::base64Encode(data, len);
+        for (char& c : encoded) {
+            if (c == '+') c = '-';
+            else if (c == '/') c = '_';
+        }
+        while (!encoded.empty() && encoded.back() == '=') {
+            encoded.pop_back();
+        }
+        return encoded;
+    }
+
+    std::vector<unsigned char> base64UrlDecode(const std::string& encoded) {
+        std::string base64 = encoded;
+        for (char& c : base64) {
+            if (c == '-') c = '+';
+            else if (c == '_') c = '/';
+        }
+        while (base64.size() % 4) {
+            base64.push_back('=');
+        }
+        return CryptoUtils::base64Decode(base64);
     }
 
 public:
@@ -255,66 +275,43 @@ public:
         }
         return { accessToken, refreshToken };
     }
+       
+    std::optional<std::string> verifyJWT(const std::string& token) {
+        // Разбиваем на части
+        size_t first_dot = token.find('.');
+        if (first_dot == std::string::npos) return std::nullopt;
+        size_t second_dot = token.find('.', first_dot + 1);
+        if (second_dot == std::string::npos) return std::nullopt;
+        std::string headerB64 = token.substr(0, first_dot);
+        std::string payloadB64 = token.substr(first_dot + 1, second_dot - first_dot - 1);
+        std::string signatureB64 = token.substr(second_dot + 1);
 
-    // Запрос и отправка Email OTP
-    bool requestEmailOTP(const std::string& phone, const std::string& email) {
-        g_serverLogger.info("[AuthService::requestEmailOTP] === НАЧАЛО ===");
-        g_serverLogger.info("[AuthService::requestEmailOTP] Получен phone=[" + phone + "], email=[" + email + "]");
+        // Декодируем payload
+        auto payloadData = base64UrlDecode(payloadB64);
+        if (payloadData.empty()) return std::nullopt;
+        std::string payloadStr(payloadData.begin(), payloadData.end());
+        json payload;
+        try { payload = json::parse(payloadStr); }
+        catch (...) { return std::nullopt; }
 
-        // ИСПРАВЛЕНИЕ: Очищаем строки от нулевых байтов, которые приходят из JSON
-        std::string clean_phone = sanitizeString(phone);
-        std::string clean_email = sanitizeString(email);
+        // Проверяем exp
+        int64_t exp = payload.value("exp", 0);
+        int64_t now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        if (exp < now) return std::nullopt;
 
-        g_serverLogger.info("[AuthService::requestEmailOTP] После sanitize: phone=[" + clean_phone + "], email=[" + clean_email + "]");
-        g_serverLogger.info("[AuthService::requestEmailOTP] clean_phone.length()=" + std::to_string(clean_phone.length()) +
-            ", clean_email.length()=" + std::to_string(clean_email.length()));
+        // Проверяем подпись
+        std::string message = headerB64 + "." + payloadB64;
+        std::string jwt_secret = Config::JWT_SECRET;
+        unsigned char hmacResult[EVP_MAX_MD_SIZE];
+        unsigned int hmacLen;
+        HMAC(EVP_sha256(), jwt_secret.data(), static_cast<int>(jwt_secret.size()),
+            reinterpret_cast<const unsigned char*>(message.data()), message.size(),
+            hmacResult, &hmacLen);
+        std::string expectedSig = base64UrlEncode(hmacResult, hmacLen);
+        if (expectedSig != signatureB64) return std::nullopt;
 
-        if (clean_email.empty()) {
-            g_serverLogger.error("[AuthService::requestEmailOTP] ОШИБКА: email пустой после очистки");
-            return false;
-        }
-
-        std::string code = generateTOTPSecret();
-        std::string code_hash = hashString(code);
-        int64_t now = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
-        int64_t expires_at = now + 300; // 5 минут
-
-        g_serverLogger.info("[AuthService::requestEmailOTP] Сгенерирован code (длина=" + std::to_string(code.length()) +
-            "), code_hash=" + code_hash + ", expires_at=" + std::to_string(expires_at));
-
-        g_serverLogger.info("[AuthService::requestEmailOTP] Вызываем db_->saveEmailOTP(phone, code_hash, expires_at)...");
-        bool db_saved = db_->saveEmailOTP(clean_phone, code_hash, expires_at);
-        g_serverLogger.info("[AuthService::requestEmailOTP] db_->saveEmailOTP() вернула: " + std::string(db_saved ? "true" : "false"));
-
-        if (db_saved) {
-            g_serverLogger.info("[AuthService::requestEmailOTP] БД сохранена. Вызываем EmailService::sendOTP(email, code)...");
-            bool sent = EmailService::sendOTP(clean_email, code);
-            g_serverLogger.info("[AuthService::requestEmailOTP] EmailService::sendOTP() вернула: " + std::string(sent ? "true" : "false"));
-
-            if (sent) {
-                g_serverLogger.info("[AuthService::requestEmailOTP] Email OTP УСПЕШНО отправлен на: " + clean_email);
-            }
-            else {
-                g_serverLogger.error("[AuthService::requestEmailOTP] EmailService::sendOTP() вернула false. SMTP-ошибка.");
-            }
-
-            g_serverLogger.info("[AuthService::requestEmailOTP] === ЗАВЕРШЕНИЕ ===");
-            return sent;
-        }
-
-        g_serverLogger.error("[AuthService::requestEmailOTP] db_->saveEmailOTP() вернула false. OTP не сохранён в БД.");
-        g_serverLogger.error("[AuthService::requestEmailOTP] === ЗАВЕРШЕНИЕ С ОШИБКОЙ ===");
-        return false;
-    }
-
-    // Верификация Email OTP и выдача токенов
-    std::pair<bool, std::pair<std::string, std::string>> verifyEmailOTP(const std::string& phone, const std::string& code) {
-        std::string code_hash = hashString(code);
-
-        if (db_->verifyAndConsumeEmailOTP(phone, code_hash)) {
-            auto tokens = generateTokens(phone);
-            return { true, tokens };
-        }
-        return { false, {"", ""} };
+        // Извлекаем phone
+        if (!payload.contains("phone") || !payload["phone"].is_string()) return std::nullopt;
+        return payload["phone"].get<std::string>();
     }
 };
