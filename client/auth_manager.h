@@ -6,12 +6,12 @@
 #include <optional>
 #include <chrono>
 #include <cstdint>
-#include "string_utils.h"
-
 #include <nlohmann/json.hpp>
 
 #include "https_client.h"
 #include "config.h"
+#include "string_utils.h"
+#include "logger.h"
 
 extern HTTPSClient g_httpsClient;
 extern Logger g_logger;
@@ -44,16 +44,22 @@ struct AuthToken
 class AuthManager
 {
 private:
+    // структура авторизации
     std::optional<AuthToken> m_token;
     std::string m_phone;  // храним в UTF-8
     bool m_isLoggedIn = false;
     int m_clientId = 0;
     std::wstring m_fullName;
 
+    // отслеживание последней попытки входа ----
+    bool m_loginAttempted = false;
+    std::string m_lastAttemptPhone;
+
     bool refreshAccessToken()
     {
         if (!m_token || m_token->refreshToken.empty())
             return false;
+        g_logger.error(L"Token is't refreshed or empty");
 
         nlohmann::json request;
         request["refresh_token"] = m_token->refreshToken;
@@ -131,7 +137,7 @@ public:
     }
 
     // -------------------------------------------------------------------------
-    // НОВЫЙ ПУБЛИЧНЫЙ МЕТОД для установки токенов извне (без нарушения инкапсуляции)
+    // МЕТОД для установки токенов извне (без нарушения инкапсуляции)
     // -------------------------------------------------------------------------
     void setAuthTokens(const std::string& accessToken,
         const std::string& refreshToken,
@@ -147,6 +153,7 @@ public:
         if (!m_token || !m_token->isValid()) {
             if (!refreshAccessToken()) {
                 m_token.reset();
+                g_logger.info(L"[settAuthTokens:getAuthTokens]: не удалось обновить токен");
                 return L"";
             }
         }
@@ -163,6 +170,8 @@ public:
         m_isLoggedIn = false;
         m_clientId = 0;
         m_fullName.clear();
+        m_loginAttempted = false;
+        m_lastAttemptPhone.clear();
     }
 
     std::wstring getPhone() const {
@@ -182,6 +191,19 @@ public:
     bool isLoggedIn() const { return m_isLoggedIn; }
     int getClientId() const { return m_clientId; }
     std::wstring getFullName() const { return m_fullName; }
+
+    // ---- МЕТОДЫ ДЛЯ ОТСЛЕЖИВАНИЯ ПОПЫТКИ ВХОДА ----
+    void setLoginAttempted(bool attempted, const std::string& phone = "") {
+        m_loginAttempted = attempted;
+        if (!phone.empty()) m_lastAttemptPhone = phone;
+        else m_lastAttemptPhone.clear();
+        g_logger.info(L"AuthManager::setLoginAttempted: " + std::wstring(attempted ? L"true" : L"false") +
+            L", phone=" + utf8_to_wstring(m_lastAttemptPhone));
+    }
+
+    bool wasLoginAttempted() const { return m_loginAttempted; }
+    std::string getLastAttemptPhone() const { return m_lastAttemptPhone; }
+    // ---------------------------------------------------------
 
     // Для отладки (не используется в продакшене)
     friend class RegistrationWindow; // разрешаем доступ только для тестирования,

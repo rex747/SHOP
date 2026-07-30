@@ -1,18 +1,21 @@
-﻿#pragma once
+﻿//main_window.h
+#pragma once
 
 #include <windows.h>
 #include <commctrl.h>
 #include <string>
 #include <vector>
 #include <sstream>
+
 #include "config.h"
 #include "queue_manager.h"
 #include "registration_dialog.h"
-#include "registration_window.h"
 #include "logger.h"
 #include "auth_manager.h"
 #include "receipt_printer.h"
 #include "https_client.h"
+#include "login_window.h"
+#include "string_utils.h"
 
 extern QueueManager g_queueManager;
 extern AuthManager g_authManager;
@@ -29,6 +32,7 @@ static HBRUSH g_hBrushWindow = nullptr;
 static HFONT g_hFontTitle = nullptr;
 static HFONT g_hFontButton = nullptr;
 static HFONT g_hFontEdit = nullptr;
+static HFONT g_hFontLabel = nullptr;
 static HWND g_hCloseBtn = nullptr;
 
 // Control IDs
@@ -102,6 +106,14 @@ static HWND g_hCloseBtn = nullptr;
 #define IDC_STATIC_EXPENSIVE_TEXT    6016
 #define ID_STATIC_EXPENSIVE_QUEUE_COUNT 6017
 
+// ID для окна отображения статистики продаж
+#define ID_BTN_SALES_BACK 7001
+#define ID_STATIC_SALES_STATUS 7002
+#define ID_LIST_SALES 7003
+
+#define WM_SALES_DATA_READY (WM_USER + 200)
+#define WM_SALES_LOADING_START (WM_USER + 201)
+
 // Window states
 enum class WindowState {
     MAIN_MENU,
@@ -110,7 +122,8 @@ enum class WindowState {
     CONSIGNOR_LOOKUP,
     TICKET_ISSUED,
     GENERAL_QUEUE_INPUT,
-    EXTRA_20_PAYMENT
+    EXTRA_20_PAYMENT,
+    MY_SALES
 };
 
 class MainWindow {
@@ -130,6 +143,10 @@ private:
     HWND m_hBtnPrintTicket;
     HWND m_hBtnResetId;
     HWND m_hBtnClear;
+    HWND m_hSalesListView;       // ListView для отображения продаж
+    HWND m_hSalesStatusLabel;    // для отображения статуса загрузки информации
+    HWND m_hClientInfoLabel;     // отображение информации о клиенте
+    HWND m_hSalesBackBtn;        // кнопка "Назад" (красная)
     std::vector<HWND> m_digitButtons;
     int m_currentClientId;
     std::wstring m_currentClientName;
@@ -163,6 +180,10 @@ private:
         m_hBtnPrintTicket = nullptr;
         m_hBtnResetId = nullptr;
         m_hBtnClear = nullptr;
+        m_hSalesListView = nullptr;
+        m_hSalesStatusLabel = nullptr;
+        m_hClientInfoLabel = nullptr;    
+        m_hSalesBackBtn = nullptr;
         m_nameConfirmed = false;
         m_currentClientId = 0;
         m_currentClientName.clear();
@@ -337,6 +358,186 @@ private:
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_BACK, g_hInstance, nullptr));
 
         styleButtons();
+    }
+    //-------------------------------------------------------------
+    // Страница отображения статистики продаж пользователя (подтягиваем данные из 1С)
+    //-------------------------------------------------------------
+    void loadSalesData() {
+        g_logger.info(L"loadSalesData: started");
+
+        // Сначала сообщаем UI о начале загрузки (статус)
+        PostMessageW(m_hWnd, WM_SALES_LOADING_START, 0, 0);
+
+        // Проверка авторизации
+        if (!g_authManager.isLoggedIn() || g_authManager.getClientId() == 0) {
+            std::wstring msg = L"Клиент не авторизован";
+            SetWindowTextW(m_hClientInfoLabel, msg.c_str());
+            g_logger.warning(L"loadSalesData: " + msg);
+            return;
+        }
+
+        std::wstring authToken = g_authManager.getAuthToken();
+        if (authToken.empty()) {
+            std::wstring msg = L"Токен отсутствует, выполните вход";
+            SetWindowTextW(m_hClientInfoLabel, msg.c_str());
+            g_logger.warning(L"loadSalesData: " + msg);
+            return;
+        }
+
+        // Показываем, что клиент авторизован
+        std::wstring fullName = g_authManager.getFullName();
+        std::wstring clientInfo;
+        if (!fullName.empty()) {
+            clientInfo = L"Клиент " + fullName + L" авторизован";
+        }
+        else {
+            clientInfo = L"Клиент авторизован";
+        }
+        SetWindowTextW(m_hClientInfoLabel, clientInfo.c_str());
+        g_logger.info(L"loadSalesData: client info set to: " + clientInfo);
+
+        int clientId = g_authManager.getClientId();
+        g_logger.info(L"loadSalesData: clientId = " + std::to_wstring(clientId));
+
+        // Запускаем асинхронный запрос
+        std::thread([this, clientId, authToken]() {
+            // Сначала сообщаем UI о начале загрузки
+            PostMessageW(m_hWnd, WM_SALES_LOADING_START, 0, 0);
+
+            std::wstring path = L"/api/v1/clients/sales?client_id=" + std::to_wstring(clientId);
+            auto response = g_httpsClient.get(path, authToken);
+
+            // Возвращаем результат в UI-поток
+            PostMessageW(m_hWnd, WM_SALES_DATA_READY, 0, reinterpret_cast<LPARAM>(new std::optional<json>(response)));
+            }).detach();
+        g_logger.info(L"loadSalesData: async request sent");
+    }
+
+    void createMySales() {
+        clearWindow();
+        m_currentState = WindowState::MY_SALES;
+
+        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        int centerX = screenWidth / 2;
+        int top = 30;
+
+        // Заголовок
+        HWND hTitle = CreateWindowExW(0, L"STATIC", L"Мои продажи",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, top, screenWidth - 100, 80,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hTitle, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
+        top += 110;
+
+        // Информация о клиенте (ФИО, статус авторизации) -----
+        m_hClientInfoLabel = CreateWindowExW(0, L"STATIC", L"",   // изначально пусто
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, top, screenWidth - 100, 50,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(m_hClientInfoLabel, WM_SETFONT, (WPARAM)g_hFontLabel, TRUE);
+        top += 60; // отступ
+
+        // ----- ЭЛЕМЕНТ СТАТУСА: "Загрузка данных..." / результат -----
+        m_hSalesStatusLabel = CreateWindowExW(0, L"STATIC", L"Загрузка данных...",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, top, screenWidth - 100, 50,
+            m_hWnd, (HMENU)ID_STATIC_SALES_STATUS, g_hInstance, nullptr);
+        SendMessageW(m_hSalesStatusLabel, WM_SETFONT, (WPARAM)g_hFontLabel, TRUE);
+        top += 60; // отступ
+
+        // ListView
+        int listHeight = screenHeight - top - 120;
+        m_hSalesListView = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEW, L"",
+            WS_VISIBLE | WS_CHILD | LVS_REPORT | LVS_SINGLESEL,
+            20, top, screenWidth - 40, listHeight,
+            m_hWnd, (HMENU)ID_LIST_SALES, g_hInstance, nullptr);
+        SendMessageW(m_hSalesListView, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+
+        // Настройка колонок ListView
+        LVCOLUMNW col = { 0 };
+        col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+        std::vector<std::wstring> headers = {
+            L"Дата отчёта", L"№ товара", L"Наименование",
+            L"Цена за ед.", L"Кол-во", L"Дата продажи",
+            L"Состояние", L"Примечание"
+        };
+        std::vector<int> widths = { 120, 100, 200, 120, 80, 120, 180, 200 };
+        for (size_t i = 0; i < headers.size(); ++i) {
+            col.pszText = const_cast<LPWSTR>(headers[i].c_str());
+            col.cx = widths[i];
+            col.iSubItem = static_cast<int>(i);
+            ListView_InsertColumn(m_hSalesListView, i, &col);
+        }
+
+        // Кнопка "Назад" (красная)
+        int btnWidth = 200, btnHeight = 60;
+        int backY = screenHeight - btnHeight - 30;
+        HWND hBack = CreateWindowExW(0, L"BUTTON", L"Назад",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX - btnWidth / 2, backY, btnWidth, btnHeight,
+            m_hWnd, (HMENU)ID_BTN_SALES_BACK, g_hInstance, nullptr);
+        m_buttons.push_back(hBack);
+        SendMessageW(hBack, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+
+        // Запрос данных
+        loadSalesData();
+    }
+
+    void onSalesDataReady(const std::optional<json>& response) {
+        g_logger.info(L"onSalesDataReady: received response");
+        if (!response) {
+            SetWindowTextW(m_hSalesStatusLabel, L"Ошибка соединения с сервером");
+            g_logger.error(L"onSalesDataReady: no response (connection error)");
+            return;
+        }
+        if (!response->contains("sales") || !(*response)["sales"].is_array()) {
+            SetWindowTextW(m_hSalesStatusLabel, L"Некорректный ответ сервера");
+            g_logger.error(L"onSalesDataReady: invalid response format");
+            return;
+        }
+
+        auto& sales = (*response)["sales"];
+        if (sales.empty()) {
+            SetWindowTextW(m_hSalesStatusLabel, L"Нет данных о продажах");
+            g_logger.info(L"onSalesDataReady: no sales data");
+            return;
+        }
+
+        // Очищаем ListView
+        ListView_DeleteAllItems(m_hSalesListView);
+
+        // Заполняем
+        int index = 0;
+        for (const auto& item : sales) {
+            LVITEMW lvi = { 0 };
+            lvi.mask = LVIF_TEXT;
+            lvi.iItem = index;
+
+            std::vector<std::wstring> columns;
+            columns.push_back(utf8_to_wstring(item.value("report_date", "")));
+            columns.push_back(utf8_to_wstring(item.value("item_number", "")));
+            columns.push_back(utf8_to_wstring(item.value("item_name", "")));
+            columns.push_back(::to_wstring(item.value("price", 0.0)));          // double
+            columns.push_back(std::to_wstring(item.value("quantity", 0)));
+            columns.push_back(utf8_to_wstring(item.value("sale_date", "")));
+            columns.push_back(utf8_to_wstring(item.value("status", "")));
+            columns.push_back(utf8_to_wstring(item.value("note", "")));
+
+            for (size_t i = 0; i < columns.size(); ++i) {
+                lvi.iSubItem = static_cast<int>(i);
+                lvi.pszText = const_cast<LPWSTR>(columns[i].c_str());
+                if (i == 0)
+                    ListView_InsertItem(m_hSalesListView, &lvi);
+                else
+                    ListView_SetItem(m_hSalesListView, &lvi);
+            }
+            ++index;
+        }
+
+        std::wstring status = L"Найдено записей: " + std::to_wstring(index);
+        SetWindowTextW(m_hSalesStatusLabel, status.c_str());
+        g_logger.info(L"onSalesDataReady: loaded " + std::to_wstring(index) + L" records");
     }
 
     // ------------------------------------------------------------
@@ -1198,6 +1399,10 @@ public:
         m_hBtnPrintTicket(nullptr),
         m_hBtnResetId(nullptr),
         m_hBtnClear(nullptr),
+        m_hSalesListView(nullptr),
+        m_hSalesStatusLabel(nullptr),
+        m_hClientInfoLabel(nullptr),   // инициализация нового члена
+        m_hSalesBackBtn(nullptr),
         m_currentClientId(0),
         m_nameConfirmed(false) {
     }
@@ -1214,6 +1419,23 @@ public:
         case WM_PAINT:
             onPaint();
             break;
+        case WM_SALES_LOADING_START:
+            // Устанавливаем статус загрузки (в нижний элемент)
+            if (m_hSalesStatusLabel) {
+                SetWindowTextW(m_hSalesStatusLabel, L"Загрузка данных...");
+                InvalidateRect(m_hSalesStatusLabel, NULL, TRUE);
+                g_logger.info(L"WM_SALES_LOADING_START: status set to 'Загрузка данных...'");
+            }
+            break;
+        case WM_SALES_DATA_READY:
+        {
+            auto* respPtr = reinterpret_cast<std::optional<json>*>(lParam);
+            if (respPtr) {
+                onSalesDataReady(*respPtr);
+                delete respPtr;
+            }
+            break;
+        }
         }
     }
 
@@ -1233,8 +1455,30 @@ public:
         switch (cmd) {
         case ID_BTN_REGISTER:
         {
-            RegistrationWindow* regWnd = new RegistrationWindow();
-            regWnd->show(m_hWnd);
+            // Открываем окно входа (LoginWindow)
+            LoginWindow loginWnd;
+            bool loginSuccess = loginWnd.show(m_hWnd);
+            if (loginSuccess) {
+                // Успешный вход – обновляем главное меню (чтобы показать приветствие)
+                createMainMenu();
+                g_logger.info(L"MainWindow: login successful, main menu refreshed");
+            }
+            else {
+                // Если была попытка входа (был введён номер), но она не удалась,
+                // значит пользователь не найден – открываем страницу "Я первый раз"
+                if (g_authManager.wasLoginAttempted()) {
+                    g_logger.info(L"MainWindow: login failed, redirecting to First Time page");
+                    // Сбрасываем флаг попытки, чтобы не зациклиться
+                    g_authManager.setLoginAttempted(false);
+                    // Открываем страницу "Я первый раз (оформление договора)"
+                    handleFirstTime();
+                }
+                else {
+                    // Просто закрыли окно входа (отмена) – ничего не делаем
+                    g_logger.info(L"MainWindow: login window cancelled");
+                }
+            }
+            break;
         }
         break;
 
@@ -1335,7 +1579,11 @@ public:
             break;
 
         case ID_BTN_MY_SALES:
-            MessageBoxW(m_hWnd, L"Раздел в разработке", L"Информация", MB_OK);
+            createMySales();
+            break;
+
+        case ID_BTN_SALES_BACK:
+            createMainMenu();
             break;
 
         case ID_BTN_ADDRESSES:
@@ -1380,6 +1628,9 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
         g_hFontEdit = CreateFontW(24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
+        g_hFontLabel = CreateFontW(24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
         g_mainWindow.m_hWnd = hWnd;
@@ -1454,6 +1705,7 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         DeleteObject(g_hFontTitle);
         DeleteObject(g_hFontButton);
         DeleteObject(g_hFontEdit);
+        DeleteObject(g_hFontLabel);
         g_hCloseBtn = nullptr;
         PostQuitMessage(0);
         return 0;

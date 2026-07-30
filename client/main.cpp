@@ -121,16 +121,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
     g_mainWindow.m_hWnd = g_hMainWnd;
 
-    // ѕоказываем диалог входа (модальный)
-    LoginWindow loginWnd;
-    loginWnd.show(g_hMainWnd);   // блокирует выполнение до закрыти€
+    // Ќ≈ показываем диалог входа (модальный) - смена логики, открываетс€ главное окно
+    //LoginWindow loginWnd;
+    //loginWnd.show(g_hMainWnd);   // блокирует выполнение до закрыти€
 
     ShowWindow(g_hMainWnd, nCmdShow);
     UpdateWindow(g_hMainWnd);
     g_mainWindow.create(g_hMainWnd);
-
-    g_logger.log(LogLevel::INFO, L"Main window created after login dialog");
-
+    
     g_logger.log(LogLevel::INFO, L"Main window created successfully");
 
     // Main message loop
