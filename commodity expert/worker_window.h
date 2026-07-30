@@ -1,5 +1,4 @@
-﻿// worker_window.h
-#pragma once
+﻿#pragma once
 
 #include <windows.h>
 #include <commctrl.h>
@@ -42,7 +41,8 @@ private:
     bool m_running;
     std::thread m_refreshThread;
 
-    std::wstring m_currentQueueType;
+    std::wstring m_currentQueueType;          // Хранит идентификатор очереди (например L"general")
+    std::vector<std::wstring> m_queueTypeIds; // Маппинг индекса ComboBox → идентификатор очереди
 
     ISpVoice* m_pVoice = nullptr;
 
@@ -107,7 +107,7 @@ private:
             g_logger.info(L"Using first_time endpoint");
         }
         else if (queueType == L"trust") {
-            path = L"/api/v1/queue/trust/waiting";   
+            path = L"/api/v1/queue/trust/waiting";
         }
         else {
             path = L"/api/v1/queue/waiting?type=" + queueType;
@@ -435,11 +435,9 @@ private:
             case WM_CREATE: msgName = L"WM_CREATE"; break;
             case WM_SIZE: msgName = L"WM_SIZE"; break;
             case WM_TIMER: msgName = L"WM_TIMER"; break;
-                // другие кейсы при необходимости
             default: msgName = L"0x" + std::to_wstring(msg);
             }
             g_logger.info(L"WndProc received message: " + msgName);
-            // Для WM_NOTIFY дополнительно выводим код уведомления
             if (msg == WM_NOTIFY) {
                 NMHDR* pNmhdr = reinterpret_cast<NMHDR*>(lParam);
                 if (pNmhdr) {
@@ -468,17 +466,22 @@ private:
                 g_logger.info(L"CB_GETCURSEL returned: " + std::to_wstring(idx));
 
                 if (idx != CB_ERR) {
-                    wchar_t typeBuf[64] = {};
-                    SendMessageW(pThis->m_hComboQueue, CB_GETLBTEXT, (WPARAM)idx, (LPARAM)typeBuf);
-                    g_logger.info(L"CB_GETLBTEXT returned: " + std::wstring(typeBuf));
+                    // Получаем идентификатор очереди по индексу из сохранённого массива
+                    if (idx >= 0 && idx < (LRESULT)pThis->m_queueTypeIds.size()) {
+                        std::wstring queueId = pThis->m_queueTypeIds[idx];
+                        g_logger.info(L"Selected queue id: " + queueId);
 
-                    {
-                        std::lock_guard<std::mutex> lock(pThis->m_mutex);
-                        pThis->m_currentQueueType = typeBuf;
+                        {
+                            std::lock_guard<std::mutex> lock(pThis->m_mutex);
+                            pThis->m_currentQueueType = queueId;
+                        }
+
+                        g_logger.info(L"Queue type changed to: " + pThis->m_currentQueueType);
+                        pThis->refreshList();
                     }
-
-                    g_logger.info(L"Queue type changed to: " + pThis->m_currentQueueType);
-                    pThis->refreshList();
+                    else {
+                        g_logger.error(L"Invalid index received from ComboBox: " + std::to_wstring(idx));
+                    }
                 }
                 return 0;
             }
@@ -513,7 +516,6 @@ private:
 
     // ------------------------------------------------------------------------
     // Создание элементов управления окна
-    // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Высота ComboBox увеличена для отображения всех 5 элементов
     // ------------------------------------------------------------------------
     void createControls() {
         RECT rc;
@@ -527,43 +529,53 @@ private:
         m_hBrush = CreateSolidBrush(RGB(240, 240, 240));
 
         // ========================================================================
-        // ИСПРАВЛЕНИЕ: Высота ComboBox увеличена с 100 до 200
-        // При шрифте 24px Bold высота одного элемента ~36px
-        // Для 5 элементов нужно минимум 5 * 36 = 180px
-        // Устанавливаем 200px с запасом на рамки и скроллбар
+        // ИСПРАВЛЕНИЕ: выпадающий список с русскими названиями очередей
+        // Внутренние идентификаторы хранятся в m_queueTypeIds по индексу
         // ========================================================================
         m_hComboQueue = CreateWindowExW(0, L"COMBOBOX", L"",
             WS_VISIBLE | WS_CHILD | CBS_DROPDOWNLIST | CBS_HASSTRINGS,
-            20, 10, 200, 200,  // ← ИСПРАВЛЕНО: 100 → 200
+            20, 10, 200, 200,
             m_hWnd, (HMENU)200, g_hInstance, nullptr);
         SendMessageW(m_hComboQueue, WM_SETFONT, (WPARAM)m_hFont, TRUE);
 
-        // Добавляем все 5 типов очередей
-        g_logger.info(L"Adding queue types to ComboBox");
+        // Массив пар: { отображаемое имя, внутренний идентификатор }
+        struct QueueTypeEntry {
+            const wchar_t* displayName;
+            const wchar_t* id;
+        };
+        QueueTypeEntry entries[] = {
+            { L"Общая очередь", L"general" },
+            { L"В первый раз (оформление) договора", L"first_time" },
+            { L"+20 позиций", L"extra_20" },
+            { L"На доверии", L"trust" },
+            { L"Платный прием", L"paid" },
+            { L"Дорогой товар", L"expensive" }
+        };
 
-        LRESULT idxGeneral = SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"general");
-        g_logger.info(L"Added 'general' at index: " + std::to_wstring(idxGeneral));
+        // Очищаем маппинг и добавляем элементы
+        m_queueTypeIds.clear();
+        for (const auto& entry : entries) {
+            int idx = (int)SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)entry.displayName);
+            if (idx != CB_ERR) {
+                // Сохраняем идентификатор в отдельном векторе (индекс совпадает)
+                m_queueTypeIds.push_back(entry.id);
+                g_logger.info(L"Added queue: " + std::wstring(entry.displayName) + L" -> " + std::wstring(entry.id));
+            }
+            else {
+                g_logger.error(L"Failed to add queue item: " + std::wstring(entry.displayName));
+            }
+        }
 
-        LRESULT idxFirstTime = SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"first_time");
-        g_logger.info(L"Added 'first_time' at index: " + std::to_wstring(idxFirstTime));
-
-        LRESULT idxExtra20 = SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"extra_20");
-        g_logger.info(L"Added 'extra_20' at index: " + std::to_wstring(idxExtra20));
-
-        LRESULT idxTrust = SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"trust");
-        g_logger.info(L"Added 'trust' at index: " + std::to_wstring(idxTrust));
-
-        LRESULT idxPaid = SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"paid");
-        g_logger.info(L"Added 'paid' at index: " + std::to_wstring(idxPaid));
-
-        LRESULT idxExpensive = SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)L"expensive");
-        g_logger.info(L"Added 'expensive' at index: " + std::to_wstring(idxExpensive));
-
-        // Устанавливаем начальный выбор — general (индекс 0)
+        // Устанавливаем начальный выбор — индекс 0 (Общая очередь)
         SendMessageW(m_hComboQueue, CB_SETCURSEL, 0, 0);
-        m_currentQueueType = L"general";
-        g_logger.info(L"ComboBox initialized with " +
-            std::to_wstring(SendMessageW(m_hComboQueue, CB_GETCOUNT, 0, 0)) + L" items, selected: general");
+        if (!m_queueTypeIds.empty()) {
+            m_currentQueueType = m_queueTypeIds[0];
+        }
+        else {
+            m_currentQueueType = L"general"; // fallback
+        }
+        g_logger.info(L"ComboBox initialized with " + std::to_wstring(m_queueTypeIds.size()) +
+            L" items, selected: " + m_currentQueueType);
 
         // ListBox для отображения талонов
         m_hListBox = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
