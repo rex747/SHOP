@@ -235,12 +235,14 @@ public:
         WinHttpSetOption(hRequest, WINHTTP_OPTION_CONNECT_TIMEOUT, &dwTimeout, sizeof(dwTimeout));
         WinHttpSetOption(hRequest, WINHTTP_OPTION_SEND_TIMEOUT, &dwTimeout, sizeof(dwTimeout));
         WinHttpSetOption(hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT, &dwTimeout, sizeof(dwTimeout));
-        
+        // Игнорируем ошибки сертификата (для тестового окружения)
         DWORD dwFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
             SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
             SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
             SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
         WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwFlags, sizeof(dwFlags));
+
+        g_logger.info(L"Sending GET request...");
 
         if (!WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.length(),
             WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
@@ -262,12 +264,20 @@ public:
         DWORD dwSize = 0;
         do {
             dwSize = 0;
-            if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) break;
+            if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) {
+                DWORD err = GetLastError();
+                g_logger.error(L"WinHttpQueryDataAvailable failed: " + std::to_wstring(err));
+                break;
+            }
             if (dwSize > 0) {
                 std::vector<char> buffer(dwSize + 1, 0);
                 DWORD dwDownloaded = 0;
-                if (WinHttpReadData(hRequest, buffer.data(), dwSize, &dwDownloaded)) {
+                if (WinHttpReadData(hRequest, (LPVOID)buffer.data(), dwSize, &dwDownloaded)) {
                     responseText.append(buffer.data(), dwDownloaded);
+                }
+                else {
+                    g_logger.error(L"WinHttpReadData failed: " + std::to_wstring(GetLastError()));
+                    break;
                 }
             }
         } while (dwSize > 0);
@@ -280,11 +290,14 @@ public:
             return std::nullopt;
         }
 
+        g_logger.info(L"Response received successfully. Size: " + std::to_wstring(responseText.length()) + L" bytes.");
+
         try {
             return json::parse(responseText);
         }
         catch (const json::parse_error& e) {
             g_logger.error(L"JSON parse error: " + utf8_to_wstring(e.what()));
+            g_logger.error(L"Raw response: " + utf8_to_wstring(responseText));
             return std::nullopt;
         }
     }

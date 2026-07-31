@@ -110,9 +110,15 @@ static HWND g_hCloseBtn = nullptr;
 #define ID_BTN_SALES_BACK 7001
 #define ID_STATIC_SALES_STATUS 7002
 #define ID_LIST_SALES 7003
+// ========== ДОБАВЛЕНО: ID для статика информации о комитенте ==========
+#define ID_STATIC_CONSIGNOR_INFO 8001
 
 #define WM_SALES_DATA_READY (WM_USER + 200)
 #define WM_SALES_LOADING_START (WM_USER + 201)
+
+// ID для окна "Узнать номер комитента" 
+#define WM_CONSIGNOR_DATA_READY (WM_USER + 202)
+#define WM_CONSIGNOR_LOADING_START (WM_USER + 203)
 
 // Window states
 enum class WindowState {
@@ -123,7 +129,8 @@ enum class WindowState {
     TICKET_ISSUED,
     GENERAL_QUEUE_INPUT,
     EXTRA_20_PAYMENT,
-    MY_SALES
+    MY_SALES,
+    ADDRESSES
 };
 
 class MainWindow {
@@ -147,11 +154,13 @@ private:
     HWND m_hSalesStatusLabel;    // для отображения статуса загрузки информации
     HWND m_hClientInfoLabel;     // отображение информации о клиенте
     HWND m_hSalesBackBtn;        // кнопка "Назад" (красная)
+
     std::vector<HWND> m_digitButtons;
     int m_currentClientId;
     std::wstring m_currentClientName;
     std::wstring m_currentClientPhone;
     bool m_nameConfirmed;
+    HWND m_hConsignorInfoLabel;  // статик для вывода информации о комитенте
 
     // ------------------------------------------------------------
     // Вспомогательные методы
@@ -185,6 +194,7 @@ private:
         m_hClientInfoLabel = nullptr;    
         m_hSalesBackBtn = nullptr;
         m_nameConfirmed = false;
+        m_hConsignorInfoLabel = nullptr;
         m_currentClientId = 0;
         m_currentClientName.clear();
         m_currentClientPhone.clear();
@@ -482,6 +492,222 @@ private:
 
         // Запрос данных
         loadSalesData();
+    }
+
+    // Обработчик Адреса магазинов
+    void createAddressesWindow() {
+        clearWindow();
+        m_currentState = WindowState::ADDRESSES;
+
+        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        int centerX = screenWidth / 2;
+        int top = 30;
+
+        // Заголовок "ДОБРО"
+        HWND hTitle1 = CreateWindowExW(0, L"STATIC", L"ДОБРО",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, top, screenWidth - 100, 80,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hTitle1, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
+        top += 90;
+
+        // Подзаголовок "Комиссионный магазин"
+        HWND hTitle2 = CreateWindowExW(0, L"STATIC", L"Комиссионный магазин",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, top, screenWidth - 100, 60,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hTitle2, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
+        top += 80;
+
+        // Заголовок списка "Перечень и адреса магазинов Добро"
+        HWND hListTitle = CreateWindowExW(0, L"STATIC", L"Перечень и адреса магазинов Добро",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, top, screenWidth - 100, 50,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hListTitle, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+        top += 70;
+
+        // Список адресов магазинов (три строки)
+        const wchar_t* addresses[] = {
+            L"«магазин Добро – Садовая»: город Санкт-Петербург, ул. Садовая д.39/12",
+            L"«магазин Добро – Ладожская»: город Санкт-Петербург, Индустриальный пр., д.34",
+            L"«магазин Добро – Озерки»: город Санкт-Петербург, Выборгское шоссе, д.3/1"
+        };
+
+        int lineHeight = 50;
+        for (int i = 0; i < 3; ++i) {
+            HWND hAddr = CreateWindowExW(0, L"STATIC", addresses[i],
+                WS_VISIBLE | WS_CHILD | SS_CENTER,
+                50, top + i * lineHeight, screenWidth - 100, lineHeight,
+                m_hWnd, nullptr, g_hInstance, nullptr);
+            SendMessageW(hAddr, WM_SETFONT, (WPARAM)g_hFontLabel, TRUE);
+        }
+        top += 3 * lineHeight + 40;
+
+        // Кнопка "Назад" (красная, как в окне "Мои продажи")
+        int btnWidth = 200, btnHeight = 60;
+        HWND hBack = CreateWindowExW(0, L"BUTTON", L"Назад",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX - btnWidth / 2, top, btnWidth, btnHeight,
+            m_hWnd, (HMENU)(INT_PTR)ID_BTN_BACK, g_hInstance, nullptr);
+        m_buttons.push_back(hBack);
+        SendMessageW(hBack, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+
+        // Принудительно устанавливаем красный фон для кнопки "Назад"
+        // (обрабатывается в WM_CTLCOLORBTN по ID_BTN_BACK)
+
+        g_logger.info(L"Addresses window created");
+    }
+
+    // Обработчик получения номера комитента
+    void createConsignorNumber() {
+        clearWindow();
+        m_currentState = WindowState::CONSIGNOR_LOOKUP;
+
+        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        int centerX = screenWidth / 2;
+        int top = 30;
+
+        // Заголовок "ДОБРО"
+        HWND hTitle1 = CreateWindowExW(0, L"STATIC", L"ДОБРО",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, top, screenWidth - 100, 80,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hTitle1, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
+        top += 90;
+
+        // Подзаголовок "Комиссионный магазин"
+        HWND hTitle2 = CreateWindowExW(0, L"STATIC", L"Комиссионный магазин",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, top, screenWidth - 100, 60,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hTitle2, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
+        top += 80;
+
+        // Создаём статический элемент для отображения информации о пользователе
+        m_hConsignorInfoLabel = CreateWindowExW(0, L"STATIC", L"",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            50, top, screenWidth - 100, 100,
+            m_hWnd, (HMENU)(INT_PTR)ID_STATIC_CONSIGNOR_INFO, g_hInstance, nullptr);
+        SendMessageW(m_hConsignorInfoLabel, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+        top += 120;
+
+        // Проверка авторизации
+        if (!g_authManager.isLoggedIn() || g_authManager.getClientId() == 0) {
+            SetWindowTextW(m_hConsignorInfoLabel, L"Пользователь не авторизован");
+            // Добавляем кнопку "Назад"
+            int btnWidth = 200, btnHeight = 60;
+            HWND hBack = CreateWindowExW(0, L"BUTTON", L"Назад",
+                WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+                centerX - btnWidth / 2, top, btnWidth, btnHeight,
+                m_hWnd, (HMENU)(INT_PTR)ID_BTN_BACK, g_hInstance, nullptr);
+            m_buttons.push_back(hBack);
+            SendMessageW(hBack, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+            g_logger.info(L"createConsignorNumber: user not authorized, showing message");
+            return;
+        }
+
+        // Авторизован – показываем загрузку и добавляем кнопку "Назад" внизу
+        SetWindowTextW(m_hConsignorInfoLabel, L"Загрузка данных...");
+        int btnWidth = 200, btnHeight = 60;
+        int backY = screenHeight - btnHeight - 30;
+        HWND hBack = CreateWindowExW(0, L"BUTTON", L"Назад",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX - btnWidth / 2, backY, btnWidth, btnHeight,
+            m_hWnd, (HMENU)(INT_PTR)ID_BTN_BACK, g_hInstance, nullptr);
+        m_buttons.push_back(hBack);
+        SendMessageW(hBack, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+
+        // Запускаем асинхронный запрос к серверу
+        loadConsignorData();
+    }
+
+    // =========================================================================
+    // Асинхронный запрос данных о комитенте
+    // =========================================================================
+    void loadConsignorData() {
+        g_logger.info(L"loadConsignorData: started");
+
+        // Повторная проверка авторизации (на случай, если состояние изменилось)
+        if (!g_authManager.isLoggedIn() || g_authManager.getClientId() == 0) {
+            SetWindowTextW(m_hConsignorInfoLabel, L"Пользователь не авторизован");
+            g_logger.warning(L"loadConsignorData: user not logged in");
+            return;
+        }
+
+        std::wstring authToken = g_authManager.getAuthToken();
+        if (authToken.empty()) {
+            SetWindowTextW(m_hConsignorInfoLabel, L"Токен отсутствует, выполните вход");
+            g_logger.warning(L"loadConsignorData: auth token empty");
+            return;
+        }
+
+        // Отправляем сообщение о начале загрузки (для обновления статуса, если потребуется)
+        PostMessageW(m_hWnd, WM_CONSIGNOR_LOADING_START, 0, 0);
+
+        // Запускаем поток для выполнения HTTP-запроса
+        std::thread([this, authToken]() {
+            try {
+                g_logger.info(L"Consignor thread: starting GET request");
+                std::wstring path = L"/api/v1/clients/me";
+                auto response = g_httpsClient.get(path, authToken);
+                g_logger.info(L"Consignor thread: GET request completed, posting result");
+                PostMessageW(m_hWnd, WM_CONSIGNOR_DATA_READY, 0, reinterpret_cast<LPARAM>(new std::optional<json>(response)));
+            }
+            catch (const std::exception& e) {
+                g_logger.error(L"Consignor thread exception: " + utf8_to_wstring(e.what()));
+                // Отправляем пустой optional, чтобы обработать ошибку
+                PostMessageW(m_hWnd, WM_CONSIGNOR_DATA_READY, 0, reinterpret_cast<LPARAM>(new std::optional<json>(std::nullopt)));
+            }
+            catch (...) {
+                g_logger.error(L"Consignor thread unknown exception");
+                PostMessageW(m_hWnd, WM_CONSIGNOR_DATA_READY, 0, reinterpret_cast<LPARAM>(new std::optional<json>(std::nullopt)));
+            }
+            }).detach();
+
+        g_logger.info(L"loadConsignorData: async request sent");
+    }
+
+    // =========================================================================
+    // ДОБАВЛЕННЫЙ МЕТОД: Обработчик ответа от сервера для окна "Узнать номер комитента"
+    // =========================================================================
+    void onConsignorDataReady(const std::optional<json>& response) {
+        g_logger.info(L"onConsignorDataReady: received response");
+
+        if (!response) {
+            SetWindowTextW(m_hConsignorInfoLabel, L"Ошибка соединения с сервером");
+            g_logger.error(L"onConsignorDataReady: no response (connection error)");
+            InvalidateRect(m_hConsignorInfoLabel, NULL, TRUE); // принудительная перерисовка
+            return;
+        }
+
+        // Проверяем наличие обязательного поля "id"
+        if (!response->contains("id") || !(*response)["id"].is_number_integer()) {
+            SetWindowTextW(m_hConsignorInfoLabel, L"Некорректный ответ сервера");
+            g_logger.error(L"onConsignorDataReady: invalid response format (missing id)");
+            InvalidateRect(m_hConsignorInfoLabel, NULL, TRUE);
+            return;
+        }
+
+        int clientId = (*response)["id"].get<int>();
+        std::string nameUtf8 = response->value("name", "");
+        std::wstring fullName = utf8_to_wstring(nameUtf8);
+
+        // Если имя не пришло, используем локальное из AuthManager (запасной вариант)
+        if (fullName.empty()) {
+            fullName = g_authManager.getFullName();
+            g_logger.warning(L"onConsignorDataReady: name not in response, using local value");
+        }
+
+        // Формируем строку для отображения
+        std::wstring infoText = fullName + L"\nВаш номер комитента: " + std::to_wstring(clientId);
+        SetWindowTextW(m_hConsignorInfoLabel, infoText.c_str());
+        InvalidateRect(m_hConsignorInfoLabel, NULL, TRUE); // опять перерисовываем окно
+
+        g_logger.info(L"onConsignorDataReady: displayed info for client " + std::to_wstring(clientId) +
+            L", name=" + fullName);
     }
 
     void onSalesDataReady(const std::optional<json>& response) {
@@ -1401,10 +1627,11 @@ public:
         m_hBtnClear(nullptr),
         m_hSalesListView(nullptr),
         m_hSalesStatusLabel(nullptr),
-        m_hClientInfoLabel(nullptr),   // инициализация нового члена
+        m_hClientInfoLabel(nullptr),   
         m_hSalesBackBtn(nullptr),
         m_currentClientId(0),
-        m_nameConfirmed(false) {
+        m_nameConfirmed(false),
+        m_hConsignorInfoLabel(nullptr) {
     }
 
     void create(HWND hParent) {
@@ -1436,6 +1663,28 @@ public:
             }
             break;
         }
+        // ===== ОБРАБОТКА СООБЩЕНИЙ ДЛЯ ОКНА "Узнать номер комитента" =====
+        case WM_CONSIGNOR_LOADING_START:
+            // При необходимости можно обновить статус, но у нас уже установлено "Загрузка..."
+            if (m_hConsignorInfoLabel) {
+                SetWindowTextW(m_hConsignorInfoLabel, L"Загрузка данных...");
+                InvalidateRect(m_hConsignorInfoLabel, NULL, TRUE);
+                g_logger.info(L"WM_CONSIGNOR_LOADING_START: status set to 'Загрузка данных...'");
+            }
+            break;
+        case WM_CONSIGNOR_DATA_READY:
+        {
+            auto* respPtr = reinterpret_cast<std::optional<json>*>(lParam);
+            if (respPtr) {
+                onConsignorDataReady(*respPtr);
+                delete respPtr;
+            }
+            else {
+                g_logger.error(L"WM_CONSIGNOR_DATA_READY: null pointer received");
+            }
+            break;
+        }
+        
         }
     }
 
@@ -1553,6 +1802,12 @@ public:
             else if (m_currentState == WindowState::EXTRA_20_PAYMENT) {
                 createSubmitMenu();
             }
+            else if (m_currentState == WindowState::ADDRESSES) {  
+                createMainMenu();
+            }
+            else if (m_currentState == WindowState::CONSIGNOR_LOOKUP) {
+                createMainMenu();
+            }
             break;
 
         case ID_BTN_CLOSE:
@@ -1587,11 +1842,11 @@ public:
             break;
 
         case ID_BTN_ADDRESSES:
-            MessageBoxW(m_hWnd, L"Раздел в разработке", L"Информация", MB_OK);
+            createAddressesWindow();
             break;
 
         case ID_BTN_CONSIGNOR_NUMBER:
-            MessageBoxW(m_hWnd, L"Раздел в разработке", L"Информация", MB_OK);
+            createConsignorNumber();
             break;
 
         case ID_BTN_OTHER_SERVICES:
@@ -1676,6 +1931,16 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         HWND hStatic = (HWND)lParam;
         DWORD id = GetDlgCtrlID(hStatic);
 
+        // ================================================================
+        // ИСПРАВЛЕНИЕ: для статика с информацией о комитенте устанавливаем
+        // белый фон, чтобы старый текст не наслаивался
+        // ================================================================
+        if (id == ID_STATIC_CONSIGNOR_INFO) {
+            SetBkColor(hdc, RGB(255, 255, 255));
+            SetTextColor(hdc, RGB(0, 0, 0));
+            return (LRESULT)g_hBrushWindow;
+        }
+
         if (id == IDC_STATIC_EXTRA20_TEXT || id == IDC_STATIC_TRUST_TEXT ||
             id == IDC_STATIC_PAID_TEXT || id == ID_STATIC_PAID_QUEUE_COUNT ||
             id == IDC_STATIC_EXPENSIVE_TEXT || id == ID_STATIC_EXPENSIVE_QUEUE_COUNT) {
@@ -1694,6 +1959,14 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
 
     case WM_PAINT:
+        g_mainWindow.handleMessage(msg, wParam, lParam);
+        return 0;
+
+    // Добавляем обработку всех пользовательских сообщений
+    case WM_SALES_LOADING_START:
+    case WM_SALES_DATA_READY:
+    case WM_CONSIGNOR_LOADING_START:
+    case WM_CONSIGNOR_DATA_READY:
         g_mainWindow.handleMessage(msg, wParam, lParam);
         return 0;
 
