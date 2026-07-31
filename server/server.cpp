@@ -43,7 +43,7 @@ namespace ssl = net::ssl;
 using tcp = net::ip::tcp;
 using json = nlohmann::json;
 
-// Глобальный экземпляр логгера (согласно вашей архитектуре)
+// Глобальный экземпляр логгера 
 
 Logger g_serverLogger("/var/log/kiosk/server.log");
 
@@ -123,6 +123,9 @@ private:
             }
             else if (target == "/api/v1/clients/by_phone" && method == http::verb::post) {
                 handleClientByPhone(client_ip);
+            }
+            else if (target == "/api/v1/clients/me" && method == http::verb::get) {
+                handleClientMe(client_ip);
             }
             // получаем данные о продажах пользователя
             else if (target.find("/api/v1/clients/sales") == 0 && method == http::verb::get) {
@@ -508,6 +511,65 @@ private:
         response_.body() = salesData.dump();
         response_.prepare_payload();
         g_serverLogger.info("Sales data returned for client " + std::to_string(clientId));
+    }
+
+    // Обработчик получения номера комитента, если пользователь авторизован
+    void handleClientMe(const std::string& client_ip) {
+        g_serverLogger.info("handleClientMe: request from " + client_ip);
+
+        // 1. Извлекаем токен из заголовка Authorization
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) {
+            authHeader = it->value();
+        }
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Missing or invalid Authorization header"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleClientMe: missing or invalid token from " + client_ip);
+            return;
+        }
+        std::string token = authHeader.substr(7); // отрезаем "Bearer "
+
+        // 2. Проверяем токен через AuthService
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid or expired token"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleClientMe: invalid or expired token from " + client_ip);
+            return;
+        }
+        g_serverLogger.info("handleClientMe: token verified for phone " + *phoneOpt);
+
+        // 3. Получаем клиента из БД по телефону
+        auto clientOpt = db_->getClientByPhone(*phoneOpt);
+        if (!clientOpt) {
+            response_.result(http::status::not_found);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Client not found"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleClientMe: client not found for phone " + *phoneOpt);
+            return;
+        }
+
+        // 4. Формируем ответ
+        json resp;
+        resp["id"] = clientOpt->id;
+        resp["phone"] = clientOpt->phone;
+        resp["name"] = clientOpt->name;   // полное имя (сформировано в getClientByPhone)
+        resp["email"] = clientOpt->email;
+
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = resp.dump();
+        response_.prepare_payload();
+
+        g_serverLogger.info("handleClientMe: data returned for client id " + std::to_string(clientOpt->id) +
+            " (phone " + *phoneOpt + ") from " + client_ip);
     }
 
     // -------------------------------------------------------------------------
