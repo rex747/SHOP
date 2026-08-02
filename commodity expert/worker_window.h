@@ -713,7 +713,7 @@ private:
         }
         std::wstring ticketNumber = utf8_to_wstring(ticketNumberUtf8);
 
-        if (m_currentQueueType == L"general") {
+        if (m_currentQueueType == L"general" || m_currentQueueType == L"extra_20" || m_currentQueueType == L"trust"|| m_currentQueueType == L"paid"|| m_currentQueueType == L"expensive") {
             if (clientId <= 0) {
                 MessageBoxW(m_hWnd, L"Нет client_id", L"Ошибка", MB_OK);
                 return;
@@ -814,7 +814,7 @@ private:
             updateUI();
 
             // === НОВАЯ ЛОГИКА: автоматический переход к следующему клиенту в общей очереди ===
-            if (m_currentQueueType == L"general" && !m_tickets.empty()) {
+            if ((m_currentQueueType == L"general" || m_currentQueueType == L"extra_20" || m_currentQueueType == L"trust"|| m_currentQueueType == L"paid"||m_currentQueueType == L"expensive") && !m_tickets.empty()) {
                 g_logger.info(L"onServe: auto-accepting next client in general queue");
                 // Выбираем первый талон и принимаем его
                 // Устанавливаем выделение на первый элемент и вызываем onAccept
