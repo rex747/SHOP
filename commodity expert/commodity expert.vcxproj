@@ -134,10 +134,15 @@
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="auth_manager.h" />
     <ClInclude Include="config.h" />
     <ClInclude Include="https_client.h" />
     <ClInclude Include="logger.h" />
+    <ClInclude Include="login_window.h" />
+    <ClInclude Include="registration_dialog.h" />
+    <ClInclude Include="registration_window.h" />
     <ClInclude Include="string_utils.h" />
+    <ClInclude Include="worker_registration_window.h" />
     <ClInclude Include="worker_window.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -1,5 +1,6 @@
 // main.cpp – WorkerApp (окно товароведа)
-// Отдельное приложение для управления очередью "Первый раз"
+// Отдельное приложение для управления очередями
+// Теперь требует авторизации через LoginWindow
 
 #define WIN32_LEAN_AND_MEAN
 #pragma comment(linker, "/SUBSYSTEM:WINDOWS")
@@ -16,11 +17,14 @@
 #include "logger.h"
 #include "string_utils.h"
 #include "worker_window.h"
+#include "auth_manager.h"
+#include "login_window.h"          // <-- восстановлено
 
-// Глобальные объекты (аналогично основному приложению)
+// Глобальные объекты
 HINSTANCE g_hInstance;
-Logger g_logger(L"worker.log");          // свой лог-файл
+Logger g_logger(L"worker.log");
 HTTPSClient g_httpsClient(Config::SERVER_HOST, Config::SERVER_PORT);
+AuthManager g_authManager;
 
 int WINAPI wWinMain(_In_ HINSTANCE hInstance,
     _In_opt_ HINSTANCE hPrevInstance,
@@ -44,9 +48,21 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance,
         return 1;
     }
 
+    // === Восстановлен вход товароведа ===
+    HWND hDummy = GetDesktopWindow();
+    LoginWindow loginWnd;
+    bool loginSuccess = loginWnd.show(hDummy);
+    if (!loginSuccess) {
+        g_logger.info(L"Login cancelled or failed, exiting WorkerApp");
+        MessageBoxW(nullptr, L"Для работы товароведа требуется вход в систему.", L"Внимание", MB_OK);
+        return 0;
+    }
+
+    g_logger.info(L"Login successful, starting WorkerWindow");
+
     // Создание и показ окна товароведа
     WorkerWindow workerWnd;
-    workerWnd.show();   // Эта функция запускает собственный цикл сообщений
+    workerWnd.show();
 
     g_logger.info(L"WorkerApp shut down");
     return 0;
