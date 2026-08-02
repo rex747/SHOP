@@ -411,9 +411,7 @@ private:
 
         // Запускаем асинхронный запрос
         std::thread([this, clientId, authToken]() {
-            // Сначала сообщаем UI о начале загрузки
-            PostMessageW(m_hWnd, WM_SALES_LOADING_START, 0, 0);
-
+            
             std::wstring path = L"/api/v1/clients/sales?client_id=" + std::to_wstring(clientId);
             auto response = g_httpsClient.get(path, authToken);
 
@@ -714,11 +712,14 @@ private:
         g_logger.info(L"onSalesDataReady: received response");
         if (!response) {
             SetWindowTextW(m_hSalesStatusLabel, L"Ошибка соединения с сервером");
+            // принудительная перерисовка статика, чтобы стереть старый текст
+            InvalidateRect(m_hSalesStatusLabel, NULL, TRUE);
             g_logger.error(L"onSalesDataReady: no response (connection error)");
             return;
         }
         if (!response->contains("sales") || !(*response)["sales"].is_array()) {
             SetWindowTextW(m_hSalesStatusLabel, L"Некорректный ответ сервера");
+            InvalidateRect(m_hSalesStatusLabel, NULL, TRUE);
             g_logger.error(L"onSalesDataReady: invalid response format");
             return;
         }
@@ -726,6 +727,7 @@ private:
         auto& sales = (*response)["sales"];
         if (sales.empty()) {
             SetWindowTextW(m_hSalesStatusLabel, L"Нет данных о продажах");
+            InvalidateRect(m_hSalesStatusLabel, NULL, TRUE);
             g_logger.info(L"onSalesDataReady: no sales data");
             return;
         }
@@ -763,6 +765,7 @@ private:
 
         std::wstring status = L"Найдено записей: " + std::to_wstring(index);
         SetWindowTextW(m_hSalesStatusLabel, status.c_str());
+        InvalidateRect(m_hSalesStatusLabel, NULL, TRUE);
         g_logger.info(L"onSalesDataReady: loaded " + std::to_wstring(index) + L" records");
     }
 
@@ -1935,7 +1938,7 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         // ИСПРАВЛЕНИЕ: для статика с информацией о комитенте устанавливаем
         // белый фон, чтобы старый текст не наслаивался
         // ================================================================
-        if (id == ID_STATIC_CONSIGNOR_INFO) {
+        if (id == ID_STATIC_CONSIGNOR_INFO || id == ID_STATIC_SALES_STATUS) {
             SetBkColor(hdc, RGB(255, 255, 255));
             SetTextColor(hdc, RGB(0, 0, 0));
             return (LRESULT)g_hBrushWindow;
