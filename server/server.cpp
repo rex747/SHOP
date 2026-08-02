@@ -183,6 +183,14 @@ private:
             else if (target == "/api/v1/onec/sync" && method == http::verb::post) {
                 handleOneCSync(client_ip);
             }
+            // получаем товароведу сдаваемые вещи (Общая очередь)
+            else if (target.find("/api/v1/items") == 0 && method == http::verb::get) {
+                handleGetItems(client_ip);
+            }
+            // получаем товароведу партию вещей (Общая очередь)
+            else if (target == "/api/v1/items/batch" && method == http::verb::post) {
+                handleAddItemsBatch(client_ip);
+            }
             else {
                 g_serverLogger.warning("Routing request: " + std::string(http::to_string(method)) + " " + std::string(target) + " -> Not found");
                 response_.result(http::status::not_found);
@@ -202,18 +210,21 @@ private:
         doWrite();
     }
 
+    // =========================================================================
+    // МЕТОД РЕГИСТРАЦИИ КЛИЕНТА/ТОВАРОВЕДА
+    // =========================================================================
     void handleClientRegister(const std::string& client_ip) {
         json body;
         try {
             body = json::parse(request_.body());
-			g_serverLogger.info("Client registration payload: " + body.dump());
+            g_serverLogger.info("Client registration payload: " + body.dump());
         }
         catch (const json::parse_error& e) {
             response_.result(http::status::bad_request);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
             response_.prepare_payload();
-			g_serverLogger.warning("Client registration failed: Invalid JSON payload from " + client_ip);
+            g_serverLogger.warning("Client registration failed: Invalid JSON payload from " + client_ip);
             return;
         }
 
@@ -224,7 +235,7 @@ private:
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Missing required fields"} }.dump();
             response_.prepare_payload();
-			g_serverLogger.warning("Client registration failed: Missing required fields from " + client_ip);
+            g_serverLogger.warning("Client registration failed: Missing required fields from " + client_ip);
             return;
         }
 
@@ -235,6 +246,10 @@ private:
         std::string email = body.value("email", std::string{});
         int items_submitted = body.value("items_submitted", 0);
         int items_sold = body.value("items_sold", 0);
+
+        // === Явно извлекаем роль из запроса ===
+        std::string role = body.value("worker", "client");
+        g_serverLogger.info("Client registration role extracted from payload: " + role);
 
         std::string digits;
         for (char c : phone) if (c >= '0' && c <= '9') digits += c;
@@ -247,32 +262,31 @@ private:
             return;
         }
         phone = "+7" + digits.substr(1);
-		g_serverLogger.info("Client registration attempt for: " + phone + " from " + client_ip);
+        g_serverLogger.info("Client registration attempt for: " + phone + " from " + client_ip);
 
-        //Получаем пару <успех, уже_существует>
-        auto [ok, already_exists] = db_->registerClient(phone, last_name, first_name, middle_name, email, items_submitted, items_sold);
-        
+        // === Передаем параметр role в метод БД ===
+        auto [ok, already_exists] = db_->registerClient(phone, last_name, first_name, middle_name, email, items_submitted, items_sold, role);
+
         if (!ok) {
             response_.result(http::status::internal_server_error);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Database error during registration"} }.dump();
             response_.prepare_payload();
-			g_serverLogger.log(LogLevel::ERROR, "Client registration failed for: " + phone + " from " + client_ip + " -> Database error");
+            g_serverLogger.log(LogLevel::ERROR, "Client registration failed for: " + phone + " from " + client_ip + " -> Database error");
             return;
         }
 
         g_serverLogger.info("Client registration attempt for: " + phone +
             " | Success: " + std::to_string(ok) +
-            " | Already exists: " + std::to_string(already_exists));
+            " | Already exists: " + std::to_string(already_exists) +
+            " | Role saved: " + role);
 
         response_.result(http::status::ok);
         response_.set(http::field::content_type, "application/json");
-
-        // Добавляем флаг already_exists в ответ клиенту
-        json resp = { {"success", ok}, {"phone", phone}, {"already_exists", already_exists} };
+        json resp = { {"success", ok}, {"phone", phone}, {"already_exists", already_exists}, {"role", role} };
         response_.body() = resp.dump();
         response_.prepare_payload();
-		g_serverLogger.info("Client registration successful for: " + phone + " from " + client_ip + " | Already exists: " + std::to_string(already_exists));
+        g_serverLogger.info("Client registration successful for: " + phone + " from " + client_ip + " | Already exists: " + std::to_string(already_exists));
     }
 
     void handleTOTPSetup(const std::string& client_ip) {
@@ -406,6 +420,15 @@ private:
             return;
         }
 
+        // === проверка роли клиент или товаровед ===
+        if (clientOpt->role != "worker" && clientOpt->role != "client") {
+            response_.result(http::status::forbidden);
+            response_.body() = json{ {"error", "Access denied: not a worker"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("Access denied for non-worker phone: " + phone);
+            return;
+        }
+
         // Генерируем токены
         auto tokens = auth_->generateTokens(phone);
 
@@ -429,7 +452,7 @@ private:
         response_.body() = resp.dump();
 
         response_.prepare_payload();
-        g_serverLogger.info("Client data returned for phone: " + phone + " (id=" + std::to_string(clientOpt->id)+")");
+        g_serverLogger.info("User" + clientOpt->role + "data returned for phone: " + phone + " (id = " + std::to_string(clientOpt->id) + ")");
     }
     //--------------------------------------------------------------------------
     // Обработчик получения данных из 1С о продажах пользователя
@@ -439,6 +462,7 @@ private:
         std::string authHeader;
         auto it = request_.find(http::field::authorization);
         if (it != request_.end()) {
+            
             authHeader = it->value();
         }
         if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
@@ -497,12 +521,72 @@ private:
 
         // 5. Запрашиваем данные у 1С
         json salesData = onec_->getClientSales(clientId);
+        // === FALLBACK: если 1С недоступна (возврат пустого объекта) — читаем из локальной PostgreSQL ===
         if (salesData.empty()) {
-            response_.result(http::status::ok);
-            response_.body() = json{ {"sales", json::array()} }.dump();  // пустой массив
-            response_.prepare_payload();
-            g_serverLogger.info("No sales data for client " + std::to_string(clientId));
-            return;
+            g_serverLogger.info("1C integration returned empty/invalid data (connection failure or parse error), "
+                "activating local DB fallback for client_id=" + std::to_string(clientId));
+
+            auto dbItems = db_->getClientItems(clientId);
+            json salesArray = json::array();
+
+            // Лямбда для форматирования Unix timestamp → строка "YYYY-MM-DD HH:MM:SS"
+                        // Лямбда для форматирования Unix timestamp → строка "YYYY-MM-DD HH:MM:SS"
+            auto formatTimestamp = [](int64_t ts) -> std::string {
+                std::time_t t = static_cast<std::time_t>(ts);
+                struct tm tm_info;
+#ifdef _WIN32
+                // MSVC (Visual Studio 2022): используем localtime_s
+                // Сигнатура: errno_t localtime_s(struct tm* _tm, const time_t* _time);
+                if (localtime_s(&tm_info, &t) != 0) {
+                    return "";
+                }
+#else
+                // Linux (Ubuntu 26.04 LTS, GCC/Clang): используем POSIX localtime_r
+                if (localtime_r(&t, &tm_info) == nullptr) {
+                    return "";
+                }
+#endif
+                char buf[32];
+                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_info);
+                return std::string(buf);
+                };
+
+            for (const auto& dbItem : dbItems) {
+                json item;
+                // Маппинг полей БД → ожидаемый терминалом формат (main_window.h :: onSalesDataReady)
+                item["item_number"] = std::to_string(dbItem.value("item_number", 0));
+                item["item_name"] = dbItem.value("description", "");
+                item["price"] = dbItem.value("estimated_price", 0.0);
+                item["quantity"] = dbItem.value("quantity", 1);
+                item["status"] = dbItem.value("status", "");
+                item["note"] = dbItem.value("note", "");
+
+                // Преобразование created_at (report_date) и sale_date
+                if (dbItem.contains("created_at") && !dbItem["created_at"].is_null()) {
+                    item["report_date"] = formatTimestamp(dbItem["created_at"].get<int64_t>());
+                }
+                else {
+                    item["report_date"] = "";
+                }
+
+                if (dbItem.contains("sale_date") && !dbItem["sale_date"].is_null()) {
+                    item["sale_date"] = formatTimestamp(dbItem["sale_date"].get<int64_t>());
+                }
+                else {
+                    item["sale_date"] = "";
+                }
+
+                salesArray.push_back(item);
+
+                g_serverLogger.info("Fallback item mapped: item_number=" + item["item_number"].get<std::string>() +
+                    ", item_name=" + item["item_name"].get<std::string>() +
+                    ", price=" + std::to_string(item["price"].get<double>()) +
+                    ", quantity=" + std::to_string(item["quantity"].get<int>()) +
+                    ", status=" + item["status"].get<std::string>());
+            } // конец цикла маппинга fallback-данных из локальной БД
+            salesData = json{ {"sales", salesArray} };
+            g_serverLogger.info("Local DB fallback completed: prepared " + std::to_string(salesArray.size()) +
+                " records for client_id=" + std::to_string(clientId));
         }
 
         // 6. Отдаём результат
@@ -968,6 +1052,166 @@ private:
         }
         response_.prepare_payload();
     }
+    // методы для товароведа (Общая очередь)
+    // =========================================================================
+    // GET /api/v1/items?client_id=...  (получение товаров клиента)
+    // =========================================================================
+    void handleGetItems(const std::string& client_ip) {
+        // 1. Проверка авторизации (извлекаем токен)
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) authHeader = it->value();
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.body() = json{ {"error", "Missing or invalid Authorization"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string token = authHeader.substr(7);
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.body() = json{ {"error", "Invalid token"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // 2. Получаем client_id из параметра
+        std::string query = request_.target();
+        std::string clientIdStr;
+        size_t pos = query.find("?client_id=");
+        if (pos != std::string::npos) {
+            clientIdStr = query.substr(pos + 11);
+            size_t end = clientIdStr.find('&');
+            if (end != std::string::npos) clientIdStr = clientIdStr.substr(0, end);
+        }
+        if (clientIdStr.empty()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Missing client_id"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        int clientId = std::stoi(clientIdStr);
+
+        // 3. Проверяем аутентификацию и роль
+        auto clientOpt = db_->getClientByPhone(*phoneOpt);
+        if (!clientOpt) {
+            response_.result(http::status::forbidden);
+            response_.body() = json{ {"error", "Access denied: user not found"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // === ИСПРАВЛЕНИЕ: товаровед (worker) может просматривать товары ЛЮБОГО клиента,
+        //    т.к. он принимает товар от клиентов в очереди. Обычный клиент — только свои. ===
+        if (clientOpt->role != "worker") {
+            // Если это не товаровед, проверяем, что он запрашивает только свои данные
+            if (clientOpt->id != clientId) {
+                response_.result(http::status::forbidden);
+                response_.body() = json{ {"error", "Access denied"} }.dump();
+                response_.prepare_payload();
+                return;
+            }
+        }
+        // Для worker'а проверка clientOpt->id != clientId НЕ выполняется — доступ разрешен
+
+        // 4. Получаем товары
+        auto items = db_->getClientItems(clientId);
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{ {"items", items} }.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("handleGetItems: returned " + std::to_string(items.size()) +
+            " items for client " + std::to_string(clientId));
+    }
+
+    // =========================================================================
+    // POST /api/v1/items/batch  (массовое сохранение товаров)
+    // =========================================================================
+    void handleAddItemsBatch(const std::string& client_ip) {
+        // 1. Проверка авторизации
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) authHeader = it->value();
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.body() = json{ {"error", "Missing or invalid Authorization"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string token = authHeader.substr(7);
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.body() = json{ {"error", "Invalid token"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // 2. Разбор JSON
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (const json::parse_error& e) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        if (!body.contains("client_id") || !body["client_id"].is_number() ||
+            !body.contains("items") || !body["items"].is_array()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Missing client_id or items array"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        int clientId = body["client_id"].get<int>();
+        json items = body["items"];
+
+        // 3. Проверяем аутентификацию и роль
+        auto clientOpt = db_->getClientByPhone(*phoneOpt);
+        if (!clientOpt) {
+            response_.result(http::status::forbidden);
+            response_.body() = json{ {"error", "Access denied: user not found"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // === ИСПРАВЛЕНИЕ: товаровед (worker) может добавлять товары для ЛЮБОГО клиента,
+        //    т.к. он принимает товар от клиентов в очереди. Обычный клиент — только в свою карточку. ===
+        if (clientOpt->role != "worker") {
+            if (clientOpt->id != clientId) {
+                response_.result(http::status::forbidden);
+                response_.body() = json{ {"error", "Access denied"} }.dump();
+                response_.prepare_payload();
+                return;
+            }
+        }
+        // Для worker'а проверка clientOpt->id != clientId НЕ выполняется — доступ разрешен
+
+        // === проверка роли (оставляем для явности: только worker может использовать batch) ===
+        if (clientOpt->role != "worker") {
+            response_.result(http::status::forbidden);
+            response_.body() = json{ {"error", "Access denied: worker role required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("Non-worker tried to add items: " + *phoneOpt);
+            return;
+        }
+
+        // 4. Сохраняем товары
+        if (db_->addItemsBatch(clientId, items)) {
+            response_.result(http::status::ok);
+            response_.body() = json{ {"success", true} }.dump();
+            g_serverLogger.info("handleAddItemsBatch: saved " + std::to_string(items.size()) +
+                " items for client " + std::to_string(clientId));
+        }
+        else {
+            response_.result(http::status::internal_server_error);
+            response_.body() = json{ {"error", "Failed to save items"} }.dump();
+            g_serverLogger.error("handleAddItemsBatch: failed for client " + std::to_string(clientId));
+        }
+        response_.prepare_payload();
+    }
+
 
     void handleOneCSync(const std::string& client_ip) {
         bool success = onec_->syncData();

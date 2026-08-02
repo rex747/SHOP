@@ -20,6 +20,7 @@ struct Client {
     std::string phone;
     std::string name;
     std::string email;
+    std::string role; // роль клиент / товаровед
     int64_t createdAt;
     bool active;
 };
@@ -81,7 +82,7 @@ public:
                 revoked BOOLEAN DEFAULT FALSE
             )
         )");
-            
+
             txn.exec(R"(
             CREATE TABLE IF NOT EXISTS first_time_tickets (
                 id SERIAL PRIMARY KEY,
@@ -145,11 +146,35 @@ public:
                 created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())
             )
         )");
+            // ========================================================================
+            // МИГРАЦИЯ: добавление колонки role
+            // ========================================================================
+            txn.exec(R"(
+                DO $$
+                BEGIN
+                    ALTER TABLE clients ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'client';
+                EXCEPTION WHEN duplicate_column THEN
+                    NULL;
+                END $$;
+            )");
 
             // ========================================================================
             // Миграции — добавляем отсутствующие колонки БЕЗОПАСНО
             // ========================================================================
-
+            // МИГРАЦИЯ: добавление новых колонок в таблицу items
+            txn.exec(R"(
+                DO $$
+                BEGIN
+                    ALTER TABLE items ADD COLUMN IF NOT EXISTS item_number INTEGER;
+                    ALTER TABLE items ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
+                    ALTER TABLE items ADD COLUMN IF NOT EXISTS sale_date BIGINT;
+                    ALTER TABLE items ADD COLUMN IF NOT EXISTS condition TEXT;
+                    ALTER TABLE items ADD COLUMN IF NOT EXISTS note TEXT;
+                    ALTER TABLE items ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending';
+                EXCEPTION WHEN duplicate_column THEN
+                    NULL;
+                END $$;
+        )");
             // Миграция для queue_tickets
             txn.exec(R"(
             DO $$
@@ -174,10 +199,10 @@ public:
             END $$;
         )");
 
-        // ========================================================================
-        // ИСПРАВЛЕННАЯ МИГРАЦИЯ для trust_acceptances (безопасное создание ограничений)
-        // ========================================================================
-        txn.exec(R"(
+            // ========================================================================
+            // ИСПРАВЛЕННАЯ МИГРАЦИЯ для trust_acceptances (безопасное создание ограничений)
+            // ========================================================================
+            txn.exec(R"(
             DO $$
             BEGIN
                 -- Добавляем колонку ticket_number, если её нет
@@ -214,7 +239,7 @@ public:
             // ========================================================================
             // Индексы
             // ========================================================================
-            txn.exec("CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(phone)");            
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(phone)");
             txn.exec("CREATE INDEX IF NOT EXISTS idx_first_time_status ON first_time_tickets(status)");
             txn.exec("CREATE INDEX IF NOT EXISTS idx_queue_status_type ON queue_tickets(queue_type, status)");
             txn.exec("CREATE INDEX IF NOT EXISTS idx_trust_acceptances_client ON trust_acceptances(client_id)");
@@ -233,11 +258,12 @@ public:
         }
     }
 
+    // ---- Получение клиента по телефону с ролью ----
     std::optional<Client> getClientByPhone(const std::string& phone) {
         try {
             pqxx::work txn{ *conn_ };
             auto result = txn.exec(
-                "SELECT id, phone, last_name, first_name, middle_name, email, created_at FROM clients WHERE phone = $1",
+                "SELECT id, phone, last_name, first_name, middle_name, email, role, created_at FROM clients WHERE phone = $1",
                 pqxx::params{ phone }
             );
             if (result.empty()) return std::nullopt;
@@ -249,6 +275,7 @@ public:
             std::string mid = result[0]["middle_name"].is_null() ? "" : result[0]["middle_name"].as<std::string>();
             client.name = last + " " + first + (mid.empty() ? "" : " " + mid);
             client.email = result[0]["email"].is_null() ? "" : result[0]["email"].as<std::string>();
+            client.role = result[0]["role"].is_null() ? "client" : result[0]["role"].as<std::string>(); // <-- ДОБАВЛЕНО
             client.createdAt = result[0]["created_at"].as<int64_t>();
             client.active = true;
             return client;
@@ -259,9 +286,11 @@ public:
         }
     }
 
+    // ---- Регистрация клиента (с ролью по умолчанию 'client') ----
     std::pair<bool, bool> registerClient(const std::string& phone, const std::string& last_name,
         const std::string& first_name, const std::string& middle_name,
-        const std::string& email, int items_submitted, int items_sold) {
+        const std::string& email, int items_submitted, int items_sold,
+        const std::string& role = "client") {  // <-- ДОБАВЛЕН ПАРАМЕТР role
         try {
             pqxx::work txn{ *conn_ };
             std::optional<std::string> mid_opt = middle_name.empty() ? std::nullopt : std::optional<std::string>(middle_name);
@@ -269,6 +298,7 @@ public:
 
             auto exist = txn.exec("SELECT id FROM clients WHERE phone = $1", pqxx::params{ phone });
             if (!exist.empty()) {
+                // Обновляем существующего клиента (роль не меняем)
                 txn.exec(
                     "UPDATE clients SET last_name=$2, first_name=$3, middle_name=$4, "
                     "email=$5, items_submitted=$6, items_sold=$7, updated_at=EXTRACT(EPOCH FROM NOW()) "
@@ -278,10 +308,11 @@ public:
                 txn.commit();
                 return { true, true };
             }
+            // Вставляем нового клиента с ролью
             txn.exec(
-                "INSERT INTO clients (phone, last_name, first_name, middle_name, email, items_submitted, items_sold) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                pqxx::params{ phone, last_name, first_name, mid_opt, email_opt, items_submitted, items_sold }
+                "INSERT INTO clients (phone, last_name, first_name, middle_name, email, items_submitted, items_sold, role) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                pqxx::params{ phone, last_name, first_name, mid_opt, email_opt, items_submitted, items_sold, role }
             );
             txn.commit();
             return { true, false };
@@ -291,6 +322,7 @@ public:
             return { false, false };
         }
     }
+
 
     bool setTOTPSecret(const std::string& phone, const std::string& secret) {
         try {
@@ -346,11 +378,12 @@ public:
         }
     }
 
+    // ---- Получение клиента по id с ролью ----
     std::optional<Client> getClientById(int id) {
         try {
             pqxx::work txn{ *conn_ };
             auto result = txn.exec(
-                "SELECT id, phone, last_name, first_name, middle_name, email, created_at FROM clients WHERE id = $1",
+                "SELECT id, phone, last_name, first_name, middle_name, email, role, created_at FROM clients WHERE id = $1",
                 pqxx::params{ id }
             );
             if (result.empty()) return std::nullopt;
@@ -362,6 +395,7 @@ public:
             std::string mid = result[0]["middle_name"].is_null() ? "" : result[0]["middle_name"].as<std::string>();
             client.name = last + " " + first + (mid.empty() ? "" : " " + mid);
             client.email = result[0]["email"].is_null() ? "" : result[0]["email"].as<std::string>();
+            client.role = result[0]["role"].is_null() ? "client" : result[0]["role"].as<std::string>(); // <-- ДОБАВЛЕНО
             client.createdAt = result[0]["created_at"].as<int64_t>();
             client.active = true;
             return client;
@@ -371,6 +405,7 @@ public:
             return std::nullopt;
         }
     }
+
 
     int getDailyTicketCount(const std::string& queueType) {
         try {
@@ -786,6 +821,138 @@ public:
         }
         catch (const std::exception& e) {
             g_serverLogger.error("acceptTicket error: " + std::string(e.what()));
+            return false;
+        }
+    }
+    // =========================================================================
+    // НОВЫЕ МЕТОДЫ ДЛЯ РАБОТЫ С ТОВАРАМИ КЛИЕНТА (ОБЩАЯ ОЧЕРЕДЬ)
+    // =========================================================================
+
+    /**
+     * Получить список всех товаров клиента (включая непроданные)
+     * @param clientId ID клиента
+     * @return вектор JSON-объектов с полями: id, item_number, description,
+     *         estimated_price, quantity, sale_date, condition, note, created_at, status
+     */
+    std::vector<json> getClientItems(int clientId) {
+        std::vector<json> result;
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT id, item_number, description, estimated_price, quantity, "
+                "sale_date, condition, note, created_at, status "
+                "FROM items WHERE client_id = $1 ORDER BY item_number",
+                pqxx::params{ clientId }
+            );
+            for (const auto& row : res) {
+                json item;
+                item["id"] = row["id"].as<int>();
+                item["item_number"] = row["item_number"].as<int>();
+                item["description"] = row["description"].as<std::string>();
+                item["estimated_price"] = row["estimated_price"].as<double>();
+                item["quantity"] = row["quantity"].as<int>();
+                if (!row["sale_date"].is_null())
+                    item["sale_date"] = row["sale_date"].as<int64_t>();
+                else
+                    item["sale_date"] = nullptr;
+                item["condition"] = row["condition"].is_null() ? "" : row["condition"].as<std::string>();
+                item["note"] = row["note"].is_null() ? "" : row["note"].as<std::string>();
+                item["created_at"] = row["created_at"].as<int64_t>();
+                item["status"] = row["status"].is_null() ? "" : row["status"].as<std::string>();
+                result.push_back(item);
+            }
+            g_serverLogger.info("getClientItems: " + std::to_string(result.size()) +
+                " items for client " + std::to_string(clientId));
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getClientItems error: " + std::string(e.what()));
+        }
+        return result;
+    }
+
+    /**
+     * Получить следующий порядковый номер товара для клиента (начиная с 1)
+     */
+    int getNextItemNumber(int clientId) {
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE client_id = $1",
+                pqxx::params{ clientId }
+            );
+            return res[0][0].as<int>();
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getNextItemNumber error: " + std::string(e.what()));
+            return 1;
+        }
+    }
+
+    /**
+     * Добавить один товар (используется внутри пакетного метода)
+     */
+    bool addItem(int clientId, int itemNumber, const std::string& description,
+        double price, int quantity, const std::string& condition,
+        const std::string& note) {
+        try {
+            pqxx::work txn{ *conn_ };
+            txn.exec(
+                "INSERT INTO items (client_id, item_number, description, estimated_price, "
+                "quantity, condition, note) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                pqxx::params{ clientId, itemNumber, description, price, quantity,
+                              condition.empty() ? std::optional<std::string>{} : condition,
+                              note.empty() ? std::optional<std::string>{} : note }
+            );
+            txn.commit();
+            g_serverLogger.info("Added item " + std::to_string(itemNumber) +
+                " for client " + std::to_string(clientId));
+            return true;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("addItem error: " + std::string(e.what()));
+            return false;
+        }
+    }
+
+    /**
+     * Пакетное добавление нескольких товаров для одного клиента
+     * @param clientId ID клиента
+     * @param items массив JSON-объектов с полями: description, estimated_price,
+     *              quantity, condition, note
+     * @return true если все добавлены успешно
+     */
+    bool addItemsBatch(int clientId, const json& items) {
+        if (!items.is_array() || items.empty()) {
+            g_serverLogger.warning("addItemsBatch: empty or invalid items array");
+            return false;
+        }
+        try {
+            pqxx::work txn{ *conn_ };
+            // Получаем следующий номер один раз для всех позиций
+            int nextNumber = getNextItemNumber(clientId);
+            for (const auto& item : items) {
+                std::string desc = item.value("description", "");
+                double price = item.value("estimated_price", 0.0);
+                int quantity = item.value("quantity", 1);
+                std::string condition = item.value("condition", "");
+                std::string note = item.value("note", "");
+                txn.exec(
+                    "INSERT INTO items (client_id, item_number, description, estimated_price, "
+                    "quantity, condition, note) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    pqxx::params{ clientId, nextNumber++, desc, price, quantity,
+                                  condition.empty() ? std::optional<std::string>{} : condition,
+                                  note.empty() ? std::optional<std::string>{} : note }
+                );
+            }
+            txn.commit();
+            g_serverLogger.info("addItemsBatch: added " + std::to_string(items.size()) +
+                " items for client " + std::to_string(clientId));
+            return true;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("addItemsBatch error: " + std::string(e.what()));
             return false;
         }
     }
