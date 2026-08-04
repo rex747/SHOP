@@ -1,0 +1,344 @@
+[2026-08-03 18:15:03.337] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-08-03 18:15:03.339] [INFO] WorkerApp started
+[2026-08-03 18:15:03.340] [INFO] HTTPSClient::initialize() succeeded.
+[2026-08-03 18:15:03.340] [INFO] LoginWindow: constructor
+[2026-08-03 18:15:03.341] [INFO] LoginWindow::show() entered
+[2026-08-03 18:15:03.342] [INFO] LoginWindow class registered
+[2026-08-03 18:15:03.349] [INFO] LoginWindow: createControls started
+[2026-08-03 18:15:03.352] [INFO] LoginWindow: phone edit subclassed
+[2026-08-03 18:15:03.359] [INFO] LoginWindow: all controls created
+[2026-08-03 18:15:03.360] [INFO] LoginWindow: WM_CREATE processed
+[2026-08-03 18:15:03.453] [INFO] LoginWindow: shown
+[2026-08-03 18:15:16.737] [INFO] AuthManager::setLoginAttempted: true, phone=+79991001010
+[2026-08-03 18:15:16.776] [INFO] LoginWindow: authentication started for +79991001010
+[2026-08-03 18:15:16.777] [INFO] LoginWindow: background thread started for +79991001010
+[2026-08-03 18:15:16.778] [INFO] Preparing POST request to: /api/v1/clients/by_phone
+[2026-08-03 18:15:16.778] [INFO] Request body size: 24 bytes
+[2026-08-03 18:15:16.779] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/by_phone
+[2026-08-03 18:15:16.779] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 18:15:17.179] [INFO] Response received, size: 473, body: {"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3ODU3NzM3MTYsImlhdCI6MTc4NTc3MDExNiwicGhvbmUiOiIrNzk5OTEwMDEwMTAifQ.KicTTxA_JKNZYpsClNdLFaZ30MaRc6_0Ys-lYDL5S8Y","expires_at":1785773716,"id":11,"name":"[2026-08-03 18:15:17.180] [INFO] AuthManager::setAuthTokens: tokens set for phone +79991001010
+[2026-08-03 18:15:17.181] [INFO] LoginWindow: success, clientId=11
+[2026-08-03 18:15:17.182] [INFO] LoginWindow: posted WM_LOGIN_RESULT
+[2026-08-03 18:15:17.183] [INFO] LoginWindow: onLoginResult entered, resultCode=1
+[2026-08-03 18:15:17.184] [INFO] Login state set: logged=1, clientId=11, name=[2026-08-03 18:15:17.185] [INFO] AuthManager::setLoginAttempted: false, phone=
+[2026-08-03 18:15:17.187] [INFO] LoginWindow: success, timer set (500 ms)
+[2026-08-03 18:15:17.689] [INFO] LoginWindow: timer fired, destroying window
+[2026-08-03 18:15:17.695] [INFO] LoginWindow: WM_DESTROY, releasing resources
+[2026-08-03 18:15:17.696] [INFO] LoginWindow: releaseResources started
+[2026-08-03 18:15:17.697] [INFO] LoginWindow: edit subclass restored
+[2026-08-03 18:15:17.698] [INFO] LoginWindow: resources released
+[2026-08-03 18:15:17.723] [INFO] LoginWindow: closed, success=true
+[2026-08-03 18:15:17.724] [INFO] Login successful, starting WorkerWindow
+[2026-08-03 18:15:17.743] [INFO] TTS initialized
+[2026-08-03 18:15:17.744] [INFO] WorkerWindow constructed
+[2026-08-03 18:15:17.800] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 18:15:19.990] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 18:15:22.093] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 18:15:24.294] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 18:15:26.205] [INFO] showItemInputForm: entering ITEM_INPUT mode for clientId=1
+[2026-08-03 18:15:26.284] [INFO] Preparing GET request to: /api/v1/items?client_id=1
+[2026-08-03 18:15:26.284] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 18:15:26.486] [INFO] showItemInputForm: accept and serve buttons disabled
+[2026-08-03 18:16:09.328] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-08-03 18:16:09.330] [INFO] WorkerApp started
+[2026-08-03 18:16:09.330] [INFO] HTTPSClient::initialize() succeeded.
+[2026-08-03 18:16:09.331] [INFO] LoginWindow: constructor
+[2026-08-03 18:16:09.331] [INFO] LoginWindow::show() entered
+[2026-08-03 18:16:09.332] [INFO] LoginWindow class registered
+[2026-08-03 18:16:09.336] [INFO] LoginWindow: createControls started
+[2026-08-03 18:16:09.338] [INFO] LoginWindow: phone edit subclassed
+[2026-08-03 18:16:09.343] [INFO] LoginWindow: all controls created
+[2026-08-03 18:16:09.343] [INFO] LoginWindow: WM_CREATE processed
+[2026-08-03 18:16:09.391] [INFO] LoginWindow: shown
+[2026-08-03 18:16:23.831] [INFO] AuthManager::setLoginAttempted: true, phone=+79991001010
+[2026-08-03 18:16:23.869] [INFO] LoginWindow: authentication started for +79991001010
+[2026-08-03 18:16:23.870] [INFO] LoginWindow: background thread started for +79991001010
+[2026-08-03 18:16:23.871] [INFO] Preparing POST request to: /api/v1/clients/by_phone
+[2026-08-03 18:16:23.871] [INFO] Request body size: 24 bytes
+[2026-08-03 18:16:23.872] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/by_phone
+[2026-08-03 18:16:23.872] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 18:16:24.123] [INFO] Response received, size: 473, body: {"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3ODU3NzM3ODMsImlhdCI6MTc4NTc3MDE4MywicGhvbmUiOiIrNzk5OTEwMDEwMTAifQ.GkYT2ElzIMnVXwV51Gvr1Y-MMJiyJN3sFO511YOBE70","expires_at":1785773783,"id":11,"name":"[2026-08-03 18:16:24.125] [INFO] AuthManager::setAuthTokens: tokens set for phone +79991001010
+[2026-08-03 18:16:24.126] [INFO] LoginWindow: success, clientId=11
+[2026-08-03 18:16:24.127] [INFO] LoginWindow: posted WM_LOGIN_RESULT
+[2026-08-03 18:16:24.128] [INFO] LoginWindow: onLoginResult entered, resultCode=1
+[2026-08-03 18:16:24.129] [INFO] Login state set: logged=1, clientId=11, name=[2026-08-03 18:16:24.130] [INFO] AuthManager::setLoginAttempted: false, phone=
+[2026-08-03 18:16:24.132] [INFO] LoginWindow: success, timer set (500 ms)
+[2026-08-03 18:16:24.652] [INFO] LoginWindow: timer fired, destroying window
+[2026-08-03 18:16:24.659] [INFO] LoginWindow: WM_DESTROY, releasing resources
+[2026-08-03 18:16:24.660] [INFO] LoginWindow: releaseResources started
+[2026-08-03 18:16:24.663] [INFO] LoginWindow: edit subclass restored
+[2026-08-03 18:16:24.664] [INFO] LoginWindow: resources released
+[2026-08-03 18:16:24.685] [INFO] LoginWindow: closed, success=true
+[2026-08-03 18:16:24.686] [INFO] Login successful, starting WorkerWindow
+[2026-08-03 18:16:24.708] [INFO] TTS initialized
+[2026-08-03 18:16:24.709] [INFO] WorkerWindow constructed
+[2026-08-03 18:16:24.752] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 18:16:26.857] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 18:16:28.949] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 18:16:30.965] [INFO] showItemInputForm: entering ITEM_INPUT mode for clientId=1
+[2026-08-03 18:16:31.031] [INFO] Preparing GET request to: /api/v1/items?client_id=1
+[2026-08-03 18:16:31.031] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 18:16:31.144] [INFO] showItemInputForm: accept and serve buttons disabled
+[2026-08-03 20:15:28.561] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-08-03 20:15:28.562] [INFO] WorkerApp started
+[2026-08-03 20:15:28.563] [INFO] HTTPSClient::initialize() succeeded.
+[2026-08-03 20:15:28.563] [INFO] LoginWindow: constructor
+[2026-08-03 20:15:28.564] [INFO] LoginWindow::show() entered
+[2026-08-03 20:15:28.564] [INFO] LoginWindow class registered
+[2026-08-03 20:15:28.569] [INFO] LoginWindow: createControls started
+[2026-08-03 20:15:28.572] [INFO] LoginWindow: phone edit subclassed
+[2026-08-03 20:15:28.576] [INFO] LoginWindow: all controls created
+[2026-08-03 20:15:28.576] [INFO] LoginWindow: WM_CREATE processed
+[2026-08-03 20:15:28.706] [INFO] LoginWindow: shown
+[2026-08-03 20:15:45.942] [INFO] AuthManager::setLoginAttempted: true, phone=+79991001010
+[2026-08-03 20:15:45.985] [INFO] LoginWindow: authentication started for +79991001010
+[2026-08-03 20:15:45.986] [INFO] LoginWindow: background thread started for +79991001010
+[2026-08-03 20:15:45.987] [INFO] Preparing POST request to: /api/v1/clients/by_phone
+[2026-08-03 20:15:45.987] [INFO] Request body size: 24 bytes
+[2026-08-03 20:15:45.989] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/by_phone
+[2026-08-03 20:15:45.990] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 20:15:46.314] [INFO] Response received, size: 473, body: {"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3ODU3ODA5NDYsImlhdCI6MTc4NTc3NzM0NiwicGhvbmUiOiIrNzk5OTEwMDEwMTAifQ.6FitKb8iK7BqTdwK2Ti1kZC7A_mmRooN23HrID_z848","expires_at":1785780946,"id":11,"name":"[2026-08-03 20:15:46.315] [INFO] AuthManager::setAuthTokens: tokens set for phone +79991001010
+[2026-08-03 20:15:46.315] [INFO] LoginWindow: success, clientId=11
+[2026-08-03 20:15:46.316] [INFO] LoginWindow: posted WM_LOGIN_RESULT
+[2026-08-03 20:15:46.317] [INFO] LoginWindow: onLoginResult entered, resultCode=1
+[2026-08-03 20:15:46.318] [INFO] Login state set: logged=1, clientId=11, name=[2026-08-03 20:15:46.319] [INFO] AuthManager::setLoginAttempted: false, phone=
+[2026-08-03 20:15:46.323] [INFO] LoginWindow: success, timer set (500 ms)
+[2026-08-03 20:15:46.823] [INFO] LoginWindow: timer fired, destroying window
+[2026-08-03 20:15:46.830] [INFO] LoginWindow: WM_DESTROY, releasing resources
+[2026-08-03 20:15:46.831] [INFO] LoginWindow: releaseResources started
+[2026-08-03 20:15:46.833] [INFO] LoginWindow: edit subclass restored
+[2026-08-03 20:15:46.835] [INFO] LoginWindow: resources released
+[2026-08-03 20:15:46.853] [INFO] LoginWindow: closed, success=true
+[2026-08-03 20:15:46.854] [INFO] Login successful, starting WorkerWindow
+[2026-08-03 20:15:46.881] [INFO] TTS initialized
+[2026-08-03 20:15:46.882] [INFO] WorkerWindow constructed
+[2026-08-03 20:15:46.930] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:15:49.041] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:15:51.151] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:15:53.268] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:15:55.383] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:15:55.784] [INFO] showItemInputForm: entering ITEM_INPUT mode for clientId=1
+[2026-08-03 20:15:55.845] [INFO] showItemInputForm: async loadClientItems started for clientId=1
+[2026-08-03 20:15:55.846] [INFO] Preparing GET request to: /api/v1/items?client_id=1
+[2026-08-03 20:15:55.847] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 20:15:55.853] [INFO] showItemInputForm: accept and serve buttons disabled, async load dispatched
+[2026-08-03 20:15:55.944] [INFO] WndProc: WM_APP + 2 received, updating item input UI
+[2026-08-03 20:15:57.496] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:15:59.604] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:01.732] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:03.850] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:05.960] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:08.070] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:10.187] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:12.290] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:14.404] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:16.745] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:18.868] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:21.060] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:22.455] [INFO] onItemSave: async POST request started
+[2026-08-03 20:16:22.456] [INFO] Preparing POST request to: /api/v1/items/batch
+[2026-08-03 20:16:22.456] [INFO] Request body size: 201 bytes
+[2026-08-03 20:16:22.457] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 20:16:22.457] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/items/batch
+[2026-08-03 20:16:22.458] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 20:16:22.804] [INFO] Response received, size: 16, body: {"success":true}
+[2026-08-03 20:16:23.167] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:24.175] [INFO] returnToQueueList: switching to QUEUE_LIST mode
+[2026-08-03 20:16:24.185] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:25.278] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:27.385] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:27.422] [INFO] Preparing POST request to: /api/v1/queue/serve
+[2026-08-03 20:16:27.423] [INFO] Request body size: 28 bytes
+[2026-08-03 20:16:27.423] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/serve
+[2026-08-03 20:16:27.424] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 20:16:27.522] [INFO] Response received, size: 16, body: {"success":true}
+[2026-08-03 20:16:27.525] [INFO] onServe: auto-accepting next client in general queue
+[2026-08-03 20:16:27.538] [INFO] showItemInputForm: entering ITEM_INPUT mode for clientId=1
+[2026-08-03 20:16:27.594] [INFO] showItemInputForm: async loadClientItems started for clientId=1
+[2026-08-03 20:16:27.594] [INFO] Preparing GET request to: /api/v1/items?client_id=1
+[2026-08-03 20:16:27.595] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 20:16:27.603] [INFO] showItemInputForm: accept and serve buttons disabled, async load dispatched
+[2026-08-03 20:16:27.696] [INFO] WndProc: WM_APP + 2 received, updating item input UI
+[2026-08-03 20:16:29.589] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:31.698] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:33.826] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:16:34.061] [INFO] WorkerApp shut down
+[2026-08-03 20:16:34.062] [INFO] WorkerWindow destroyed
+[2026-08-03 20:16:34.063] [INFO] HTTPSClient session closed
+[2026-08-03 20:18:12.906] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-08-03 20:18:12.908] [INFO] WorkerApp started
+[2026-08-03 20:18:12.908] [INFO] HTTPSClient::initialize() succeeded.
+[2026-08-03 20:18:12.909] [INFO] LoginWindow: constructor
+[2026-08-03 20:18:12.909] [INFO] LoginWindow::show() entered
+[2026-08-03 20:18:12.910] [INFO] LoginWindow class registered
+[2026-08-03 20:18:12.915] [INFO] LoginWindow: createControls started
+[2026-08-03 20:18:12.917] [INFO] LoginWindow: phone edit subclassed
+[2026-08-03 20:18:12.921] [INFO] LoginWindow: all controls created
+[2026-08-03 20:18:12.921] [INFO] LoginWindow: WM_CREATE processed
+[2026-08-03 20:18:12.976] [INFO] LoginWindow: shown
+[2026-08-03 20:18:26.114] [INFO] AuthManager::setLoginAttempted: true, phone=+79991001010
+[2026-08-03 20:18:26.160] [INFO] LoginWindow: authentication started for +79991001010
+[2026-08-03 20:18:26.161] [INFO] LoginWindow: background thread started for +79991001010
+[2026-08-03 20:18:26.162] [INFO] Preparing POST request to: /api/v1/clients/by_phone
+[2026-08-03 20:18:26.162] [INFO] Request body size: 24 bytes
+[2026-08-03 20:18:26.163] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/by_phone
+[2026-08-03 20:18:26.164] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 20:18:26.412] [INFO] Response received, size: 473, body: {"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3ODU3ODExMDcsImlhdCI6MTc4NTc3NzUwNywicGhvbmUiOiIrNzk5OTEwMDEwMTAifQ.6xlW9Rn1yJWGwAMfH8pUJxE7PMOxH03kBbUR0amCJis","expires_at":1785781107,"id":11,"name":"[2026-08-03 20:18:26.413] [INFO] AuthManager::setAuthTokens: tokens set for phone +79991001010
+[2026-08-03 20:18:26.414] [INFO] LoginWindow: success, clientId=11
+[2026-08-03 20:18:26.415] [INFO] LoginWindow: posted WM_LOGIN_RESULT
+[2026-08-03 20:18:26.416] [INFO] LoginWindow: onLoginResult entered, resultCode=1
+[2026-08-03 20:18:26.417] [INFO] Login state set: logged=1, clientId=11, name=[2026-08-03 20:18:26.418] [INFO] AuthManager::setLoginAttempted: false, phone=
+[2026-08-03 20:18:26.420] [INFO] LoginWindow: success, timer set (500 ms)
+[2026-08-03 20:18:26.932] [INFO] LoginWindow: timer fired, destroying window
+[2026-08-03 20:18:26.937] [INFO] LoginWindow: WM_DESTROY, releasing resources
+[2026-08-03 20:18:26.939] [INFO] LoginWindow: releaseResources started
+[2026-08-03 20:18:26.941] [INFO] LoginWindow: edit subclass restored
+[2026-08-03 20:18:26.942] [INFO] LoginWindow: resources released
+[2026-08-03 20:18:26.955] [INFO] LoginWindow: closed, success=true
+[2026-08-03 20:18:26.956] [INFO] Login successful, starting WorkerWindow
+[2026-08-03 20:18:26.972] [INFO] TTS initialized
+[2026-08-03 20:18:26.973] [INFO] WorkerWindow constructed
+[2026-08-03 20:18:27.018] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:29.139] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:31.253] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:33.600] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:34.498] [INFO] showItemInputForm: entering ITEM_INPUT mode for clientId=1
+[2026-08-03 20:18:34.553] [INFO] showItemInputForm: async loadClientItems started for clientId=1
+[2026-08-03 20:18:34.554] [INFO] Preparing GET request to: /api/v1/items?client_id=1
+[2026-08-03 20:18:34.554] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 20:18:34.564] [INFO] showItemInputForm: accept and serve buttons disabled, async load dispatched
+[2026-08-03 20:18:34.664] [INFO] WndProc: WM_APP + 2 received, updating item input UI
+[2026-08-03 20:18:35.714] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:37.904] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:40.102] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:42.215] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:44.347] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:46.446] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:48.567] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:50.668] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:52.772] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:54.887] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:57.005] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:18:59.108] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:01.209] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:03.331] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:05.442] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:07.544] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:09.649] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:11.772] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:13.873] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:15.979] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:18.075] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:20.174] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:22.276] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:24.391] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:26.497] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:28.607] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:28.733] [INFO] onItemSave: async POST request started
+[2026-08-03 20:19:28.733] [INFO] Preparing POST request to: /api/v1/items/batch
+[2026-08-03 20:19:28.734] [INFO] Request body size: 477 bytes
+[2026-08-03 20:19:28.735] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 20:19:28.735] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/items/batch
+[2026-08-03 20:19:28.736] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 20:19:28.911] [INFO] Response received, size: 16, body: {"success":true}
+[2026-08-03 20:19:30.270] [INFO] returnToQueueList: switching to QUEUE_LIST mode
+[2026-08-03 20:19:30.282] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:30.716] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:32.304] [INFO] Preparing POST request to: /api/v1/queue/serve
+[2026-08-03 20:19:32.305] [INFO] Request body size: 28 bytes
+[2026-08-03 20:19:32.306] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/serve
+[2026-08-03 20:19:32.306] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 20:19:32.411] [INFO] Response received, size: 16, body: {"success":true}
+[2026-08-03 20:19:32.414] [INFO] onServe: auto-accepting next client in general queue
+[2026-08-03 20:19:32.426] [INFO] showItemInputForm: entering ITEM_INPUT mode for clientId=1
+[2026-08-03 20:19:32.483] [INFO] showItemInputForm: async loadClientItems started for clientId=1
+[2026-08-03 20:19:32.483] [INFO] Preparing GET request to: /api/v1/items?client_id=1
+[2026-08-03 20:19:32.484] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 20:19:32.491] [INFO] showItemInputForm: accept and serve buttons disabled, async load dispatched
+[2026-08-03 20:19:32.584] [INFO] WndProc: WM_APP + 2 received, updating item input UI
+[2026-08-03 20:19:32.818] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:35.011] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:37.116] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:39.217] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:41.329] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:43.446] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:45.575] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:47.682] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:49.785] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:51.903] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:54.023] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:56.124] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:58.240] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:19:59.131] [INFO] onItemSave: async POST request started
+[2026-08-03 20:19:59.132] [INFO] Preparing POST request to: /api/v1/items/batch
+[2026-08-03 20:19:59.132] [INFO] Request body size: 183 bytes
+[2026-08-03 20:19:59.133] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 20:19:59.133] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/items/batch
+[2026-08-03 20:19:59.134] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 20:19:59.237] [INFO] Response received, size: 16, body: {"success":true}
+[2026-08-03 20:20:00.361] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:00.643] [INFO] returnToQueueList: switching to QUEUE_LIST mode
+[2026-08-03 20:20:00.654] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:02.459] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:02.478] [INFO] Preparing POST request to: /api/v1/queue/serve
+[2026-08-03 20:20:02.478] [INFO] Request body size: 28 bytes
+[2026-08-03 20:20:02.479] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/serve
+[2026-08-03 20:20:02.479] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 20:20:02.583] [INFO] Response received, size: 16, body: {"success":true}
+[2026-08-03 20:20:02.585] [INFO] onServe: auto-accepting next client in general queue
+[2026-08-03 20:20:02.592] [INFO] showItemInputForm: entering ITEM_INPUT mode for clientId=1
+[2026-08-03 20:20:02.645] [INFO] showItemInputForm: async loadClientItems started for clientId=1
+[2026-08-03 20:20:02.646] [INFO] Preparing GET request to: /api/v1/items?client_id=1
+[2026-08-03 20:20:02.647] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 20:20:02.652] [INFO] showItemInputForm: accept and serve buttons disabled, async load dispatched
+[2026-08-03 20:20:02.753] [INFO] WndProc: WM_APP + 2 received, updating item input UI
+[2026-08-03 20:20:04.574] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:06.684] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:08.803] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:10.919] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:13.040] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:15.214] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:17.317] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:19.429] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:21.544] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:23.662] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:25.852] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:27.962] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:28.000] [INFO] onItemSave: async POST request started
+[2026-08-03 20:20:28.000] [INFO] Preparing POST request to: /api/v1/items/batch
+[2026-08-03 20:20:28.001] [INFO] Request body size: 177 bytes
+[2026-08-03 20:20:28.002] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 20:20:28.002] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/items/batch
+[2026-08-03 20:20:28.003] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 20:20:28.103] [INFO] Response received, size: 16, body: {"success":true}
+[2026-08-03 20:20:29.639] [INFO] returnToQueueList: switching to QUEUE_LIST mode
+[2026-08-03 20:20:29.652] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:30.152] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:32.273] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:32.994] [INFO] Preparing POST request to: /api/v1/queue/serve
+[2026-08-03 20:20:32.994] [INFO] Request body size: 28 bytes
+[2026-08-03 20:20:32.995] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/serve
+[2026-08-03 20:20:32.996] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 20:20:33.097] [INFO] Response received, size: 16, body: {"success":true}
+[2026-08-03 20:20:34.369] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:36.471] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=general
+[2026-08-03 20:20:36.609] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=extra_20
+[2026-08-03 20:20:38.566] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=extra_20
+[2026-08-03 20:20:40.683] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=extra_20
+[2026-08-03 20:20:41.015] [INFO] Preparing GET request to: /api/v1/queue/trust/waiting
+[2026-08-03 20:20:42.802] [INFO] Preparing GET request to: /api/v1/queue/trust/waiting
+[2026-08-03 20:20:44.916] [INFO] Preparing GET request to: /api/v1/queue/trust/waiting
+[2026-08-03 20:20:45.149] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=paid
+[2026-08-03 20:20:47.020] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=paid
+[2026-08-03 20:20:48.703] [INFO] showItemInputForm: entering ITEM_INPUT mode for clientId=1
+[2026-08-03 20:20:48.742] [INFO] showItemInputForm: async loadClientItems started for clientId=1
+[2026-08-03 20:20:48.743] [INFO] Preparing GET request to: /api/v1/items?client_id=1
+[2026-08-03 20:20:48.744] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 20:20:48.752] [INFO] showItemInputForm: accept and serve buttons disabled, async load dispatched
+[2026-08-03 20:20:48.846] [INFO] WndProc: WM_APP + 2 received, updating item input UI
+[2026-08-03 20:20:49.134] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=paid
+[2026-08-03 20:20:51.325] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=paid
+[2026-08-03 20:20:53.425] [INFO] Preparing GET request to: /api/v1/queue/waiting?type=paid
+[2026-08-03 20:20:55.635] [INFO] WorkerApp shut down
+[2026-08-03 20:20:55.636] [INFO] WorkerWindow destroyed
+[2026-08-03 20:20:55.637] [INFO] HTTPSClient session closed

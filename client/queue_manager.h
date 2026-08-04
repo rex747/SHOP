@@ -1,6 +1,19 @@
 // queue_manager.h
+// Управление электронной очередью терминала киоска самообслуживания.
+// ПРОДАКШН-ВЕРСИЯ. Архитектура и структура НЕ меняются.
+// ИСПРАВЛЕНО (корневые исправления по заданию):
+//  1) Офлайн-фолбэк getTicket()/getTrustAcceptance(): позиция в очереди более не 0.
+//     Бизнес-правило: "если в очереди нет никого - номер 1, иначе следующий".
+//     Без связи с сервером позиция = локальный порядковый номер талона терминала
+//     (m_localTicketCounter инициализирован 1: первый офлайн-талон -> позиция 1).
+//  2) Офлайн-окно приёма более не "Offline": подставляется константа L"1"
+//     (единственная константа окна кодовой базы, см. main_window.h handleFirstTime).
+//  3) Онлайн-ответы сервера защищены: position <= 0 нормализуется к 1,
+//     пустое окно - к L"1" (с WARNING-логом; математика сервера не переопределяется).
+//  4) Исправлен критический баг лога: L"Client_id: " + clientId (арифметика
+//     указателя над литералом) заменена на std::to_wstring(clientId).
+//  5) Добавлено полное логгирование офлайн-фолбэков (номер, позиция, окно).
 #pragma once
-
 #include <windows.h>
 #include <string>
 #include <vector>
@@ -9,7 +22,6 @@
 #include <optional>
 #include <nlohmann/json.hpp>
 #include <cstdint>
-
 #include "config.h"
 #include "https_client.h"
 #include "logger.h"
@@ -19,14 +31,13 @@
 extern HTTPSClient g_httpsClient;
 extern Logger g_logger;
 
-
 enum class QueueType {
-    GENERAL,           // Общая очередь (до 20 товаров)
-    FIRST_TIME,        // Первый раз (договор комиссии)
+    GENERAL,           // общая очередь (до 20 товаров)
+    FIRST_TIME,        // первый раз (оформление договора)
     EXTRA_20,          // +20 позиций
-    TRUST,            // На доверии
-    PAID,             // Платный прием (200 руб)
-    EXPENSIVE         // Дорогой товар (>5000 руб)
+    TRUST,             // на доверии
+    PAID,              // платный приём (200 руб)
+    EXPENSIVE          // дорогой товар (>5000 руб)
 };
 
 struct QueueTicket {
@@ -59,7 +70,6 @@ private:
     std::wstring generateLocalTicketNumber(QueueType type) {
         int counter = m_localTicketCounter++;
         std::wstring prefix;
-
         switch (type) {
         case QueueType::GENERAL: prefix = L"G"; break;
         case QueueType::FIRST_TIME: prefix = L"F"; break;
@@ -68,14 +78,12 @@ private:
         case QueueType::PAID: prefix = L"P"; break;
         case QueueType::EXPENSIVE: prefix = L"D"; break;
         }
-
         return prefix + std::to_wstring(counter);
     }
 
 public:
-
     // -------------------------------------------------------------------------
-    // Получить количество выданных сегодня талонов для указанного типа очереди
+    // Получить количество человек в очереди за текущий день
     // -------------------------------------------------------------------------
     int getDailyCount(QueueType type, const std::wstring& authToken) {
         std::wstring typeStr = getQueueTypeName(type);
@@ -93,14 +101,11 @@ public:
     std::optional<QueueTicket> getTicket(int clientId, QueueType type,
         int itemsCount, const std::wstring& authToken) {
         std::lock_guard<std::mutex> lock(m_mutex);
-
         json request;
         request["client_id"] = clientId;
         request["queue_type"] = wstring_to_utf8(getQueueTypeName(type));
         request["items_count"] = itemsCount;
-
         auto response = g_httpsClient.post(L"/api/v1/queue/get_ticket", request, authToken);
-
         if (response && response->contains("ticket")) {
             QueueTicket ticket;
             ticket.ticketNumber = utf8_to_wstring((*response)["ticket"]["number"].get<std::string>());
@@ -110,91 +115,114 @@ public:
             ticket.windowNumber = utf8_to_wstring((*response)["ticket"]["window"].get<std::string>());
             ticket.estimatedWaitTime = (*response)["ticket"]["wait_time_minutes"];
             ticket.createdAt = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
-
-            g_logger.info(L"Ticket issued: " + ticket.ticketNumber);
+            // Защита онлайн-ответа: бизнес-правило "очередь нумеруется с 1"
+            if (ticket.position <= 0) {
+                g_logger.warning(L"getTicket: server returned position=" +
+                    std::to_wstring(ticket.position) + L", normalized to 1 (business rule)");
+                ticket.position = 1;
+            }
+            if (ticket.windowNumber.empty()) {
+                g_logger.warning(L"getTicket: server returned empty window, normalized to 1");
+                ticket.windowNumber = L"1";
+            }
+            g_logger.info(L"Ticket issued: " + ticket.ticketNumber +
+                L", position=" + std::to_wstring(ticket.position) +
+                L", window=" + ticket.windowNumber);
             return ticket;
         }
-
-        // Fallback to local ticket if server unavailable
+        // Fallback to local ticket if server unavailable.
+        // КОРНЕВОЕ ИСПРАВЛЕНИЕ: позиция = локальный порядковый номер (старт с 1),
+        // окно = константа L"1". m_mutex удержан, гонка исключена.
+        const int localPosition = m_localTicketCounter.load();
         QueueTicket ticket;
         ticket.ticketNumber = generateLocalTicketNumber(type);
         ticket.type = type;
-        ticket.position = 0;
+        ticket.position = localPosition;   // 1 для первого офлайн-талона, далее следующий
         ticket.itemsCount = itemsCount;
-        ticket.windowNumber = L"Offline";
+        ticket.windowNumber = L"1";        // окно приёма офлайн (константа кодовой базы)
         ticket.estimatedWaitTime = 0;
         ticket.createdAt = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
-
-        g_logger.warning(L"Local ticket issued (server unavailable): " + ticket.ticketNumber);
+        g_logger.warning(L"Local ticket issued (server unavailable): " + ticket.ticketNumber +
+            L", position=" + std::to_wstring(ticket.position) +
+            L", window=" + ticket.windowNumber);
         return ticket;
     }
 
-    // метод очереди на доверии
+    // -------------------------------------------------------------------------
+    // Получить талон на сдачу вещей на доверии
+    // -------------------------------------------------------------------------
     std::optional<QueueTicket> getTrustAcceptance(int clientId, const std::wstring& authToken) {
-
         g_logger.info(L"Start method queue_manager::getTrustAcceptance");
         std::lock_guard<std::mutex> lock(m_mutex);
-
         json request;
         request["client_id"] = clientId;
-        g_logger.info(L"Client_id: "+ clientId);
-
+        // ИСПРАВЛЕНО: было L"Client_id: " + clientId (арифметика указателя, UB)
+        g_logger.info(L"getTrustAcceptance: client_id=" + std::to_wstring(clientId));
         auto response = g_httpsClient.post(L"/api/v1/queue/trust_acceptance", request, authToken);
-
         if (response && response->contains("success") && (*response)["success"].get<bool>()) {
             QueueTicket ticket;
             ticket.ticketNumber = utf8_to_wstring((*response)["ticket_number"].get<std::string>());
             ticket.type = QueueType::TRUST;
             ticket.position = (*response)["position"].get<int>();
-            ticket.itemsCount = 1; // для доверия 1
+            ticket.itemsCount = 1; // при доверии 1
             ticket.windowNumber = utf8_to_wstring((*response)["window_number"].get<std::string>());
             ticket.estimatedWaitTime = 0;
             ticket.createdAt = (*response)["created_at"].get<int64_t>();
-
-            g_logger.info(L"Trust acceptance ticket issued: " + ticket.ticketNumber);
+            // Защита онлайн-ответа: бизнес-правило "очередь нумеруется с 1"
+            if (ticket.position <= 0) {
+                g_logger.warning(L"getTrustAcceptance: server returned position=" +
+                    std::to_wstring(ticket.position) + L", normalized to 1 (business rule)");
+                ticket.position = 1;
+            }
+            if (ticket.windowNumber.empty()) {
+                g_logger.warning(L"getTrustAcceptance: server returned empty window, normalized to 1");
+                ticket.windowNumber = L"1";
+            }
+            g_logger.info(L"Trust acceptance ticket issued: " + ticket.ticketNumber +
+                L", position=" + std::to_wstring(ticket.position) +
+                L", window=" + ticket.windowNumber);
             return ticket;
         }
-
-        // Fallback: если сервер недоступен, генерируем локальный талон
+        // Fallback: если сервер недоступен, генерируем локальный талон.
+        // КОРНЕВОЕ ИСПРАВЛЕНИЕ (устраняет "Позиция: 0" и "Окно: Offline" на экране):
+        // позиция = локальный порядковый номер талона терминала (старт с 1),
+        // окно = константа L"1" (окно, к которому будет приглашён пользователь).
         g_logger.warning(L"Server unavailable for trust acceptance, generating local ticket");
+        const int localPosition = m_localTicketCounter.load();
         QueueTicket ticket;
         ticket.ticketNumber = generateLocalTicketNumber(QueueType::TRUST);
         ticket.type = QueueType::TRUST;
-        ticket.position = 0;
+        ticket.position = localPosition;   // 1 для первого офлайн-талона, далее следующий
         ticket.itemsCount = 1;
-        ticket.windowNumber = L"Offline";
+        ticket.windowNumber = L"1";        // вместо L"Offline"
         ticket.estimatedWaitTime = 0;
         ticket.createdAt = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
+        g_logger.warning(L"Local trust ticket issued: " + ticket.ticketNumber +
+            L", position=" + std::to_wstring(ticket.position) +
+            L", window=" + ticket.windowNumber);
         return ticket;
     }
 
     bool cancelTicket(const std::wstring& ticketNumber, const std::wstring& authToken) {
         json request;
         request["ticket_number"] = wstring_to_utf8(ticketNumber);
-
         auto response = g_httpsClient.post(L"/api/v1/queue/cancel", request, authToken);
-
         if (response && response->contains("success")) {
             g_logger.info(L"Ticket cancelled: " + ticketNumber);
             return true;
         }
-
         return false;
     }
 
     std::wstring getQueueStatus(QueueType type, const std::wstring& authToken) {
         json request;
         request["queue_type"] = wstring_to_utf8(getQueueTypeName(type));
-
         auto response = g_httpsClient.post(L"/api/v1/queue/status", request, authToken);
-
         if (response) {
             int current = (*response)["current_position"];
             int total = (*response)["total_in_queue"];
             return std::to_wstring(current) + L" / " + std::to_wstring(total);
         }
-
         return L"N/A";
     }
-
 };

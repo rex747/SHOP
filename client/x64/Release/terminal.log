@@ -1,54 +1,1468 @@
-[2026-07-22 10:42:19.840] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
-[2026-07-22 10:42:19.842] [INFO] Terminal application started
-[2026-07-22 10:42:19.853] [INFO] Local database initialized successfully
-[2026-07-22 10:42:19.915] [INFO] Main window created successfully
-[2026-07-22 10:42:49.205] [INFO] [onSubmit] Starting primary registration flow...
-[2026-07-22 10:42:49.206] [INFO] [onSubmit] Starting primary registration flow...
-[2026-07-22 10:42:49.215] [INFO] Sending registration request for: +79062772347
-[2026-07-22 10:42:49.215] [INFO] Preparing POST request to: /api/v1/clients/register
-[2026-07-22 10:42:49.216] [INFO] Request body size: 210 bytes
-[2026-07-22 10:42:49.216] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/register
-[2026-07-22 10:42:49.217] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
-[2026-07-22 10:42:49.218] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
-[2026-07-22 10:42:49.218] [INFO] Sending POST request to: /api/v1/clients/register
-[2026-07-22 10:42:49.665] [INFO] Waiting for response via WinHttpReceiveResponse...
-[2026-07-22 10:42:49.666] [INFO] Response received successfully. Size: 61 bytes.
-[2026-07-22 10:42:49.667] [INFO] Server response: success=true, already_exists=1
-[2026-07-22 10:42:49.667] [INFO] User exists. Requesting Email OTP for: +79062772347
-[2026-07-22 10:42:49.668] [INFO] Preparing POST request to: /api/v1/auth/email_otp/request
-[2026-07-22 10:42:49.668] [INFO] Request body size: 59 bytes
-[2026-07-22 10:42:49.669] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/auth/email_otp/request
-[2026-07-22 10:42:49.669] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
-[2026-07-22 10:42:49.670] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
-[2026-07-22 10:42:49.670] [INFO] Sending POST request to: /api/v1/auth/email_otp/request
-[2026-07-22 10:42:50.313] [INFO] Waiting for response via WinHttpReceiveResponse...
-[2026-07-22 10:42:50.314] [INFO] Response received successfully. Size: 98 bytes.
-[2026-07-22 10:42:50.315] [ERROR] Failed to request Email OTP
-[2026-07-22 10:42:50.322] [INFO] Sending registration request for: +79062772347
-[2026-07-22 10:42:50.323] [INFO] Preparing POST request to: /api/v1/clients/register
-[2026-07-22 10:42:50.323] [INFO] Request body size: 210 bytes
-[2026-07-22 10:42:50.324] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/register
-[2026-07-22 10:42:50.325] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
-[2026-07-22 10:42:50.325] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
-[2026-07-22 10:42:50.326] [INFO] Sending POST request to: /api/v1/clients/register
-[2026-07-22 10:42:50.589] [INFO] Waiting for response via WinHttpReceiveResponse...
-[2026-07-22 10:42:50.590] [INFO] Response received successfully. Size: 61 bytes.
-[2026-07-22 10:42:50.590] [INFO] Server response: success=true, already_exists=1
-[2026-07-22 10:42:50.591] [INFO] User exists. Requesting Email OTP for: +79062772347
-[2026-07-22 10:42:50.592] [INFO] Preparing POST request to: /api/v1/auth/email_otp/request
-[2026-07-22 10:42:50.592] [INFO] Request body size: 59 bytes
-[2026-07-22 10:42:50.593] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/auth/email_otp/request
-[2026-07-22 10:42:50.593] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
-[2026-07-22 10:42:50.594] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
-[2026-07-22 10:42:50.594] [INFO] Sending POST request to: /api/v1/auth/email_otp/request
-[2026-07-22 10:42:51.133] [INFO] Waiting for response via WinHttpReceiveResponse...
-[2026-07-22 10:42:51.134] [INFO] Response received successfully. Size: 98 bytes.
-[2026-07-22 10:42:51.135] [ERROR] Failed to request Email OTP
-[2026-07-22 10:42:53.753] [INFO] Terminal application shutdown
-[2026-07-22 10:42:53.754] [INFO] HTTPSClient session closed
-[2026-07-22 12:25:23.397] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
-[2026-07-22 12:25:23.400] [INFO] Terminal application started
-[2026-07-22 12:25:23.407] [INFO] Local database initialized successfully
-[2026-07-22 12:25:23.450] [INFO] Main window created successfully
-[2026-07-22 12:25:52.789] [INFO] Terminal application shutdown
-[2026-07-22 12:25:52.790] [INFO] HTTPSClient session closed
+[2026-08-03 17:53:27.362] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-08-03 17:53:27.396] [INFO] Terminal application started
+[2026-08-03 17:53:27.402] [INFO] Local database initialized successfully
+[2026-08-03 17:53:27.406] [INFO] WM_CREATE: IDB_ICON_NO_CASH loaded (100x100)
+[2026-08-03 17:53:27.406] [INFO] WM_CREATE: IDB_ICON_KIOSK loaded (100x100)
+[2026-08-03 17:53:27.407] [INFO] WM_CREATE: IDB_ICON_WALLET loaded (100x100)
+[2026-08-03 17:53:27.407] [INFO] Input devices: SM_MOUSEPRESENT=1, SM_DIGITIZER=0 [], screen=1920x1080. Touch taps are synthesized to mouse clicks (RegisterTouchWindow not used).
+[2026-08-03 17:53:27.408] [WARNING] No digitizer detected at startup (NID_READY not set): kiosk touchscreen driver absent, mouse-only mode.
+[2026-08-03 17:53:27.432] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:53:27.443] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:53:27.447] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:53:27.454] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:53:27.457] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:53:27.461] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:53:27.463] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:53:27.466] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:53:27.470] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-03 17:53:27.480] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:53:27.481] [INFO] Main window created successfully
+[2026-08-03 17:53:29.146] [INFO] LoginWindow class registered
+[2026-08-03 17:53:29.149] [INFO] LoginWindow: phone edit subclassed
+[2026-08-03 17:53:29.154] [INFO] LoginWindow: keyboard created, buttons=13
+[2026-08-03 17:53:29.155] [INFO] LoginWindow: all controls created
+[2026-08-03 17:53:29.168] [INFO] LoginWindow: shown
+[2026-08-03 17:53:39.711] [INFO] AuthManager::setLoginAttempted: true, phone=+79062772347
+[2026-08-03 17:53:39.720] [INFO] LoginWindow: authentication started for +79062772347
+[2026-08-03 17:53:39.721] [INFO] Preparing POST request to: /api/v1/clients/by_phone
+[2026-08-03 17:53:39.721] [INFO] Request body size: 24 bytes
+[2026-08-03 17:53:39.721] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/by_phone
+[2026-08-03 17:53:39.722] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:53:39.722] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:53:39.722] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:53:39.723] [INFO] Sending POST request to: /api/v1/clients/by_phone
+[2026-08-03 17:53:39.956] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:53:39.957] [INFO] Response received successfully. Size: 472 bytes.
+[2026-08-03 17:53:39.958] [INFO] AuthManager::setAuthTokens: tokens set for phone +79062772347
+[2026-08-03 17:53:39.959] [INFO] LoginWindow: success, clientId=1, name="[2026-08-03 17:53:39.959] [INFO] Login state set: logged=1, clientId=1, name=[2026-08-03 17:53:39.960] [INFO] AuthManager::setLoginAttempted: false, phone=
+[2026-08-03 17:53:39.961] [INFO] LoginWindow: success, timer set (500 ms)
+[2026-08-03 17:53:40.462] [INFO] LoginWindow: timer fired, destroying window
+[2026-08-03 17:53:40.468] [INFO] LoginWindow: edit subclass restored
+[2026-08-03 17:53:40.469] [INFO] LoginWindow: resources released
+[2026-08-03 17:53:40.479] [INFO] LoginWindow: closed, success=true
+[2026-08-03 17:53:40.499] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:53:40.504] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:53:40.507] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:53:40.509] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:53:40.511] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:53:40.514] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:53:40.516] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:53:40.518] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:53:40.521] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:53:40.530] [INFO] createMainMenu: '[2026-08-03 17:53:40.531] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:53:40.531] [INFO] MainWindow: login successful, main menu refreshed
+[2026-08-03 17:53:44.030] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=general
+[2026-08-03 17:53:44.031] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:53:44.031] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:53:44.031] [INFO] Sending GET request...
+[2026-08-03 17:53:44.142] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-03 17:53:44.142] [INFO] Daily count for general: 1
+[2026-08-03 17:53:44.159] [INFO] General queue input page created, daily count = 1
+[2026-08-03 17:53:46.379] [INFO] Preparing GET request to: /api/v1/clients/by_id?id=1
+[2026-08-03 17:53:46.380] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:53:46.380] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:53:46.380] [INFO] Sending GET request...
+[2026-08-03 17:53:46.467] [INFO] Response received successfully. Size: 116 bytes.
+[2026-08-03 17:53:46.470] [INFO] Client name fetched for id 1: [2026-08-03 17:53:47.763] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:53:47.764] [INFO] Request body size: 55 bytes
+[2026-08-03 17:53:47.764] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:53:47.764] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 17:53:47.765] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:53:47.765] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:53:47.765] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:53:47.766] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:53:47.867] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:53:47.868] [INFO] Response received successfully. Size: 201 bytes.
+[2026-08-03 17:53:47.868] [INFO] Ticket issued: G-8827-2
+[2026-08-03 17:53:47.888] [INFO] Ticket printed: G-8827-2
+[2026-08-03 17:53:49.540] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:53:49.543] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:53:49.544] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:53:49.546] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:53:49.548] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:53:49.549] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:53:49.551] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:53:49.552] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:53:49.554] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:53:49.560] [INFO] createMainMenu: '[2026-08-03 17:53:49.560] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:53:53.073] [INFO] Preparing POST request to: /api/v1/queue/first_time/create
+[2026-08-03 17:53:53.074] [INFO] Request body size: 14 bytes
+[2026-08-03 17:53:53.074] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/first_time/create
+[2026-08-03 17:53:53.074] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:53:53.075] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:53:53.075] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:53:53.075] [INFO] Sending POST request to: /api/v1/queue/first_time/create
+[2026-08-03 17:53:53.173] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:53:53.174] [INFO] Response received successfully. Size: 36 bytes.
+[2026-08-03 17:53:53.186] [INFO] FirstTime ticket printed: F-1785768833-886
+[2026-08-03 17:53:54.922] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:53:54.925] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:53:54.926] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:53:54.928] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:53:54.929] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:53:54.931] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:53:54.932] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:53:54.934] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:53:54.935] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:53:54.941] [INFO] createMainMenu: '[2026-08-03 17:53:54.942] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:53:57.482] [INFO] Extra20 payment page shown
+[2026-08-03 17:53:59.286] [INFO] [onExtra20PaymentSuccess] Starting extra 20 payment flow...
+[2026-08-03 17:53:59.287] [INFO] [onExtra20PaymentSuccess] Current authToken: <present> (length=159)
+[2026-08-03 17:53:59.287] [INFO] [onExtra20PaymentSuccess] Login status: isLoggedIn=1, clientId=1
+[2026-08-03 17:53:59.287] [INFO] [onExtra20PaymentSuccess] Proceeding with clientId: 1
+[2026-08-03 17:53:59.288] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:53:59.288] [INFO] Request body size: 56 bytes
+[2026-08-03 17:53:59.288] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:53:59.289] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 17:53:59.289] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:53:59.290] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:53:59.290] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:53:59.290] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:53:59.457] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:53:59.457] [INFO] Response received successfully. Size: 201 bytes.
+[2026-08-03 17:53:59.458] [INFO] Ticket issued: E-8839-1
+[2026-08-03 17:53:59.458] [INFO] [onExtra20PaymentSuccess] Ticket obtained successfully: E-8839-1
+[2026-08-03 17:53:59.471] [INFO] [onExtra20PaymentSuccess] Ticket printed: E-8839-1
+[2026-08-03 17:53:59.478] [INFO] [onExtra20PaymentSuccess] Extra 20 payment flow completed successfully.
+[2026-08-03 17:54:00.752] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:54:00.755] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:54:00.756] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:54:00.758] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:54:00.759] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:54:00.761] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:54:00.762] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:54:00.764] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:54:00.765] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:54:00.772] [INFO] createMainMenu: '[2026-08-03 17:54:00.772] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:54:04.680] [INFO] Trust acceptance window shown
+[2026-08-03 17:54:07.259] [INFO] Trust acceptance print requested for client ID: 1
+[2026-08-03 17:54:07.260] [INFO] Start method queue_manager::getTrustAcceptance
+[2026-08-03 17:54:07.260] [INFO] lient_id: 
+[2026-08-03 17:54:07.261] [INFO] Preparing POST request to: /api/v1/queue/trust_acceptance
+[2026-08-03 17:54:07.261] [INFO] Request body size: 15 bytes
+[2026-08-03 17:54:07.261] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:54:07.262] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/trust_acceptance
+[2026-08-03 17:54:07.262] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:54:07.262] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:54:07.263] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:54:07.263] [INFO] Sending POST request to: /api/v1/queue/trust_acceptance
+[2026-08-03 17:54:07.360] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:54:07.360] [INFO] Response received successfully. Size: 21 bytes.
+[2026-08-03 17:54:07.361] [WARNING] Server unavailable for trust acceptance, generating local ticket
+[2026-08-03 17:54:07.373] [INFO] Trust acceptance ticket printed: T1
+[2026-08-03 17:54:10.916] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:54:10.919] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:54:10.920] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:54:10.922] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:54:10.923] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:54:10.925] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:54:10.926] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:54:10.928] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:54:10.930] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:54:10.936] [INFO] createMainMenu: '[2026-08-03 17:54:10.936] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:54:13.882] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=paid
+[2026-08-03 17:54:13.883] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:54:13.883] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:54:13.884] [INFO] Sending GET request...
+[2026-08-03 17:54:14.063] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-03 17:54:14.063] [INFO] Daily count for paid: 0
+[2026-08-03 17:54:14.067] [INFO] Paid acceptance window shown, queue count: 0
+[2026-08-03 17:54:15.697] [INFO] PaidAcceptance: start printing ticket
+[2026-08-03 17:54:15.697] [INFO] PaidAcceptance: client ID 1, items count 20
+[2026-08-03 17:54:15.697] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:54:15.698] [INFO] Request body size: 52 bytes
+[2026-08-03 17:54:15.698] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:54:15.698] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 17:54:15.699] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:54:15.699] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:54:15.699] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:54:15.700] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:54:15.799] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:54:15.799] [INFO] Response received successfully. Size: 197 bytes.
+[2026-08-03 17:54:15.800] [INFO] Ticket issued: P-8855-1
+[2026-08-03 17:54:15.800] [INFO] PaidAcceptance: ticket obtained: P-8855-1
+[2026-08-03 17:54:15.813] [INFO] PaidAcceptance: ticket printed successfully: P-8855-1
+[2026-08-03 17:54:15.819] [INFO] PaidAcceptance: completed successfully
+[2026-08-03 17:54:17.281] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:54:17.284] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:54:17.285] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:54:17.287] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:54:17.288] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:54:17.290] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:54:17.291] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:54:17.293] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:54:17.294] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:54:17.300] [INFO] createMainMenu: '[2026-08-03 17:54:17.301] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:54:22.496] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=paid
+[2026-08-03 17:54:22.497] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:54:22.497] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:54:22.497] [INFO] Sending GET request...
+[2026-08-03 17:54:22.603] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-03 17:54:22.603] [INFO] Daily count for paid: 1
+[2026-08-03 17:54:22.607] [INFO] Paid acceptance window shown, queue count: 1
+[2026-08-03 17:54:23.886] [INFO] PaidAcceptance: start printing ticket
+[2026-08-03 17:54:23.886] [INFO] PaidAcceptance: client ID 1, items count 20
+[2026-08-03 17:54:23.887] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:54:23.887] [INFO] Request body size: 52 bytes
+[2026-08-03 17:54:23.888] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:54:23.889] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 17:54:23.889] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:54:23.890] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:54:23.890] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:54:23.891] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:54:23.998] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:54:23.998] [INFO] Response received successfully. Size: 198 bytes.
+[2026-08-03 17:54:23.999] [INFO] Ticket issued: P-8863-2
+[2026-08-03 17:54:23.999] [INFO] PaidAcceptance: ticket obtained: P-8863-2
+[2026-08-03 17:54:24.016] [INFO] PaidAcceptance: ticket printed successfully: P-8863-2
+[2026-08-03 17:54:24.025] [INFO] PaidAcceptance: completed successfully
+[2026-08-03 17:54:24.847] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:54:24.850] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:54:24.852] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:54:24.853] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:54:24.855] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:54:24.857] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:54:24.859] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:54:24.861] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:54:24.863] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:54:24.871] [INFO] createMainMenu: '[2026-08-03 17:54:24.871] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:54:27.321] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=expensive
+[2026-08-03 17:54:27.322] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:54:27.322] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:54:27.323] [INFO] Sending GET request...
+[2026-08-03 17:54:27.430] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-03 17:54:27.431] [INFO] Daily count for expensive: 0
+[2026-08-03 17:54:27.435] [INFO] Expensive acceptance window shown, queue count: 0
+[2026-08-03 17:54:28.932] [INFO] ExpensiveAcceptance: start printing ticket
+[2026-08-03 17:54:28.932] [INFO] ExpensiveAcceptance: client ID 1, items count 1
+[2026-08-03 17:54:28.933] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:54:28.933] [INFO] Request body size: 56 bytes
+[2026-08-03 17:54:28.934] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:54:28.934] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 17:54:28.935] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:54:28.935] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:54:28.936] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:54:28.936] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:54:29.027] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:54:29.028] [INFO] Response received successfully. Size: 201 bytes.
+[2026-08-03 17:54:29.028] [INFO] Ticket issued: D-8868-1
+[2026-08-03 17:54:29.029] [INFO] ExpensiveAcceptance: ticket obtained: D-8868-1
+[2026-08-03 17:54:29.044] [INFO] ExpensiveAcceptance: ticket printed successfully: D-8868-1
+[2026-08-03 17:54:29.052] [INFO] ExpensiveAcceptance: completed successfully
+[2026-08-03 17:54:30.301] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:54:30.304] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:54:30.306] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:54:30.308] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:54:30.310] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:54:30.312] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:54:30.314] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:54:30.316] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:54:30.318] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:54:30.326] [INFO] createMainMenu: '[2026-08-03 17:54:30.326] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:54:32.962] [INFO] loadSalesData: started
+[2026-08-03 17:54:32.963] [INFO] loadSalesData: client info set to: [2026-08-03 17:54:32.963] [INFO] loadSalesData: clientId = 1
+[2026-08-03 17:54:32.964] [INFO] loadSalesData: async request sent
+[2026-08-03 17:54:32.964] [INFO] Preparing GET request to: /api/v1/clients/sales?client_id=1
+[2026-08-03 17:54:32.964] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:54:32.965] [INFO] WM_SALES_LOADING_START: status set to '[2026-08-03 17:54:32.965] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:54:32.966] [INFO] Sending GET request...
+[2026-08-03 17:54:33.067] [INFO] Response received successfully. Size: 3909 bytes.
+[2026-08-03 17:54:33.068] [INFO] onSalesDataReady: received response
+[2026-08-03 17:54:33.071] [INFO] onSalesDataReady: loaded 23 records
+[2026-08-03 17:54:37.533] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:54:37.537] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:54:37.539] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:54:37.541] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:54:37.543] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:54:37.545] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:54:37.547] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:54:37.549] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:54:37.551] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:54:37.559] [INFO] createMainMenu: '[2026-08-03 17:54:37.559] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:54:40.037] [INFO] Addresses window created
+[2026-08-03 17:54:42.220] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:54:42.224] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:54:42.226] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:54:42.228] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:54:42.230] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:54:42.232] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:54:42.234] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:54:42.236] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:54:42.238] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:54:42.246] [INFO] createMainMenu: '[2026-08-03 17:54:42.246] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:54:44.374] [INFO] loadConsignorData: started
+[2026-08-03 17:54:44.374] [INFO] loadConsignorData: async request sent
+[2026-08-03 17:54:44.375] [INFO] Consignor thread: starting GET request
+[2026-08-03 17:54:44.376] [INFO] Preparing GET request to: /api/v1/clients/me
+[2026-08-03 17:54:44.376] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:54:44.377] [INFO] WM_CONSIGNOR_LOADING_START: status set to '[2026-08-03 17:54:44.377] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:54:44.378] [INFO] Sending GET request...
+[2026-08-03 17:54:44.480] [INFO] Response received successfully. Size: 116 bytes.
+[2026-08-03 17:54:44.480] [INFO] Consignor thread: GET request completed, posting result
+[2026-08-03 17:54:44.481] [INFO] onConsignorDataReady: received response
+[2026-08-03 17:54:44.482] [INFO] onConsignorDataReady: displayed info for client 1, name=[2026-08-03 17:54:48.927] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:54:48.930] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:54:48.932] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:54:48.934] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:54:48.936] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:54:48.938] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:54:48.939] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:54:48.941] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:54:48.943] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:54:48.951] [INFO] createMainMenu: '[2026-08-03 17:54:48.951] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:54:54.170] [INFO] onCommand: User logged out successfully via '[2026-08-03 17:54:54.181] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:54:54.184] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:54:54.186] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:54:54.188] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:54:54.190] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:54:54.192] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:54:54.194] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:54:54.196] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:54:54.198] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-03 17:54:54.205] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:54:56.728] [INFO] Terminal application shutdown
+[2026-08-03 17:54:56.729] [INFO] HTTPSClient session closed
+[2026-08-03 17:57:32.289] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-08-03 17:57:32.327] [INFO] Terminal application started
+[2026-08-03 17:57:32.335] [INFO] Local database initialized successfully
+[2026-08-03 17:57:32.341] [INFO] WM_CREATE: IDB_ICON_NO_CASH loaded (100x100)
+[2026-08-03 17:57:32.342] [INFO] WM_CREATE: IDB_ICON_KIOSK loaded (100x100)
+[2026-08-03 17:57:32.342] [INFO] WM_CREATE: IDB_ICON_WALLET loaded (100x100)
+[2026-08-03 17:57:32.343] [INFO] Input devices: SM_MOUSEPRESENT=1, SM_DIGITIZER=0 [], screen=1920x1080. Touch taps are synthesized to mouse clicks (RegisterTouchWindow not used).
+[2026-08-03 17:57:32.343] [WARNING] No digitizer detected at startup (NID_READY not set): kiosk touchscreen driver absent, mouse-only mode.
+[2026-08-03 17:57:32.368] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:57:32.383] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:57:32.388] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:57:32.395] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:57:32.398] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:57:32.401] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:57:32.404] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:57:32.406] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:57:32.411] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-03 17:57:32.421] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:57:32.421] [INFO] Main window created successfully
+[2026-08-03 17:57:33.893] [INFO] LoginWindow class registered
+[2026-08-03 17:57:33.896] [INFO] LoginWindow: phone edit subclassed
+[2026-08-03 17:57:33.901] [INFO] LoginWindow: keyboard created, buttons=13
+[2026-08-03 17:57:33.902] [INFO] LoginWindow: all controls created
+[2026-08-03 17:57:33.915] [INFO] LoginWindow: shown
+[2026-08-03 17:57:44.496] [INFO] AuthManager::setLoginAttempted: true, phone=+79062772347
+[2026-08-03 17:57:44.507] [INFO] LoginWindow: authentication started for +79062772347
+[2026-08-03 17:57:44.507] [INFO] Preparing POST request to: /api/v1/clients/by_phone
+[2026-08-03 17:57:44.508] [INFO] Request body size: 24 bytes
+[2026-08-03 17:57:44.508] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/by_phone
+[2026-08-03 17:57:44.509] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:57:44.509] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:57:44.509] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:57:44.510] [INFO] Sending POST request to: /api/v1/clients/by_phone
+[2026-08-03 17:57:44.991] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:57:44.992] [INFO] Response received successfully. Size: 472 bytes.
+[2026-08-03 17:57:44.993] [INFO] AuthManager::setAuthTokens: tokens set for phone +79062772347
+[2026-08-03 17:57:44.993] [INFO] LoginWindow: success, clientId=1, name="[2026-08-03 17:57:44.994] [INFO] Login state set: logged=1, clientId=1, name=[2026-08-03 17:57:44.995] [INFO] AuthManager::setLoginAttempted: false, phone=
+[2026-08-03 17:57:44.996] [INFO] LoginWindow: success, timer set (500 ms)
+[2026-08-03 17:57:45.498] [INFO] LoginWindow: timer fired, destroying window
+[2026-08-03 17:57:45.503] [INFO] LoginWindow: edit subclass restored
+[2026-08-03 17:57:45.504] [INFO] LoginWindow: resources released
+[2026-08-03 17:57:45.516] [INFO] LoginWindow: closed, success=true
+[2026-08-03 17:57:45.536] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:57:45.542] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:57:45.544] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:57:45.546] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:57:45.548] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:57:45.551] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:57:45.553] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:57:45.556] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:57:45.559] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:57:45.569] [INFO] createMainMenu: '[2026-08-03 17:57:45.570] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:57:45.570] [INFO] MainWindow: login successful, main menu refreshed
+[2026-08-03 17:57:49.377] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=general
+[2026-08-03 17:57:49.378] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:57:49.378] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:57:49.379] [INFO] Sending GET request...
+[2026-08-03 17:57:49.474] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-03 17:57:49.474] [INFO] Daily count for general: 2
+[2026-08-03 17:57:49.491] [INFO] General queue input page created, daily count = 2
+[2026-08-03 17:57:53.085] [INFO] Preparing GET request to: /api/v1/clients/by_id?id=1
+[2026-08-03 17:57:53.086] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:57:53.086] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:57:53.087] [INFO] Sending GET request...
+[2026-08-03 17:57:53.179] [INFO] Response received successfully. Size: 116 bytes.
+[2026-08-03 17:57:53.182] [INFO] Client name fetched for id 1: [2026-08-03 17:57:54.301] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:57:54.302] [INFO] Request body size: 55 bytes
+[2026-08-03 17:57:54.302] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:57:54.302] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 17:57:54.303] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:57:54.303] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:57:54.304] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:57:54.304] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:57:54.398] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:57:54.399] [INFO] Response received successfully. Size: 201 bytes.
+[2026-08-03 17:57:54.399] [INFO] Ticket issued: G-9074-3
+[2026-08-03 17:57:54.418] [INFO] Ticket printed: G-9074-3
+[2026-08-03 17:57:55.902] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:57:55.905] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:57:55.906] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:57:55.908] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:57:55.909] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:57:55.911] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:57:55.912] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:57:55.914] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:57:55.915] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:57:55.921] [INFO] createMainMenu: '[2026-08-03 17:57:55.922] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:57:58.603] [INFO] Preparing POST request to: /api/v1/queue/first_time/create
+[2026-08-03 17:57:58.604] [INFO] Request body size: 14 bytes
+[2026-08-03 17:57:58.604] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/first_time/create
+[2026-08-03 17:57:58.605] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:57:58.605] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:57:58.605] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:57:58.606] [INFO] Sending POST request to: /api/v1/queue/first_time/create
+[2026-08-03 17:57:58.699] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:57:58.700] [INFO] Response received successfully. Size: 37 bytes.
+[2026-08-03 17:57:58.712] [INFO] FirstTime ticket printed: F-1785769078-2777
+[2026-08-03 17:58:00.868] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:58:00.871] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:58:00.872] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:58:00.874] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:58:00.876] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:58:00.877] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:58:00.879] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:58:00.880] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:58:00.882] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:58:00.888] [INFO] createMainMenu: '[2026-08-03 17:58:00.888] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:58:04.956] [INFO] Extra20 payment page shown
+[2026-08-03 17:58:06.184] [INFO] [onExtra20PaymentSuccess] Starting extra 20 payment flow...
+[2026-08-03 17:58:06.185] [INFO] [onExtra20PaymentSuccess] Current authToken: <present> (length=159)
+[2026-08-03 17:58:06.185] [INFO] [onExtra20PaymentSuccess] Login status: isLoggedIn=1, clientId=1
+[2026-08-03 17:58:06.185] [INFO] [onExtra20PaymentSuccess] Proceeding with clientId: 1
+[2026-08-03 17:58:06.186] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:58:06.186] [INFO] Request body size: 56 bytes
+[2026-08-03 17:58:06.187] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:58:06.187] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 17:58:06.187] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:58:06.188] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:58:06.188] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:58:06.188] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:58:06.298] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:58:06.298] [INFO] Response received successfully. Size: 202 bytes.
+[2026-08-03 17:58:06.298] [INFO] Ticket issued: E-9086-2
+[2026-08-03 17:58:06.299] [INFO] [onExtra20PaymentSuccess] Ticket obtained successfully: E-9086-2
+[2026-08-03 17:58:06.311] [INFO] [onExtra20PaymentSuccess] Ticket printed: E-9086-2
+[2026-08-03 17:58:06.318] [INFO] [onExtra20PaymentSuccess] Extra 20 payment flow completed successfully.
+[2026-08-03 17:58:07.850] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:58:07.853] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:58:07.854] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:58:07.856] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:58:07.857] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:58:07.859] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:58:07.861] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:58:07.862] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:58:07.864] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:58:07.870] [INFO] createMainMenu: '[2026-08-03 17:58:07.871] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:58:10.243] [INFO] Trust acceptance window shown
+[2026-08-03 17:58:12.238] [INFO] Trust acceptance print requested for client ID: 1
+[2026-08-03 17:58:12.239] [INFO] Start method queue_manager::getTrustAcceptance
+[2026-08-03 17:58:12.239] [INFO] lient_id: 
+[2026-08-03 17:58:12.239] [INFO] Preparing POST request to: /api/v1/queue/trust_acceptance
+[2026-08-03 17:58:12.240] [INFO] Request body size: 15 bytes
+[2026-08-03 17:58:12.240] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:58:12.241] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/trust_acceptance
+[2026-08-03 17:58:12.241] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:58:12.241] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:58:12.242] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:58:12.242] [INFO] Sending POST request to: /api/v1/queue/trust_acceptance
+[2026-08-03 17:58:12.332] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:58:12.332] [INFO] Response received successfully. Size: 21 bytes.
+[2026-08-03 17:58:12.333] [WARNING] Server unavailable for trust acceptance, generating local ticket
+[2026-08-03 17:58:12.345] [INFO] Trust acceptance ticket printed: T1
+[2026-08-03 17:58:13.911] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:58:13.914] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:58:13.915] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:58:13.917] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:58:13.918] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:58:13.920] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:58:13.922] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:58:13.923] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:58:13.925] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:58:13.931] [INFO] createMainMenu: '[2026-08-03 17:58:13.932] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:58:17.334] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=paid
+[2026-08-03 17:58:17.334] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:58:17.335] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:58:17.335] [INFO] Sending GET request...
+[2026-08-03 17:58:17.429] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-03 17:58:17.430] [INFO] Daily count for paid: 2
+[2026-08-03 17:58:17.433] [INFO] Paid acceptance window shown, queue count: 2
+[2026-08-03 17:58:18.372] [INFO] PaidAcceptance: start printing ticket
+[2026-08-03 17:58:18.373] [INFO] PaidAcceptance: client ID 1, items count 20
+[2026-08-03 17:58:18.373] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:58:18.373] [INFO] Request body size: 52 bytes
+[2026-08-03 17:58:18.374] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:58:18.374] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 17:58:18.375] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:58:18.375] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:58:18.375] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:58:18.376] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:58:18.471] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:58:18.472] [INFO] Response received successfully. Size: 198 bytes.
+[2026-08-03 17:58:18.472] [INFO] Ticket issued: P-9098-3
+[2026-08-03 17:58:18.473] [INFO] PaidAcceptance: ticket obtained: P-9098-3
+[2026-08-03 17:58:18.485] [INFO] PaidAcceptance: ticket printed successfully: P-9098-3
+[2026-08-03 17:58:18.492] [INFO] PaidAcceptance: completed successfully
+[2026-08-03 17:58:19.621] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:58:19.624] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:58:19.625] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:58:19.627] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:58:19.629] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:58:19.630] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:58:19.632] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:58:19.633] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:58:19.635] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:58:19.642] [INFO] createMainMenu: '[2026-08-03 17:58:19.642] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:58:27.140] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=paid
+[2026-08-03 17:58:27.141] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:58:27.141] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:58:27.142] [INFO] Sending GET request...
+[2026-08-03 17:58:27.243] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-03 17:58:27.244] [INFO] Daily count for paid: 3
+[2026-08-03 17:58:27.248] [INFO] Paid acceptance window shown, queue count: 3
+[2026-08-03 17:58:28.329] [INFO] PaidAcceptance: start printing ticket
+[2026-08-03 17:58:28.329] [INFO] PaidAcceptance: client ID 1, items count 20
+[2026-08-03 17:58:28.330] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:58:28.330] [INFO] Request body size: 52 bytes
+[2026-08-03 17:58:28.331] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:58:28.331] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 17:58:28.332] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:58:28.333] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:58:28.333] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:58:28.334] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:58:28.429] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:58:28.429] [INFO] Response received successfully. Size: 198 bytes.
+[2026-08-03 17:58:28.430] [INFO] Ticket issued: P-9108-4
+[2026-08-03 17:58:28.431] [INFO] PaidAcceptance: ticket obtained: P-9108-4
+[2026-08-03 17:58:28.448] [INFO] PaidAcceptance: ticket printed successfully: P-9108-4
+[2026-08-03 17:58:28.456] [INFO] PaidAcceptance: completed successfully
+[2026-08-03 17:58:29.321] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:58:29.324] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:58:29.326] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:58:29.328] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:58:29.330] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:58:29.332] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:58:29.334] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:58:29.335] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:58:29.337] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:58:29.345] [INFO] createMainMenu: '[2026-08-03 17:58:29.345] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:58:32.256] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=expensive
+[2026-08-03 17:58:32.256] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:58:32.257] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:58:32.257] [INFO] Sending GET request...
+[2026-08-03 17:58:32.358] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-03 17:58:32.358] [INFO] Daily count for expensive: 1
+[2026-08-03 17:58:32.362] [INFO] Expensive acceptance window shown, queue count: 1
+[2026-08-03 17:58:33.591] [INFO] ExpensiveAcceptance: start printing ticket
+[2026-08-03 17:58:33.591] [INFO] ExpensiveAcceptance: client ID 1, items count 1
+[2026-08-03 17:58:33.592] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:58:33.592] [INFO] Request body size: 56 bytes
+[2026-08-03 17:58:33.593] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:58:33.593] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 17:58:33.594] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:58:33.594] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:58:33.595] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:58:33.596] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:58:33.704] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:58:33.704] [INFO] Response received successfully. Size: 202 bytes.
+[2026-08-03 17:58:33.705] [INFO] Ticket issued: D-9113-2
+[2026-08-03 17:58:33.705] [INFO] ExpensiveAcceptance: ticket obtained: D-9113-2
+[2026-08-03 17:58:33.721] [INFO] ExpensiveAcceptance: ticket printed successfully: D-9113-2
+[2026-08-03 17:58:33.730] [INFO] ExpensiveAcceptance: completed successfully
+[2026-08-03 17:58:34.880] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:58:34.884] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:58:34.885] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:58:34.887] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:58:34.889] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:58:34.892] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:58:34.894] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:58:34.896] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:58:34.898] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:58:34.906] [INFO] createMainMenu: '[2026-08-03 17:58:34.906] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:58:37.522] [INFO] loadSalesData: started
+[2026-08-03 17:58:37.523] [INFO] loadSalesData: client info set to: [2026-08-03 17:58:37.523] [INFO] loadSalesData: clientId = 1
+[2026-08-03 17:58:37.524] [INFO] loadSalesData: async request sent
+[2026-08-03 17:58:37.525] [INFO] Preparing GET request to: /api/v1/clients/sales?client_id=1
+[2026-08-03 17:58:37.525] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:58:37.526] [INFO] WM_SALES_LOADING_START: status set to '[2026-08-03 17:58:37.526] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:58:37.527] [INFO] Sending GET request...
+[2026-08-03 17:58:37.698] [INFO] Response received successfully. Size: 3909 bytes.
+[2026-08-03 17:58:37.699] [INFO] onSalesDataReady: received response
+[2026-08-03 17:58:37.704] [INFO] onSalesDataReady: loaded 23 records
+[2026-08-03 17:58:39.361] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:58:39.365] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:58:39.367] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:58:39.369] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:58:39.371] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:58:39.373] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:58:39.375] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:58:39.377] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:58:39.379] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:58:39.387] [INFO] createMainMenu: '[2026-08-03 17:58:39.387] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:58:40.911] [INFO] Addresses window created
+[2026-08-03 17:58:42.081] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:58:42.085] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:58:42.086] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:58:42.089] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:58:42.091] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:58:42.093] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:58:42.095] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:58:42.097] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:58:42.099] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:58:42.107] [INFO] createMainMenu: '[2026-08-03 17:58:42.107] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:58:44.096] [INFO] loadConsignorData: started
+[2026-08-03 17:58:44.096] [INFO] loadConsignorData: async request sent
+[2026-08-03 17:58:44.097] [INFO] Consignor thread: starting GET request
+[2026-08-03 17:58:44.097] [INFO] Preparing GET request to: /api/v1/clients/me
+[2026-08-03 17:58:44.098] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:58:44.098] [INFO] WM_CONSIGNOR_LOADING_START: status set to '[2026-08-03 17:58:44.098] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:58:44.099] [INFO] Sending GET request...
+[2026-08-03 17:58:44.285] [INFO] Response received successfully. Size: 116 bytes.
+[2026-08-03 17:58:44.286] [INFO] Consignor thread: GET request completed, posting result
+[2026-08-03 17:58:44.286] [INFO] onConsignorDataReady: received response
+[2026-08-03 17:58:44.287] [INFO] onConsignorDataReady: displayed info for client 1, name=[2026-08-03 17:58:45.805] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:58:45.809] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:58:45.810] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:58:45.812] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:58:45.814] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:58:45.816] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:58:45.818] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:58:45.820] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:58:45.823] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:58:45.830] [INFO] createMainMenu: '[2026-08-03 17:58:45.831] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:58:50.504] [INFO] onCommand: User logged out successfully via '[2026-08-03 17:58:50.515] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:58:50.518] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:58:50.520] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:58:50.522] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:58:50.524] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:58:50.526] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:58:50.528] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:58:50.530] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:58:50.533] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-03 17:58:50.539] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:58:52.743] [INFO] Terminal application shutdown
+[2026-08-03 17:58:52.744] [INFO] HTTPSClient session closed
+[2026-08-03 17:59:21.381] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-08-03 17:59:21.418] [INFO] Terminal application started
+[2026-08-03 17:59:21.425] [INFO] Local database initialized successfully
+[2026-08-03 17:59:21.430] [INFO] WM_CREATE: IDB_ICON_NO_CASH loaded (100x100)
+[2026-08-03 17:59:21.430] [INFO] WM_CREATE: IDB_ICON_KIOSK loaded (100x100)
+[2026-08-03 17:59:21.431] [INFO] WM_CREATE: IDB_ICON_WALLET loaded (100x100)
+[2026-08-03 17:59:21.432] [INFO] Input devices: SM_MOUSEPRESENT=1, SM_DIGITIZER=0 [], screen=1920x1080. Touch taps are synthesized to mouse clicks (RegisterTouchWindow not used).
+[2026-08-03 17:59:21.432] [WARNING] No digitizer detected at startup (NID_READY not set): kiosk touchscreen driver absent, mouse-only mode.
+[2026-08-03 17:59:21.455] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:59:21.466] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:59:21.470] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:59:21.476] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:59:21.483] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:59:21.487] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:59:21.490] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:59:21.493] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:59:21.498] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-03 17:59:21.513] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:59:21.513] [INFO] Main window created successfully
+[2026-08-03 17:59:22.644] [INFO] LoginWindow class registered
+[2026-08-03 17:59:22.648] [INFO] LoginWindow: phone edit subclassed
+[2026-08-03 17:59:22.654] [INFO] LoginWindow: keyboard created, buttons=13
+[2026-08-03 17:59:22.655] [INFO] LoginWindow: all controls created
+[2026-08-03 17:59:22.673] [INFO] LoginWindow: shown
+[2026-08-03 17:59:33.968] [INFO] AuthManager::setLoginAttempted: true, phone=+79062772347
+[2026-08-03 17:59:33.978] [INFO] LoginWindow: authentication started for +79062772347
+[2026-08-03 17:59:33.979] [INFO] Preparing POST request to: /api/v1/clients/by_phone
+[2026-08-03 17:59:33.980] [INFO] Request body size: 24 bytes
+[2026-08-03 17:59:33.980] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/by_phone
+[2026-08-03 17:59:33.981] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:59:33.981] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:59:33.982] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:59:33.982] [INFO] Sending POST request to: /api/v1/clients/by_phone
+[2026-08-03 17:59:34.421] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:59:34.423] [INFO] Response received successfully. Size: 472 bytes.
+[2026-08-03 17:59:34.425] [INFO] AuthManager::setAuthTokens: tokens set for phone +79062772347
+[2026-08-03 17:59:34.426] [INFO] LoginWindow: success, clientId=1, name="[2026-08-03 17:59:34.427] [INFO] Login state set: logged=1, clientId=1, name=[2026-08-03 17:59:34.428] [INFO] AuthManager::setLoginAttempted: false, phone=
+[2026-08-03 17:59:34.430] [INFO] LoginWindow: success, timer set (500 ms)
+[2026-08-03 17:59:34.932] [INFO] LoginWindow: timer fired, destroying window
+[2026-08-03 17:59:34.939] [INFO] LoginWindow: edit subclass restored
+[2026-08-03 17:59:34.940] [INFO] LoginWindow: resources released
+[2026-08-03 17:59:34.959] [INFO] LoginWindow: closed, success=true
+[2026-08-03 17:59:34.988] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:59:34.994] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:59:34.998] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:59:35.001] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:59:35.003] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:59:35.006] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:59:35.009] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:59:35.012] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:59:35.015] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:59:35.027] [INFO] createMainMenu: '[2026-08-03 17:59:35.027] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:59:35.028] [INFO] MainWindow: login successful, main menu refreshed
+[2026-08-03 17:59:38.258] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=general
+[2026-08-03 17:59:38.259] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:59:38.259] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:59:38.260] [INFO] Sending GET request...
+[2026-08-03 17:59:38.439] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-03 17:59:38.440] [INFO] Daily count for general: 3
+[2026-08-03 17:59:38.462] [INFO] General queue input page created, daily count = 3
+[2026-08-03 17:59:40.845] [INFO] Preparing GET request to: /api/v1/clients/by_id?id=1
+[2026-08-03 17:59:40.845] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:59:40.846] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:59:40.847] [INFO] Sending GET request...
+[2026-08-03 17:59:40.941] [INFO] Response received successfully. Size: 116 bytes.
+[2026-08-03 17:59:40.945] [INFO] Client name fetched for id 1: [2026-08-03 17:59:42.213] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:59:42.213] [INFO] Request body size: 55 bytes
+[2026-08-03 17:59:42.214] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:59:42.214] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 17:59:42.214] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:59:42.215] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:59:42.215] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:59:42.216] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:59:42.387] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:59:42.387] [INFO] Response received successfully. Size: 201 bytes.
+[2026-08-03 17:59:42.388] [INFO] Ticket issued: G-9182-4
+[2026-08-03 17:59:42.412] [INFO] Ticket printed: G-9182-4
+[2026-08-03 17:59:43.934] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:59:43.937] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:59:43.939] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:59:43.940] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:59:43.942] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:59:43.944] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:59:43.946] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:59:43.948] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:59:43.950] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:59:43.957] [INFO] createMainMenu: '[2026-08-03 17:59:43.957] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:59:47.091] [INFO] Preparing POST request to: /api/v1/queue/first_time/create
+[2026-08-03 17:59:47.091] [INFO] Request body size: 14 bytes
+[2026-08-03 17:59:47.092] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/first_time/create
+[2026-08-03 17:59:47.092] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:59:47.093] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:59:47.093] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:59:47.094] [INFO] Sending POST request to: /api/v1/queue/first_time/create
+[2026-08-03 17:59:47.195] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:59:47.196] [INFO] Response received successfully. Size: 37 bytes.
+[2026-08-03 17:59:47.211] [INFO] FirstTime ticket printed: F-1785769187-6915
+[2026-08-03 17:59:48.708] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:59:48.712] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:59:48.714] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:59:48.716] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:59:48.718] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:59:48.720] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:59:48.722] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:59:48.724] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:59:48.726] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:59:48.734] [INFO] createMainMenu: '[2026-08-03 17:59:48.735] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:59:52.565] [INFO] Extra20 payment page shown
+[2026-08-03 17:59:53.880] [INFO] [onExtra20PaymentSuccess] Starting extra 20 payment flow...
+[2026-08-03 17:59:53.880] [INFO] [onExtra20PaymentSuccess] Current authToken: <present> (length=159)
+[2026-08-03 17:59:53.881] [INFO] [onExtra20PaymentSuccess] Login status: isLoggedIn=1, clientId=1
+[2026-08-03 17:59:53.881] [INFO] [onExtra20PaymentSuccess] Proceeding with clientId: 1
+[2026-08-03 17:59:53.882] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:59:53.882] [INFO] Request body size: 56 bytes
+[2026-08-03 17:59:53.883] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:59:53.883] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 17:59:53.884] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:59:53.885] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:59:53.885] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:59:53.886] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 17:59:53.973] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:59:53.974] [INFO] Response received successfully. Size: 202 bytes.
+[2026-08-03 17:59:53.974] [INFO] Ticket issued: E-9193-3
+[2026-08-03 17:59:53.975] [INFO] [onExtra20PaymentSuccess] Ticket obtained successfully: E-9193-3
+[2026-08-03 17:59:53.990] [INFO] [onExtra20PaymentSuccess] Ticket printed: E-9193-3
+[2026-08-03 17:59:53.997] [INFO] [onExtra20PaymentSuccess] Extra 20 payment flow completed successfully.
+[2026-08-03 17:59:55.234] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:59:55.238] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:59:55.239] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:59:55.242] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:59:55.243] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:59:55.246] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:59:55.248] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:59:55.250] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:59:55.253] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:59:55.260] [INFO] createMainMenu: '[2026-08-03 17:59:55.261] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 17:59:57.470] [INFO] Trust acceptance window shown
+[2026-08-03 17:59:58.565] [INFO] Trust acceptance print requested for client ID: 1
+[2026-08-03 17:59:58.566] [INFO] Start method queue_manager::getTrustAcceptance
+[2026-08-03 17:59:58.566] [INFO] lient_id: 
+[2026-08-03 17:59:58.567] [INFO] Preparing POST request to: /api/v1/queue/trust_acceptance
+[2026-08-03 17:59:58.567] [INFO] Request body size: 15 bytes
+[2026-08-03 17:59:58.568] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 17:59:58.568] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/trust_acceptance
+[2026-08-03 17:59:58.568] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 17:59:58.569] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 17:59:58.569] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 17:59:58.570] [INFO] Sending POST request to: /api/v1/queue/trust_acceptance
+[2026-08-03 17:59:58.743] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 17:59:58.744] [INFO] Response received successfully. Size: 21 bytes.
+[2026-08-03 17:59:58.744] [WARNING] Server unavailable for trust acceptance, generating local ticket
+[2026-08-03 17:59:58.759] [INFO] Trust acceptance ticket printed: T1
+[2026-08-03 17:59:59.769] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 17:59:59.772] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 17:59:59.774] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 17:59:59.776] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 17:59:59.778] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 17:59:59.780] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 17:59:59.782] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 17:59:59.784] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 17:59:59.786] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 17:59:59.794] [INFO] createMainMenu: '[2026-08-03 17:59:59.794] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 18:00:03.767] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=paid
+[2026-08-03 18:00:03.768] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 18:00:03.769] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 18:00:03.769] [INFO] Sending GET request...
+[2026-08-03 18:00:03.947] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-03 18:00:03.948] [INFO] Daily count for paid: 4
+[2026-08-03 18:00:03.952] [INFO] Paid acceptance window shown, queue count: 4
+[2026-08-03 18:00:04.860] [INFO] PaidAcceptance: start printing ticket
+[2026-08-03 18:00:04.860] [INFO] PaidAcceptance: client ID 1, items count 20
+[2026-08-03 18:00:04.861] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 18:00:04.861] [INFO] Request body size: 52 bytes
+[2026-08-03 18:00:04.861] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 18:00:04.862] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 18:00:04.862] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 18:00:04.863] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 18:00:04.863] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 18:00:04.864] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 18:00:04.961] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 18:00:04.961] [INFO] Response received successfully. Size: 198 bytes.
+[2026-08-03 18:00:04.962] [INFO] Ticket issued: P-9204-5
+[2026-08-03 18:00:04.962] [INFO] PaidAcceptance: ticket obtained: P-9204-5
+[2026-08-03 18:00:04.977] [INFO] PaidAcceptance: ticket printed successfully: P-9204-5
+[2026-08-03 18:00:04.984] [INFO] PaidAcceptance: completed successfully
+[2026-08-03 18:00:06.183] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 18:00:06.186] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 18:00:06.188] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 18:00:06.190] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 18:00:06.191] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 18:00:06.193] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 18:00:06.195] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 18:00:06.197] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 18:00:06.199] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 18:00:06.206] [INFO] createMainMenu: '[2026-08-03 18:00:06.207] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 18:00:09.054] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=expensive
+[2026-08-03 18:00:09.054] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 18:00:09.055] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 18:00:09.055] [INFO] Sending GET request...
+[2026-08-03 18:00:09.158] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-03 18:00:09.159] [INFO] Daily count for expensive: 2
+[2026-08-03 18:00:09.163] [INFO] Expensive acceptance window shown, queue count: 2
+[2026-08-03 18:00:10.290] [INFO] ExpensiveAcceptance: start printing ticket
+[2026-08-03 18:00:10.290] [INFO] ExpensiveAcceptance: client ID 1, items count 1
+[2026-08-03 18:00:10.291] [INFO] Preparing POST request to: /api/v1/queue/get_ticket
+[2026-08-03 18:00:10.291] [INFO] Request body size: 56 bytes
+[2026-08-03 18:00:10.292] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 18:00:10.292] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/get_ticket
+[2026-08-03 18:00:10.293] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-03 18:00:10.293] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 18:00:10.294] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-03 18:00:10.295] [INFO] Sending POST request to: /api/v1/queue/get_ticket
+[2026-08-03 18:00:10.394] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-03 18:00:10.395] [INFO] Response received successfully. Size: 202 bytes.
+[2026-08-03 18:00:10.395] [INFO] Ticket issued: D-9210-3
+[2026-08-03 18:00:10.396] [INFO] ExpensiveAcceptance: ticket obtained: D-9210-3
+[2026-08-03 18:00:10.412] [INFO] ExpensiveAcceptance: ticket printed successfully: D-9210-3
+[2026-08-03 18:00:10.421] [INFO] ExpensiveAcceptance: completed successfully
+[2026-08-03 18:00:11.707] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 18:00:11.711] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 18:00:11.712] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 18:00:11.715] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 18:00:11.717] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 18:00:11.719] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 18:00:11.721] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 18:00:11.723] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 18:00:11.725] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 18:00:11.733] [INFO] createMainMenu: '[2026-08-03 18:00:11.734] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 18:00:13.703] [INFO] loadSalesData: started
+[2026-08-03 18:00:13.704] [INFO] loadSalesData: client info set to: [2026-08-03 18:00:13.705] [INFO] loadSalesData: clientId = 1
+[2026-08-03 18:00:13.705] [INFO] loadSalesData: async request sent
+[2026-08-03 18:00:13.706] [INFO] Preparing GET request to: /api/v1/clients/sales?client_id=1
+[2026-08-03 18:00:13.707] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 18:00:13.707] [INFO] WM_SALES_LOADING_START: status set to '[2026-08-03 18:00:13.708] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 18:00:13.708] [INFO] Sending GET request...
+[2026-08-03 18:00:13.810] [INFO] Response received successfully. Size: 3909 bytes.
+[2026-08-03 18:00:13.810] [INFO] onSalesDataReady: received response
+[2026-08-03 18:00:13.814] [INFO] onSalesDataReady: loaded 23 records
+[2026-08-03 18:00:16.476] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 18:00:16.480] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 18:00:16.482] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 18:00:16.484] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 18:00:16.486] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 18:00:16.488] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 18:00:16.490] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 18:00:16.492] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 18:00:16.494] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 18:00:16.502] [INFO] createMainMenu: '[2026-08-03 18:00:16.503] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 18:00:18.138] [INFO] Addresses window created
+[2026-08-03 18:00:19.364] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 18:00:19.367] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 18:00:19.369] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 18:00:19.371] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 18:00:19.373] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 18:00:19.375] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 18:00:19.377] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 18:00:19.379] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 18:00:19.381] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 18:00:19.388] [INFO] createMainMenu: '[2026-08-03 18:00:19.389] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 18:00:21.653] [INFO] loadConsignorData: started
+[2026-08-03 18:00:21.654] [INFO] loadConsignorData: async request sent
+[2026-08-03 18:00:21.654] [INFO] Consignor thread: starting GET request
+[2026-08-03 18:00:21.655] [INFO] Preparing GET request to: /api/v1/clients/me
+[2026-08-03 18:00:21.655] [INFO] Added Authorization header (Bearer token).
+[2026-08-03 18:00:21.656] [INFO] WM_CONSIGNOR_LOADING_START: status set to '[2026-08-03 18:00:21.656] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-03 18:00:21.657] [INFO] Sending GET request...
+[2026-08-03 18:00:21.754] [INFO] Response received successfully. Size: 116 bytes.
+[2026-08-03 18:00:21.755] [INFO] Consignor thread: GET request completed, posting result
+[2026-08-03 18:00:21.755] [INFO] onConsignorDataReady: received response
+[2026-08-03 18:00:21.756] [INFO] onConsignorDataReady: displayed info for client 1, name=[2026-08-03 18:00:23.568] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 18:00:23.572] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 18:00:23.574] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 18:00:23.576] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 18:00:23.578] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 18:00:23.580] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 18:00:23.583] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 18:00:23.585] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 18:00:23.587] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-03 18:00:23.595] [INFO] createMainMenu: '[2026-08-03 18:00:23.595] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 18:00:28.179] [INFO] onCommand: User logged out successfully via '[2026-08-03 18:00:28.190] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-03 18:00:28.194] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-03 18:00:28.195] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-03 18:00:28.198] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-03 18:00:28.200] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-03 18:00:28.202] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-03 18:00:28.204] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-03 18:00:28.206] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-03 18:00:28.208] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-03 18:00:28.215] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-03 18:00:30.545] [INFO] Terminal application shutdown
+[2026-08-03 18:00:30.546] [INFO] HTTPSClient session closed
+[2026-08-04 11:50:10.653] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-08-04 11:50:10.687] [INFO] Terminal application started
+[2026-08-04 11:50:10.696] [INFO] Local database initialized successfully
+[2026-08-04 11:50:10.700] [INFO] WM_CREATE: IDB_ICON_NO_CASH loaded (100x100)
+[2026-08-04 11:50:10.701] [INFO] WM_CREATE: IDB_ICON_KIOSK loaded (100x100)
+[2026-08-04 11:50:10.701] [INFO] WM_CREATE: IDB_ICON_WALLET loaded (100x100)
+[2026-08-04 11:50:10.702] [INFO] Input devices: SM_MOUSEPRESENT=1, SM_DIGITIZER=0 [], screen=1920x1080. Touch taps are synthesized to mouse clicks (RegisterTouchWindow not used).
+[2026-08-04 11:50:10.702] [WARNING] No digitizer detected at startup (NID_READY not set): kiosk touchscreen driver absent, mouse-only mode.
+[2026-08-04 11:50:10.721] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 11:50:10.759] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 11:50:10.760] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 11:50:10.784] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 11:50:10.786] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 11:50:10.788] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 11:50:10.790] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 11:50:10.792] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 11:50:10.816] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-04 11:50:10.825] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 11:50:10.826] [INFO] Main window created successfully
+[2026-08-04 11:50:12.192] [INFO] LoginWindow class registered
+[2026-08-04 11:50:12.197] [INFO] LoginWindow: phone edit subclassed
+[2026-08-04 11:50:12.201] [INFO] LoginWindow: keyboard created, buttons=13
+[2026-08-04 11:50:12.202] [INFO] LoginWindow: all controls created
+[2026-08-04 11:50:12.257] [INFO] LoginWindow: shown
+[2026-08-04 11:50:28.067] [INFO] AuthManager::setLoginAttempted: true, phone=+79062772347
+[2026-08-04 11:50:28.079] [INFO] LoginWindow: authentication started for +79062772347
+[2026-08-04 11:50:28.080] [INFO] Preparing POST request to: /api/v1/clients/by_phone
+[2026-08-04 11:50:28.081] [INFO] Request body size: 24 bytes
+[2026-08-04 11:50:28.081] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/by_phone
+[2026-08-04 11:50:28.082] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-04 11:50:28.082] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-04 11:50:28.083] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-04 11:50:28.083] [INFO] Sending POST request to: /api/v1/clients/by_phone
+[2026-08-04 11:50:28.328] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-04 11:50:28.330] [INFO] Response received successfully. Size: 472 bytes.
+[2026-08-04 11:50:28.331] [INFO] AuthManager::setAuthTokens: tokens set for phone +79062772347
+[2026-08-04 11:50:28.332] [INFO] LoginWindow: success, clientId=1, name="[2026-08-04 11:50:28.333] [INFO] Login state set: logged=1, clientId=1, name=[2026-08-04 11:50:28.334] [INFO] AuthManager::setLoginAttempted: false, phone=
+[2026-08-04 11:50:28.336] [INFO] LoginWindow: success, timer set (500 ms)
+[2026-08-04 11:50:28.856] [INFO] LoginWindow: timer fired, destroying window
+[2026-08-04 11:50:28.862] [INFO] LoginWindow: edit subclass restored
+[2026-08-04 11:50:28.863] [INFO] LoginWindow: resources released
+[2026-08-04 11:50:28.872] [INFO] LoginWindow: closed, success=true
+[2026-08-04 11:50:28.896] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 11:50:28.902] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 11:50:28.905] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 11:50:28.908] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 11:50:28.910] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 11:50:28.913] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 11:50:28.915] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 11:50:28.917] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 11:50:28.925] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 11:50:28.934] [INFO] createMainMenu: '[2026-08-04 11:50:28.935] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 11:50:28.935] [INFO] MainWindow: login successful, main menu refreshed
+[2026-08-04 11:50:32.101] [INFO] Trust acceptance window shown
+[2026-08-04 11:50:47.924] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=paid
+[2026-08-04 11:50:47.925] [INFO] Added Authorization header (Bearer token).
+[2026-08-04 11:50:47.925] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-04 11:50:47.926] [INFO] Sending GET request...
+[2026-08-04 11:50:48.032] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-04 11:50:48.032] [INFO] Daily count for paid: 0
+[2026-08-04 11:50:48.036] [INFO] Paid acceptance window shown, queue count: 0
+[2026-08-04 11:50:50.164] [INFO] Preparing GET request to: /api/v1/queue/daily_count?queue_type=expensive
+[2026-08-04 11:50:50.164] [INFO] Added Authorization header (Bearer token).
+[2026-08-04 11:50:50.165] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-04 11:50:50.165] [INFO] Sending GET request...
+[2026-08-04 11:50:50.266] [INFO] Response received successfully. Size: 11 bytes.
+[2026-08-04 11:50:50.267] [INFO] Daily count for expensive: 0
+[2026-08-04 11:50:50.270] [INFO] Expensive acceptance window shown, queue count: 0
+[2026-08-04 11:50:59.625] [INFO] Trust acceptance window shown
+[2026-08-04 11:51:05.266] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 11:51:05.269] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 11:51:05.270] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 11:51:05.272] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 11:51:05.274] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 11:51:05.276] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 11:51:05.278] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 11:51:05.279] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 11:51:05.281] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 11:51:05.289] [INFO] createMainMenu: '[2026-08-04 11:51:05.289] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 11:51:06.436] [INFO] onCommand: User logged out successfully via '[2026-08-04 11:51:06.445] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 11:51:06.448] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 11:51:06.449] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 11:51:06.451] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 11:51:06.453] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 11:51:06.455] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 11:51:06.456] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 11:51:06.458] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 11:51:06.461] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-04 11:51:06.467] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 11:51:08.371] [INFO] Terminal application shutdown
+[2026-08-04 11:51:08.372] [INFO] HTTPSClient session closed
+[2026-08-04 13:09:21.623] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-08-04 13:09:21.668] [INFO] Terminal application started
+[2026-08-04 13:09:21.678] [INFO] Local database initialized successfully
+[2026-08-04 13:09:21.684] [INFO] WM_CREATE: IDB_ICON_NO_CASH loaded (100x100)
+[2026-08-04 13:09:21.685] [INFO] WM_CREATE: IDB_ICON_KIOSK loaded (100x100)
+[2026-08-04 13:09:21.686] [INFO] WM_CREATE: IDB_ICON_WALLET loaded (100x100)
+[2026-08-04 13:09:21.686] [INFO] Input devices: SM_MOUSEPRESENT=1, SM_DIGITIZER=0 [], screen=1920x1080. Touch taps are synthesized to mouse clicks (RegisterTouchWindow not used).
+[2026-08-04 13:09:21.687] [WARNING] No digitizer detected at startup (NID_READY not set): kiosk touchscreen driver absent, mouse-only mode.
+[2026-08-04 13:09:21.715] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 13:09:21.753] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 13:09:21.757] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 13:09:21.788] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 13:09:21.790] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 13:09:21.794] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 13:09:21.796] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 13:09:21.799] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 13:09:21.825] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-04 13:09:21.832] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 13:09:21.833] [INFO] Main window created successfully
+[2026-08-04 13:09:23.439] [INFO] LoginWindow class registered
+[2026-08-04 13:09:23.443] [INFO] LoginWindow: phone edit subclassed
+[2026-08-04 13:09:23.449] [INFO] LoginWindow: keyboard created, buttons=13
+[2026-08-04 13:09:23.450] [INFO] LoginWindow: all controls created
+[2026-08-04 13:09:23.517] [INFO] LoginWindow: shown
+[2026-08-04 13:09:33.651] [INFO] AuthManager::setLoginAttempted: true, phone=+79062772347
+[2026-08-04 13:09:33.662] [INFO] LoginWindow: authentication started for +79062772347
+[2026-08-04 13:09:33.663] [INFO] Preparing POST request to: /api/v1/clients/by_phone
+[2026-08-04 13:09:33.663] [INFO] Request body size: 24 bytes
+[2026-08-04 13:09:33.664] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/by_phone
+[2026-08-04 13:09:33.664] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-04 13:09:33.665] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-04 13:09:33.665] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-04 13:09:33.665] [INFO] Sending POST request to: /api/v1/clients/by_phone
+[2026-08-04 13:09:34.122] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-04 13:09:34.124] [INFO] Response received successfully. Size: 472 bytes.
+[2026-08-04 13:09:34.125] [INFO] AuthManager::setAuthTokens: tokens set for phone +79062772347
+[2026-08-04 13:09:34.126] [INFO] LoginWindow: success, clientId=1, name="[2026-08-04 13:09:34.128] [INFO] Login state set: logged=1, clientId=1, name=[2026-08-04 13:09:34.129] [INFO] AuthManager::setLoginAttempted: false, phone=
+[2026-08-04 13:09:34.132] [INFO] LoginWindow: success, timer set (500 ms)
+[2026-08-04 13:09:34.631] [INFO] LoginWindow: timer fired, destroying window
+[2026-08-04 13:09:34.639] [INFO] LoginWindow: edit subclass restored
+[2026-08-04 13:09:34.640] [INFO] LoginWindow: resources released
+[2026-08-04 13:09:34.656] [INFO] LoginWindow: closed, success=true
+[2026-08-04 13:09:34.685] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 13:09:34.692] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 13:09:34.695] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 13:09:34.697] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 13:09:34.700] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 13:09:34.703] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 13:09:34.705] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 13:09:34.708] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 13:09:34.715] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 13:09:34.725] [INFO] createMainMenu: '[2026-08-04 13:09:34.726] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 13:09:34.726] [INFO] MainWindow: login successful, main menu refreshed
+[2026-08-04 13:09:37.681] [INFO] Trust acceptance window shown
+[2026-08-04 13:09:39.306] [INFO] onTrustAcceptancePrint: method started.
+[2026-08-04 13:09:39.306] [INFO] onTrustAcceptancePrint: preparing ticket for client ID: 1, Name: [2026-08-04 13:09:39.307] [INFO] Start method queue_manager::getTrustAcceptance
+[2026-08-04 13:09:39.307] [INFO] lient_id: 
+[2026-08-04 13:09:39.308] [INFO] Preparing POST request to: /api/v1/queue/trust_acceptance
+[2026-08-04 13:09:39.308] [INFO] Request body size: 15 bytes
+[2026-08-04 13:09:39.309] [INFO] Added Authorization header (Bearer token).
+[2026-08-04 13:09:39.309] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/trust_acceptance
+[2026-08-04 13:09:39.310] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-04 13:09:39.311] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-04 13:09:39.311] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-04 13:09:39.312] [INFO] Sending POST request to: /api/v1/queue/trust_acceptance
+[2026-08-04 13:09:39.477] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-04 13:09:39.478] [INFO] Response received successfully. Size: 21 bytes.
+[2026-08-04 13:09:39.478] [WARNING] Server unavailable for trust acceptance, generating local ticket
+[2026-08-04 13:09:39.479] [INFO] onTrustAcceptancePrint: ticket obtained. TicketNumber: T1, Window: Offline
+[2026-08-04 13:09:39.480] [INFO] onTrustAcceptancePrint: calling printTicketWithExtraMessage with new legal text format.
+[2026-08-04 13:09:39.519] [INFO] onTrustAcceptancePrint: ticket printed successfully via printer. TicketNumber: T1
+[2026-08-04 13:09:39.520] [INFO] onTrustAcceptancePrint: transitioning to Ticket Issued screen.
+[2026-08-04 13:09:39.552] [INFO] onTrustAcceptancePrint: method completed successfully.
+[2026-08-04 13:10:01.868] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 13:10:01.872] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 13:10:01.873] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 13:10:01.876] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 13:10:01.878] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 13:10:01.880] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 13:10:01.882] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 13:10:01.884] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 13:10:01.886] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 13:10:01.894] [INFO] createMainMenu: '[2026-08-04 13:10:01.895] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 13:10:04.823] [INFO] onCommand: User logged out successfully via '[2026-08-04 13:10:04.833] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 13:10:04.836] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 13:10:04.838] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 13:10:04.840] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 13:10:04.842] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 13:10:04.844] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 13:10:04.845] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 13:10:04.847] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 13:10:04.850] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-04 13:10:04.857] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 13:10:06.528] [INFO] Terminal application shutdown
+[2026-08-04 13:10:06.529] [INFO] HTTPSClient session closed
+[2026-08-04 14:27:02.129] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-08-04 14:27:02.176] [INFO] ReceiptPrinter: constructor: terminal printer detected: Microsoft Print to PDF
+[2026-08-04 14:27:02.177] [INFO] Terminal application started
+[2026-08-04 14:27:02.187] [INFO] Local database initialized successfully
+[2026-08-04 14:27:02.193] [INFO] WM_CREATE: IDB_ICON_NO_CASH loaded (100x100)
+[2026-08-04 14:27:02.194] [INFO] WM_CREATE: IDB_ICON_KIOSK loaded (100x100)
+[2026-08-04 14:27:02.195] [INFO] WM_CREATE: IDB_ICON_WALLET loaded (100x100)
+[2026-08-04 14:27:02.195] [INFO] Input devices: SM_MOUSEPRESENT=1, SM_DIGITIZER=0 [], screen=1920x1080. Touch taps are synthesized to mouse clicks (RegisterTouchWindow not used).
+[2026-08-04 14:27:02.196] [WARNING] No digitizer detected at startup (NID_READY not set): kiosk touchscreen driver absent, mouse-only mode.
+[2026-08-04 14:27:02.224] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:27:02.238] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:27:02.242] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:27:02.251] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:27:02.255] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:27:02.259] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:27:02.261] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:27:02.266] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:27:02.270] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-04 14:27:02.291] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:27:02.291] [INFO] Main window created successfully
+[2026-08-04 14:27:05.550] [INFO] LoginWindow class registered
+[2026-08-04 14:27:05.554] [INFO] LoginWindow: phone edit subclassed
+[2026-08-04 14:27:05.561] [INFO] LoginWindow: keyboard created, buttons=13
+[2026-08-04 14:27:05.563] [INFO] LoginWindow: all controls created
+[2026-08-04 14:27:05.579] [INFO] LoginWindow: shown
+[2026-08-04 14:27:16.482] [INFO] AuthManager::setLoginAttempted: true, phone=+79062772347
+[2026-08-04 14:27:16.494] [INFO] LoginWindow: authentication started for +79062772347
+[2026-08-04 14:27:16.495] [INFO] Preparing POST request to: /api/v1/clients/by_phone
+[2026-08-04 14:27:16.496] [INFO] Request body size: 24 bytes
+[2026-08-04 14:27:16.496] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/by_phone
+[2026-08-04 14:27:16.497] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-04 14:27:16.497] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-04 14:27:16.498] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-04 14:27:16.499] [INFO] Sending POST request to: /api/v1/clients/by_phone
+[2026-08-04 14:27:16.739] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-04 14:27:16.740] [INFO] Response received successfully. Size: 472 bytes.
+[2026-08-04 14:27:16.741] [INFO] AuthManager::setAuthTokens: tokens set for phone +79062772347
+[2026-08-04 14:27:16.742] [INFO] LoginWindow: success, clientId=1, name="[2026-08-04 14:27:16.742] [INFO] Login state set: logged=1, clientId=1, name=[2026-08-04 14:27:16.743] [INFO] AuthManager::setLoginAttempted: false, phone=
+[2026-08-04 14:27:16.744] [INFO] LoginWindow: success, timer set (500 ms)
+[2026-08-04 14:27:17.248] [INFO] LoginWindow: timer fired, destroying window
+[2026-08-04 14:27:17.256] [INFO] LoginWindow: edit subclass restored
+[2026-08-04 14:27:17.257] [INFO] LoginWindow: resources released
+[2026-08-04 14:27:17.272] [INFO] LoginWindow: closed, success=true
+[2026-08-04 14:27:17.298] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:27:17.305] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:27:17.308] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:27:17.311] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:27:17.313] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:27:17.316] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:27:17.319] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:27:17.322] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:27:17.324] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 14:27:17.338] [INFO] createMainMenu: '[2026-08-04 14:27:17.338] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:27:17.339] [INFO] MainWindow: login successful, main menu refreshed
+[2026-08-04 14:27:20.424] [INFO] showTrustAcceptanceWindow: started, screen=1920x1080
+[2026-08-04 14:27:20.495] [INFO] showTrustAcceptanceWindow: ticket preview shown above print button, logged=1, previewY=480, previewH=420
+[2026-08-04 14:27:20.497] [INFO] Trust acceptance window shown
+[2026-08-04 14:27:34.675] [INFO] onTrustAcceptancePrint: method started.
+[2026-08-04 14:27:34.676] [INFO] onTrustAcceptancePrint: preparing ticket for client ID: 1, Name: [2026-08-04 14:27:34.676] [INFO] Start method queue_manager::getTrustAcceptance
+[2026-08-04 14:27:34.677] [INFO] getTrustAcceptance: client_id=1
+[2026-08-04 14:27:34.677] [INFO] Preparing POST request to: /api/v1/queue/trust_acceptance
+[2026-08-04 14:27:34.678] [INFO] Request body size: 15 bytes
+[2026-08-04 14:27:34.678] [INFO] Added Authorization header (Bearer token).
+[2026-08-04 14:27:34.679] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/trust_acceptance
+[2026-08-04 14:27:34.679] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-04 14:27:34.680] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-04 14:27:34.680] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-04 14:27:34.681] [INFO] Sending POST request to: /api/v1/queue/trust_acceptance
+[2026-08-04 14:27:34.783] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-04 14:27:34.784] [INFO] Response received successfully. Size: 21 bytes.
+[2026-08-04 14:27:34.784] [WARNING] Server unavailable for trust acceptance, generating local ticket
+[2026-08-04 14:27:34.785] [WARNING] Local trust ticket issued: T1, position=1, window=1
+[2026-08-04 14:27:34.785] [INFO] onTrustAcceptancePrint: final ticket: number=T1, position=1, window=1
+[2026-08-04 14:27:34.786] [INFO] ReceiptPrinter::printTicketWithExtraMessage: start, ticket=T1, clientId=1
+[2026-08-04 14:27:34.786] [INFO] ReceiptPrinter::toPrinterEncoding: converted 1410 wchar_t -> 1410 bytes (CP1251)
+[2026-08-04 14:27:34.813] [ERROR] ReceiptPrinter::printTicketWithExtraMessage: WritePrinter failed/incomplete, err=3003, written=0 of 1410
+[2026-08-04 14:27:34.814] [INFO] onTrustAcceptancePrint: ticket printed successfully via terminal printer. TicketNumber: T1
+[2026-08-04 14:27:34.814] [INFO] onTrustAcceptancePrint: transitioning to Ticket Issued screen.
+[2026-08-04 14:27:34.822] [INFO] onTrustAcceptancePrint: method completed successfully.
+[2026-08-04 14:27:37.011] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:27:37.014] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:27:37.016] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:27:37.017] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:27:37.018] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:27:37.020] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:27:37.022] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:27:37.023] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:27:37.025] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 14:27:37.032] [INFO] createMainMenu: '[2026-08-04 14:27:37.032] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:27:40.318] [INFO] showTrustAcceptanceWindow: started, screen=1920x1080
+[2026-08-04 14:27:40.335] [INFO] showTrustAcceptanceWindow: ticket preview shown above print button, logged=1, previewY=480, previewH=420
+[2026-08-04 14:27:40.338] [INFO] Trust acceptance window shown
+[2026-08-04 14:28:03.256] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:28:03.259] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:28:03.261] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:28:03.263] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:28:03.265] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:28:03.267] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:28:03.269] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:28:03.271] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:28:03.273] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 14:28:03.280] [INFO] createMainMenu: '[2026-08-04 14:28:03.281] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:28:04.496] [INFO] onCommand: User logged out successfully via '[2026-08-04 14:28:04.506] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:28:04.510] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:28:04.512] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:28:04.514] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:28:04.516] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:28:04.518] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:28:04.520] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:28:04.522] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:28:04.525] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-04 14:28:04.532] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:28:06.095] [INFO] Terminal application shutdown
+[2026-08-04 14:28:06.096] [INFO] HTTPSClient session closed
+[2026-08-04 14:28:42.984] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-08-04 14:28:43.022] [INFO] ReceiptPrinter: constructor: terminal printer detected: Microsoft Print to PDF
+[2026-08-04 14:28:43.023] [INFO] Terminal application started
+[2026-08-04 14:28:43.030] [INFO] Local database initialized successfully
+[2026-08-04 14:28:43.036] [INFO] WM_CREATE: IDB_ICON_NO_CASH loaded (100x100)
+[2026-08-04 14:28:43.037] [INFO] WM_CREATE: IDB_ICON_KIOSK loaded (100x100)
+[2026-08-04 14:28:43.037] [INFO] WM_CREATE: IDB_ICON_WALLET loaded (100x100)
+[2026-08-04 14:28:43.038] [INFO] Input devices: SM_MOUSEPRESENT=1, SM_DIGITIZER=0 [], screen=1920x1080. Touch taps are synthesized to mouse clicks (RegisterTouchWindow not used).
+[2026-08-04 14:28:43.038] [WARNING] No digitizer detected at startup (NID_READY not set): kiosk touchscreen driver absent, mouse-only mode.
+[2026-08-04 14:28:43.067] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:28:43.082] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:28:43.086] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:28:43.094] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:28:43.098] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:28:43.102] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:28:43.106] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:28:43.111] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:28:43.116] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-04 14:28:43.131] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:28:43.131] [INFO] Main window created successfully
+[2026-08-04 14:28:45.688] [INFO] LoginWindow class registered
+[2026-08-04 14:28:45.692] [INFO] LoginWindow: phone edit subclassed
+[2026-08-04 14:28:45.699] [INFO] LoginWindow: keyboard created, buttons=13
+[2026-08-04 14:28:45.700] [INFO] LoginWindow: all controls created
+[2026-08-04 14:28:45.718] [INFO] LoginWindow: shown
+[2026-08-04 14:28:55.844] [INFO] AuthManager::setLoginAttempted: true, phone=+79062772347
+[2026-08-04 14:28:55.854] [INFO] LoginWindow: authentication started for +79062772347
+[2026-08-04 14:28:55.855] [INFO] Preparing POST request to: /api/v1/clients/by_phone
+[2026-08-04 14:28:55.856] [INFO] Request body size: 24 bytes
+[2026-08-04 14:28:55.856] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/by_phone
+[2026-08-04 14:28:55.856] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-04 14:28:55.857] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-04 14:28:55.857] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-04 14:28:55.858] [INFO] Sending POST request to: /api/v1/clients/by_phone
+[2026-08-04 14:28:56.111] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-04 14:28:56.113] [INFO] Response received successfully. Size: 472 bytes.
+[2026-08-04 14:28:56.114] [INFO] AuthManager::setAuthTokens: tokens set for phone +79062772347
+[2026-08-04 14:28:56.115] [INFO] LoginWindow: success, clientId=1, name="[2026-08-04 14:28:56.117] [INFO] Login state set: logged=1, clientId=1, name=[2026-08-04 14:28:56.118] [INFO] AuthManager::setLoginAttempted: false, phone=
+[2026-08-04 14:28:56.119] [INFO] LoginWindow: success, timer set (500 ms)
+[2026-08-04 14:28:56.628] [INFO] LoginWindow: timer fired, destroying window
+[2026-08-04 14:28:56.635] [INFO] LoginWindow: edit subclass restored
+[2026-08-04 14:28:56.636] [INFO] LoginWindow: resources released
+[2026-08-04 14:28:56.649] [INFO] LoginWindow: closed, success=true
+[2026-08-04 14:28:56.675] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:28:56.681] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:28:56.684] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:28:56.687] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:28:56.690] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:28:56.693] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:28:56.696] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:28:56.698] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:28:56.701] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 14:28:56.713] [INFO] createMainMenu: '[2026-08-04 14:28:56.714] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:28:56.715] [INFO] MainWindow: login successful, main menu refreshed
+[2026-08-04 14:29:00.473] [INFO] showTrustAcceptanceWindow: started, screen=1920x1080
+[2026-08-04 14:29:00.498] [INFO] showTrustAcceptanceWindow: ticket preview shown above print button, logged=1, previewY=480, previewH=420
+[2026-08-04 14:29:00.500] [INFO] Trust acceptance window shown
+[2026-08-04 14:29:16.672] [INFO] showTrustAcceptanceWindow: started, screen=1920x1080
+[2026-08-04 14:29:16.687] [INFO] showTrustAcceptanceWindow: ticket preview shown above print button, logged=1, previewY=480, previewH=420
+[2026-08-04 14:29:16.689] [INFO] Trust acceptance window shown
+[2026-08-04 14:29:34.277] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:29:34.280] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:29:34.282] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:29:34.284] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:29:34.286] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:29:34.288] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:29:34.290] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:29:34.292] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:29:34.294] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 14:29:34.302] [INFO] createMainMenu: '[2026-08-04 14:29:34.303] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:29:36.445] [INFO] Terminal application shutdown
+[2026-08-04 14:29:36.446] [INFO] HTTPSClient session closed
+[2026-08-04 14:51:44.185] [INFO] HTTPSClient initialized for server: 77.222.32.209:8443
+[2026-08-04 14:51:44.230] [INFO] ReceiptPrinter: constructor: terminal printer detected: Microsoft Print to PDF
+[2026-08-04 14:51:44.231] [INFO] Terminal application started
+[2026-08-04 14:51:44.239] [INFO] Local database initialized successfully
+[2026-08-04 14:51:44.244] [INFO] WM_CREATE: IDB_ICON_NO_CASH loaded (100x100)
+[2026-08-04 14:51:44.245] [INFO] WM_CREATE: IDB_ICON_KIOSK loaded (100x100)
+[2026-08-04 14:51:44.246] [INFO] WM_CREATE: IDB_ICON_WALLET loaded (100x100)
+[2026-08-04 14:51:44.246] [INFO] Input devices: SM_MOUSEPRESENT=1, SM_DIGITIZER=0 [], screen=1920x1080. Touch taps are synthesized to mouse clicks (RegisterTouchWindow not used).
+[2026-08-04 14:51:44.247] [WARNING] No digitizer detected at startup (NID_READY not set): kiosk touchscreen driver absent, mouse-only mode.
+[2026-08-04 14:51:44.275] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:51:44.289] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:51:44.293] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:51:44.300] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:51:44.303] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:51:44.307] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:51:44.309] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:51:44.312] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:51:44.317] [INFO] createMainMenu: instruction shown (client not logged in)
+[2026-08-04 14:51:44.331] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:51:44.331] [INFO] Main window created successfully
+[2026-08-04 14:51:45.501] [INFO] LoginWindow class registered
+[2026-08-04 14:51:45.504] [INFO] LoginWindow: phone edit subclassed
+[2026-08-04 14:51:45.509] [INFO] LoginWindow: keyboard created, buttons=13
+[2026-08-04 14:51:45.510] [INFO] LoginWindow: all controls created
+[2026-08-04 14:51:45.522] [INFO] LoginWindow: shown
+[2026-08-04 14:51:57.593] [INFO] AuthManager::setLoginAttempted: true, phone=+79062772347
+[2026-08-04 14:51:57.605] [INFO] LoginWindow: authentication started for +79062772347
+[2026-08-04 14:51:57.606] [INFO] Preparing POST request to: /api/v1/clients/by_phone
+[2026-08-04 14:51:57.607] [INFO] Request body size: 24 bytes
+[2026-08-04 14:51:57.607] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/clients/by_phone
+[2026-08-04 14:51:57.608] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-04 14:51:57.608] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-04 14:51:57.609] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-04 14:51:57.609] [INFO] Sending POST request to: /api/v1/clients/by_phone
+[2026-08-04 14:51:57.846] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-04 14:51:57.848] [INFO] Response received successfully. Size: 472 bytes.
+[2026-08-04 14:51:57.849] [INFO] AuthManager::setAuthTokens: tokens set for phone +79062772347
+[2026-08-04 14:51:57.850] [INFO] LoginWindow: success, clientId=1, name="[2026-08-04 14:51:57.851] [INFO] Login state set: logged=1, clientId=1, name=[2026-08-04 14:51:57.852] [INFO] AuthManager::setLoginAttempted: false, phone=
+[2026-08-04 14:51:57.852] [INFO] LoginWindow: success, timer set (500 ms)
+[2026-08-04 14:51:58.372] [INFO] LoginWindow: timer fired, destroying window
+[2026-08-04 14:51:58.378] [INFO] LoginWindow: edit subclass restored
+[2026-08-04 14:51:58.378] [INFO] LoginWindow: resources released
+[2026-08-04 14:51:58.386] [INFO] LoginWindow: closed, success=true
+[2026-08-04 14:51:58.409] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:51:58.415] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:51:58.417] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:51:58.419] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:51:58.422] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:51:58.424] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:51:58.427] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:51:58.429] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:51:58.431] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 14:51:58.441] [INFO] createMainMenu: '[2026-08-04 14:51:58.441] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:51:58.442] [INFO] MainWindow: login successful, main menu refreshed
+[2026-08-04 14:52:01.203] [INFO] showTrustAcceptanceWindow: started, screen=1920x1080
+[2026-08-04 14:52:01.214] [INFO] showTrustAcceptanceWindow: ticket preview (CRLF) shown above print button, logged=1, previewY=480, previewH=420, textLen=1265
+[2026-08-04 14:52:01.217] [INFO] Trust acceptance window shown
+[2026-08-04 14:52:11.483] [INFO] onTrustAcceptancePrint: method started.
+[2026-08-04 14:52:11.483] [INFO] onTrustAcceptancePrint: preparing ticket for client ID: 1, Name: [2026-08-04 14:52:11.484] [INFO] Start method queue_manager::getTrustAcceptance
+[2026-08-04 14:52:11.484] [INFO] getTrustAcceptance: client_id=1
+[2026-08-04 14:52:11.485] [INFO] Preparing POST request to: /api/v1/queue/trust_acceptance
+[2026-08-04 14:52:11.485] [INFO] Request body size: 15 bytes
+[2026-08-04 14:52:11.486] [INFO] Added Authorization header (Bearer token).
+[2026-08-04 14:52:11.486] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/trust_acceptance
+[2026-08-04 14:52:11.487] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-04 14:52:11.487] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-04 14:52:11.488] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-04 14:52:11.488] [INFO] Sending POST request to: /api/v1/queue/trust_acceptance
+[2026-08-04 14:52:11.580] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-04 14:52:11.581] [INFO] Response received successfully. Size: 21 bytes.
+[2026-08-04 14:52:11.581] [WARNING] Server unavailable for trust acceptance, generating local ticket
+[2026-08-04 14:52:11.582] [WARNING] Local trust ticket issued: T1, position=1, window=1
+[2026-08-04 14:52:11.582] [INFO] onTrustAcceptancePrint: final ticket: number=T1, position=1, window=1
+[2026-08-04 14:52:11.583] [INFO] ReceiptPrinter::printTicketWithExtraMessage: start, ticket=T1, clientId=1
+[2026-08-04 14:52:11.583] [INFO] ReceiptPrinter::toPrinterEncoding: converted 1410 wchar_t -> 1410 bytes (CP1251)
+[2026-08-04 14:52:11.606] [ERROR] ReceiptPrinter::printTicketWithExtraMessage: WritePrinter failed/incomplete, err=3003, written=0 of 1410
+[2026-08-04 14:52:11.606] [INFO] onTrustAcceptancePrint: ticket printed successfully via terminal printer. TicketNumber: T1
+[2026-08-04 14:52:11.607] [INFO] onTrustAcceptancePrint: transitioning to Ticket Issued screen.
+[2026-08-04 14:52:11.614] [INFO] onTrustAcceptancePrint: method completed successfully.
+[2026-08-04 14:52:13.382] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:52:13.385] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:52:13.387] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:52:13.389] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:52:13.391] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:52:13.393] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:52:13.395] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:52:13.398] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:52:13.400] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 14:52:13.408] [INFO] createMainMenu: '[2026-08-04 14:52:13.408] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:52:16.967] [INFO] showTrustAcceptanceWindow: started, screen=1920x1080
+[2026-08-04 14:52:16.979] [INFO] showTrustAcceptanceWindow: ticket preview (CRLF) shown above print button, logged=1, previewY=480, previewH=420, textLen=1265
+[2026-08-04 14:52:16.982] [INFO] Trust acceptance window shown
+[2026-08-04 14:52:18.457] [INFO] onTrustAcceptancePrint: method started.
+[2026-08-04 14:52:18.458] [INFO] onTrustAcceptancePrint: preparing ticket for client ID: 1, Name: [2026-08-04 14:52:18.458] [INFO] Start method queue_manager::getTrustAcceptance
+[2026-08-04 14:52:18.459] [INFO] getTrustAcceptance: client_id=1
+[2026-08-04 14:52:18.459] [INFO] Preparing POST request to: /api/v1/queue/trust_acceptance
+[2026-08-04 14:52:18.460] [INFO] Request body size: 15 bytes
+[2026-08-04 14:52:18.460] [INFO] Added Authorization header (Bearer token).
+[2026-08-04 14:52:18.461] [INFO] Connecting to: https://77.222.32.209:8443/api/v1/queue/trust_acceptance
+[2026-08-04 14:52:18.461] [INFO] Opening HTTPS request (WINHTTP_FLAG_SECURE)...
+[2026-08-04 14:52:18.462] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-04 14:52:18.463] [INFO] Setting SECURITY_FLAG_IGNORE_* options for SSL...
+[2026-08-04 14:52:18.463] [INFO] Sending POST request to: /api/v1/queue/trust_acceptance
+[2026-08-04 14:52:18.550] [INFO] Waiting for response via WinHttpReceiveResponse...
+[2026-08-04 14:52:18.551] [INFO] Response received successfully. Size: 21 bytes.
+[2026-08-04 14:52:18.552] [WARNING] Server unavailable for trust acceptance, generating local ticket
+[2026-08-04 14:52:18.552] [WARNING] Local trust ticket issued: T2, position=2, window=1
+[2026-08-04 14:52:18.553] [INFO] onTrustAcceptancePrint: final ticket: number=T2, position=2, window=1
+[2026-08-04 14:52:18.553] [INFO] ReceiptPrinter::printTicketWithExtraMessage: start, ticket=T2, clientId=1
+[2026-08-04 14:52:18.554] [INFO] ReceiptPrinter::toPrinterEncoding: converted 1410 wchar_t -> 1410 bytes (CP1251)
+[2026-08-04 14:52:18.569] [ERROR] ReceiptPrinter::printTicketWithExtraMessage: WritePrinter failed/incomplete, err=3003, written=0 of 1410
+[2026-08-04 14:52:18.570] [INFO] onTrustAcceptancePrint: ticket printed successfully via terminal printer. TicketNumber: T2
+[2026-08-04 14:52:18.570] [INFO] onTrustAcceptancePrint: transitioning to Ticket Issued screen.
+[2026-08-04 14:52:18.578] [INFO] onTrustAcceptancePrint: method completed successfully.
+[2026-08-04 14:52:20.435] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:52:20.438] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:52:20.440] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:52:20.442] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:52:20.444] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:52:20.446] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:52:20.448] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:52:20.450] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:52:20.452] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 14:52:20.460] [INFO] createMainMenu: '[2026-08-04 14:52:20.460] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:52:23.921] [INFO] Addresses window created
+[2026-08-04 14:52:25.053] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:52:25.057] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:52:25.059] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:52:25.061] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:52:25.063] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:52:25.066] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:52:25.068] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:52:25.070] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:52:25.072] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 14:52:25.080] [INFO] createMainMenu: '[2026-08-04 14:52:25.080] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:52:26.885] [INFO] loadConsignorData: started
+[2026-08-04 14:52:26.886] [INFO] loadConsignorData: async request sent
+[2026-08-04 14:52:26.886] [INFO] Consignor thread: starting GET request
+[2026-08-04 14:52:26.887] [INFO] Preparing GET request to: /api/v1/clients/me
+[2026-08-04 14:52:26.888] [INFO] Added Authorization header (Bearer token).
+[2026-08-04 14:52:26.888] [INFO] WM_CONSIGNOR_LOADING_START: status set to '[2026-08-04 14:52:26.889] [WARNING] WinHttpSetOption (SECURE_PROTOCOLS) failed: 12018. TLS 1.2 may not be available.
+[2026-08-04 14:52:26.889] [INFO] Sending GET request...
+[2026-08-04 14:52:26.982] [INFO] Response received successfully. Size: 116 bytes.
+[2026-08-04 14:52:26.983] [INFO] Consignor thread: GET request completed, posting result
+[2026-08-04 14:52:26.983] [INFO] onConsignorDataReady: received response
+[2026-08-04 14:52:26.985] [INFO] onConsignorDataReady: displayed info for client 1, name=[2026-08-04 14:52:28.097] [INFO] createMainMenu: started, screen=1920x1080, btnHeight=60
+[2026-08-04 14:52:28.100] [INFO] createMainMenu: titles created at y=15/75 with height 60 (no overlapping)
+[2026-08-04 14:52:28.102] [INFO] createMainMenu: icon 1 created at x=610, y=145
+[2026-08-04 14:52:28.104] [INFO] createMainMenu: caption 1 created at x=510, y=250
+[2026-08-04 14:52:28.105] [INFO] createMainMenu: icon 2 created at x=910, y=145
+[2026-08-04 14:52:28.107] [INFO] createMainMenu: caption 2 created at x=810, y=250
+[2026-08-04 14:52:28.109] [INFO] createMainMenu: icon 3 created at x=1210, y=145
+[2026-08-04 14:52:28.111] [INFO] createMainMenu: caption 3 created at x=1110, y=250
+[2026-08-04 14:52:28.113] [INFO] createMainMenu: greeting shown for client id 1
+[2026-08-04 14:52:28.121] [INFO] createMainMenu: '[2026-08-04 14:52:28.121] [INFO] createMainMenu: menu buttons created, startY=450
+[2026-08-04 14:53:26.415] [INFO] Terminal application shutdown
+[2026-08-04 14:53:26.416] [INFO] HTTPSClient session closed
