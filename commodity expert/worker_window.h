@@ -1,19 +1,12 @@
-﻿// worker_window.h – обновлённая версия с авторизацией и озвучиванием
+﻿// worker_window.h – ПРОДАКШН ВЕРСИЯ (Исправлена блокировка UI-потока)
 // =============================================================================
 // ИСПРАВЛЕНО:
-//   - устранено дублирование статических текстов (предыдущее исправление);
-//   - устранено пропадание формы ввода при изменении размера окна в режиме
-//     ITEM_INPUT (убрано скрытие в repositionItemInputControls, добавлен показ
-//     в WM_SIZE);
-//   - уменьшен шрифт кнопок «Принять» и «Обслужен (Следующий)» для
-//     корректного отображения длинной надписи;
-//   - добавлено автоматическое открытие формы ввода для следующего клиента
-//     после успешного обслуживания в общей очереди;
-//   - кнопка «Обслужен» теперь отключается в режиме ввода товаров.
+//   - Критическая ошибка: синхронные HTTP-запросы в UI-потоке вызывали зависание
+//     программы и неотрисовку полей ввода (WM_PAINT не обрабатывался).
+//   - loadClientItems и onItemSave теперь выполняются асинхронно в фоновых потоках.
+//   - Добавлены обработчики WM_APP + 2 и WM_APP + 3 для безопасного обновления UI.
 // =============================================================================
-
 #pragma once
-
 #include <windows.h>
 #include <commctrl.h>
 #include <string>
@@ -23,7 +16,7 @@
 #include <sapi.h>
 #include <sphelper.h>
 #include <nlohmann/json.hpp>
-
+#include <utility> // для std::pair
 #include "config.h"
 #include "logger.h"
 #include "https_client.h"
@@ -65,7 +58,6 @@ private:
     HWND m_hServeBtn;
     HWND m_hStatusLabel;
     HWND m_hComboQueue;
-
     HFONT m_hFont;          // основной шрифт (24 pt)
     HFONT m_hSmallFont;     // шрифт для кнопок (18 pt)
     HBRUSH m_hBrush;
@@ -74,10 +66,8 @@ private:
     std::mutex m_mutex;
     bool m_running;
     std::thread m_refreshThread;
-
     std::wstring m_currentQueueType;
     std::vector<std::wstring> m_queueTypeIds;
-
     ISpVoice* m_pVoice = nullptr;
 
     static constexpr int REFRESH_INTERVAL_MS = 2000;
@@ -113,7 +103,6 @@ private:
     std::wstring m_currentTicketNumber;
     std::wstring m_currentWindowNumber;
     std::wstring m_currentClientName;
-
     std::vector<json> m_tempItems;
     bool m_isSaving;
 
@@ -122,7 +111,6 @@ private:
         ITEM_INPUT
     };
     Mode m_currentMode;
-
     int m_selectedIndex;
 
     // ---- Вспомогательные методы (TTS, логика очереди) ----
@@ -169,10 +157,12 @@ private:
             const auto& ticket = m_tickets[i];
             std::string ticketNumber = ticket["ticket_number"].get<std::string>();
             std::wstring displayText = utf8_to_wstring(ticketNumber);
+
             if (m_currentQueueType != L"first_time" && ticket.contains("client_id")) {
                 int clientId = ticket["client_id"].get<int>();
                 displayText += L" (id: " + std::to_wstring(clientId) + L")";
             }
+
             int index = (int)SendMessageW(m_hListBox, LB_ADDSTRING, 0, (LPARAM)displayText.c_str());
             if (index != LB_ERR) {
                 SendMessageW(m_hListBox, LB_SETITEMDATA, index, (LPARAM)i);
@@ -190,7 +180,6 @@ private:
         std::wstring status = L"Ожидают: " + std::to_wstring(count);
         SetWindowTextW(m_hStatusLabel, status.c_str());
 
-        // Управление доступностью кнопок с учётом режима
         bool isInputMode = (m_currentMode == Mode::ITEM_INPUT);
         EnableWindow(m_hAcceptBtn, (count > 0) && !isInputMode);
         EnableWindow(m_hServeBtn, (count > 0) && !isInputMode);
@@ -208,7 +197,9 @@ private:
             queueType = m_currentQueueType;
             m_selectedIndex = (int)SendMessageW(m_hListBox, LB_GETCURSEL, 0, 0);
         }
+
         auto newTickets = fetchTicketsFromServer(queueType);
+
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             if (m_currentQueueType != queueType) return;
@@ -229,9 +220,9 @@ private:
 
         int leftListWidth = (width * 20) / 100;
         if (leftListWidth < 180) leftListWidth = 180;
-
         int rightStart = leftListWidth + 10;
         int rightWidth = width - rightStart - 10;
+
         if (rightWidth < 400) {
             showItemInputControls(false);
             return;
@@ -239,41 +230,24 @@ private:
 
         SetWindowPos(m_hListBox, NULL, 20, 60, leftListWidth - 40, height - 190, SWP_NOZORDER);
         SetWindowPos(m_hStatusLabel, NULL, 20, height - 120, leftListWidth - 40, 30, SWP_NOZORDER);
+
         int btnW = (leftListWidth - 40 - 10) / 2;
         SetWindowPos(m_hAcceptBtn, NULL, 20, height - 80, btnW, 50, SWP_NOZORDER);
         SetWindowPos(m_hServeBtn, NULL, 20 + btnW + 10, height - 80, btnW, 50, SWP_NOZORDER);
 
         destroyItemInputControls();
         createItemInputControls(rightStart, 80, rightWidth);
-        // showItemInputControls(false) удалено – управление видимостью явное
     }
 
     void destroyItemInputControls() {
         g_logger.debug(L"destroyItemInputControls: destroying all input controls");
-
         HWND controls[] = {
-            m_hTitle,
-            m_hLabelDate,
-            m_hLabelNumber,
-            m_hLabelDesc,
-            m_hLabelPrice,
-            m_hLabelQty,
-            m_hLabelCondition,
-            m_hLabelNote,
-            m_hItemDateLabel,
-            m_hItemNumberEdit,
-            m_hItemDescEdit,
-            m_hItemPriceEdit,
-            m_hItemQtyEdit,
-            m_hItemConditionEdit,
-            m_hItemNoteEdit,
-            m_hItemAddBtn,
-            m_hItemSaveBtn,
-            m_hItemCancelBtn,
-            m_hItemListView,
-            m_hItemTotalQtyLabel,
-            m_hItemTotalPriceLabel,
-            m_hItemBackBtn
+            m_hTitle, m_hLabelDate, m_hLabelNumber, m_hLabelDesc, m_hLabelPrice,
+            m_hLabelQty, m_hLabelCondition, m_hLabelNote, m_hItemDateLabel,
+            m_hItemNumberEdit, m_hItemDescEdit, m_hItemPriceEdit, m_hItemQtyEdit,
+            m_hItemConditionEdit, m_hItemNoteEdit, m_hItemAddBtn, m_hItemSaveBtn,
+            m_hItemCancelBtn, m_hItemListView, m_hItemTotalQtyLabel,
+            m_hItemTotalPriceLabel, m_hItemBackBtn
         };
 
         for (auto& c : controls) {
@@ -297,113 +271,94 @@ private:
 
         int labelW = 200, editW = width - labelW - 20, editH = 28, rowH = 35;
 
-        // Заголовок
         m_hTitle = CreateWindowExW(0, L"STATIC", L"Ввод товаров для клиента",
-            WS_VISIBLE | WS_CHILD | SS_LEFT,
-            left, top - 30, width, 30, m_hWnd, nullptr, g_hInstance, nullptr);
+            WS_VISIBLE | WS_CHILD | SS_LEFT, left, top - 30, width, 30, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hTitle, WM_SETFONT, (WPARAM)m_hFont, TRUE);
 
-        // Дата/время
         m_hLabelDate = CreateWindowExW(0, L"STATIC", L"Дата/время:",
-            WS_VISIBLE | WS_CHILD | SS_RIGHT,
-            left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
+            WS_VISIBLE | WS_CHILD | SS_RIGHT, left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hLabelDate, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
         m_hItemDateLabel = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-            WS_VISIBLE | WS_CHILD | ES_READONLY,
-            left + labelW + 5, top, editW, editH,
+            WS_VISIBLE | WS_CHILD | ES_READONLY, left + labelW + 5, top, editW, editH,
             m_hWnd, (HMENU)ID_ITEM_DATE_LABEL, g_hInstance, nullptr);
         SendMessageW(m_hItemDateLabel, WM_SETFONT, (WPARAM)m_hFont, TRUE);
         top += rowH;
 
-        // № товара
         m_hLabelNumber = CreateWindowExW(0, L"STATIC", L"№ товара:",
-            WS_VISIBLE | WS_CHILD | SS_RIGHT,
-            left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
+            WS_VISIBLE | WS_CHILD | SS_RIGHT, left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hLabelNumber, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
         m_hItemNumberEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-            WS_VISIBLE | WS_CHILD | ES_READONLY,
-            left + labelW + 5, top, 80, editH,
+            WS_VISIBLE | WS_CHILD | ES_READONLY, left + labelW + 5, top, 80, editH,
             m_hWnd, (HMENU)ID_ITEM_NUMBER_EDIT, g_hInstance, nullptr);
         SendMessageW(m_hItemNumberEdit, WM_SETFONT, (WPARAM)m_hFont, TRUE);
         top += rowH;
 
-        // Наименование
         m_hLabelDesc = CreateWindowExW(0, L"STATIC", L"Наименование:",
-            WS_VISIBLE | WS_CHILD | SS_RIGHT,
-            left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
+            WS_VISIBLE | WS_CHILD | SS_RIGHT, left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hLabelDesc, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
         m_hItemDescEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL,
-            left + labelW + 5, top, editW, editH,
+            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL, left + labelW + 5, top, editW, editH,
             m_hWnd, (HMENU)ID_ITEM_DESC_EDIT, g_hInstance, nullptr);
         SendMessageW(m_hItemDescEdit, WM_SETFONT, (WPARAM)m_hFont, TRUE);
         SendMessageW(m_hItemDescEdit, EM_SETLIMITTEXT, 200, 0);
         top += rowH;
 
-        // Цена за ед.
         m_hLabelPrice = CreateWindowExW(0, L"STATIC", L"Цена за ед. (10,00):",
-            WS_VISIBLE | WS_CHILD | SS_RIGHT,
-            left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
+            WS_VISIBLE | WS_CHILD | SS_RIGHT, left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hLabelPrice, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
         m_hItemPriceEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL,
-            left + labelW + 5, top, editW / 2, editH,
+            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL, left + labelW + 5, top, editW / 2, editH,
             m_hWnd, (HMENU)ID_ITEM_PRICE_EDIT, g_hInstance, nullptr);
         SendMessageW(m_hItemPriceEdit, WM_SETFONT, (WPARAM)m_hFont, TRUE);
         top += rowH;
 
-        // Количество
         m_hLabelQty = CreateWindowExW(0, L"STATIC", L"Количество:",
-            WS_VISIBLE | WS_CHILD | SS_RIGHT,
-            left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
+            WS_VISIBLE | WS_CHILD | SS_RIGHT, left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hLabelQty, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
         m_hItemQtyEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"1",
-            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL | ES_NUMBER,
-            left + labelW + 5, top, 80, editH,
+            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL | ES_NUMBER, left + labelW + 5, top, 80, editH,
             m_hWnd, (HMENU)ID_ITEM_QTY_EDIT, g_hInstance, nullptr);
         SendMessageW(m_hItemQtyEdit, WM_SETFONT, (WPARAM)m_hFont, TRUE);
         top += rowH;
 
-        // Состояние
         m_hLabelCondition = CreateWindowExW(0, L"STATIC", L"Состояние:",
-            WS_VISIBLE | WS_CHILD | SS_RIGHT,
-            left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
+            WS_VISIBLE | WS_CHILD | SS_RIGHT, left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hLabelCondition, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
         m_hItemConditionEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL,
-            left + labelW + 5, top, editW, editH,
+            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL, left + labelW + 5, top, editW, editH,
             m_hWnd, (HMENU)ID_ITEM_CONDITION_EDIT, g_hInstance, nullptr);
         SendMessageW(m_hItemConditionEdit, WM_SETFONT, (WPARAM)m_hFont, TRUE);
         SendMessageW(m_hItemConditionEdit, EM_SETLIMITTEXT, 200, 0);
         top += rowH;
 
-        // Примечание
         m_hLabelNote = CreateWindowExW(0, L"STATIC", L"Примечание:",
-            WS_VISIBLE | WS_CHILD | SS_RIGHT,
-            left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
+            WS_VISIBLE | WS_CHILD | SS_RIGHT, left, top, labelW, editH, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hLabelNote, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
         m_hItemNoteEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL,
-            left + labelW + 5, top, editW, editH,
+            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL, left + labelW + 5, top, editW, editH,
             m_hWnd, (HMENU)ID_ITEM_NOTE_EDIT, g_hInstance, nullptr);
         SendMessageW(m_hItemNoteEdit, WM_SETFONT, (WPARAM)m_hFont, TRUE);
         SendMessageW(m_hItemNoteEdit, EM_SETLIMITTEXT, 300, 0);
         top += rowH + 5;
 
-        // Кнопка "Добавить позицию"
         m_hItemAddBtn = CreateWindowExW(0, L"BUTTON", L"Добавить позицию",
-            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            left, top, 180, 35,
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, left, top, 180, 35,
             m_hWnd, (HMENU)ID_ITEM_ADD_BTN, g_hInstance, nullptr);
         SendMessageW(m_hItemAddBtn, WM_SETFONT, (WPARAM)m_hFont, TRUE);
         top += 45;
 
-        // ListView
         m_hItemListView = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEW, L"",
-            WS_VISIBLE | WS_CHILD | LVS_REPORT | LVS_SINGLESEL,
-            left, top, width - 10, 150,
+            WS_VISIBLE | WS_CHILD | LVS_REPORT | LVS_SINGLESEL, left, top, width - 10, 150,
             m_hWnd, (HMENU)ID_ITEM_LISTVIEW, g_hInstance, nullptr);
         SendMessageW(m_hItemListView, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
         LVCOLUMNW col = { 0 };
         col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
         std::vector<std::wstring> headers = { L"№", L"Наименование", L"Цена", L"Кол-во", L"Состояние", L"Примечание" };
@@ -418,33 +373,29 @@ private:
         }
         top += 160;
 
-        // Итоги
         m_hItemTotalQtyLabel = CreateWindowExW(0, L"STATIC", L"Общее количество: 0",
-            WS_VISIBLE | WS_CHILD | SS_LEFT,
-            left, top, 300, 30,
+            WS_VISIBLE | WS_CHILD | SS_LEFT, left, top, 300, 30,
             m_hWnd, (HMENU)ID_ITEM_TOTAL_QTY, g_hInstance, nullptr);
         SendMessageW(m_hItemTotalQtyLabel, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
         m_hItemTotalPriceLabel = CreateWindowExW(0, L"STATIC", L"Общая цена: 0.00",
-            WS_VISIBLE | WS_CHILD | SS_LEFT,
-            left + 320, top, 300, 30,
+            WS_VISIBLE | WS_CHILD | SS_LEFT, left + 320, top, 300, 30,
             m_hWnd, (HMENU)ID_ITEM_TOTAL_PRICE, g_hInstance, nullptr);
         SendMessageW(m_hItemTotalPriceLabel, WM_SETFONT, (WPARAM)m_hFont, TRUE);
         top += 40;
 
-        // Кнопки Сохранить, Отменить, Назад
         m_hItemSaveBtn = CreateWindowExW(0, L"BUTTON", L"Сохранить все",
-            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            left, top, 180, 40,
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, left, top, 180, 40,
             m_hWnd, (HMENU)ID_ITEM_SAVE_BTN, g_hInstance, nullptr);
         SendMessageW(m_hItemSaveBtn, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
         m_hItemCancelBtn = CreateWindowExW(0, L"BUTTON", L"Отменить",
-            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            left + 200, top, 180, 40,
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, left + 200, top, 180, 40,
             m_hWnd, (HMENU)ID_ITEM_CANCEL_BTN, g_hInstance, nullptr);
         SendMessageW(m_hItemCancelBtn, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
         m_hItemBackBtn = CreateWindowExW(0, L"BUTTON", L"Назад",
-            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            left + 400, top, 120, 40,
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, left + 400, top, 120, 40,
             m_hWnd, (HMENU)ID_ITEM_BACK_BTN, g_hInstance, nullptr);
         SendMessageW(m_hItemBackBtn, WM_SETFONT, (WPARAM)m_hFont, TRUE);
 
@@ -454,28 +405,12 @@ private:
     void showItemInputControls(bool show) {
         int flag = show ? SW_SHOW : SW_HIDE;
         HWND controls[] = {
-            m_hTitle,
-            m_hLabelDate,
-            m_hLabelNumber,
-            m_hLabelDesc,
-            m_hLabelPrice,
-            m_hLabelQty,
-            m_hLabelCondition,
-            m_hLabelNote,
-            m_hItemDateLabel,
-            m_hItemNumberEdit,
-            m_hItemDescEdit,
-            m_hItemPriceEdit,
-            m_hItemQtyEdit,
-            m_hItemConditionEdit,
-            m_hItemNoteEdit,
-            m_hItemAddBtn,
-            m_hItemListView,
-            m_hItemTotalQtyLabel,
-            m_hItemTotalPriceLabel,
-            m_hItemSaveBtn,
-            m_hItemCancelBtn,
-            m_hItemBackBtn
+            m_hTitle, m_hLabelDate, m_hLabelNumber, m_hLabelDesc, m_hLabelPrice,
+            m_hLabelQty, m_hLabelCondition, m_hLabelNote, m_hItemDateLabel,
+            m_hItemNumberEdit, m_hItemDescEdit, m_hItemPriceEdit, m_hItemQtyEdit,
+            m_hItemConditionEdit, m_hItemNoteEdit, m_hItemAddBtn, m_hItemListView,
+            m_hItemTotalQtyLabel, m_hItemTotalPriceLabel, m_hItemSaveBtn,
+            m_hItemCancelBtn, m_hItemBackBtn
         };
         for (auto c : controls) {
             if (c) ShowWindow(c, flag);
@@ -502,8 +437,10 @@ private:
             g_logger.warning(L"loadClientItems: auth token is empty, cannot load items");
             return;
         }
+
         std::wstring path = L"/api/v1/items?client_id=" + std::to_wstring(clientId);
         auto response = g_httpsClient.get(path, authToken);
+
         if (response && response->contains("items") && (*response)["items"].is_array()) {
             auto& items = (*response)["items"];
             for (const auto& item : items) {
@@ -524,6 +461,7 @@ private:
         ListView_DeleteAllItems(m_hItemListView);
         int totalQty = 0;
         double totalPrice = 0.0;
+
         for (size_t i = 0; i < m_tempItems.size(); ++i) {
             const auto& item = m_tempItems[i];
             int itemNumber = m_maxItemNumber + static_cast<int>(i) + 1;
@@ -536,11 +474,13 @@ private:
             LVITEMW lvi = { 0 };
             lvi.mask = LVIF_TEXT;
             lvi.iItem = static_cast<int>(i);
+
             std::vector<std::wstring> columns = {
                 std::to_wstring(itemNumber), desc,
                 (price > 0 ? std::to_wstring(price) : L""),
                 std::to_wstring(qty), condition, note
             };
+
             for (size_t col = 0; col < columns.size(); ++col) {
                 lvi.iSubItem = static_cast<int>(col);
                 lvi.pszText = const_cast<LPWSTR>(columns[col].c_str());
@@ -550,6 +490,7 @@ private:
             totalQty += qty;
             totalPrice += price * qty;
         }
+
         SetWindowTextW(m_hItemTotalQtyLabel, (L"Общее количество: " + std::to_wstring(totalQty)).c_str());
         wchar_t buf[50];
         swprintf_s(buf, L"Общая цена: %.2f", totalPrice);
@@ -565,6 +506,7 @@ private:
             SetFocus(m_hItemDescEdit);
             return;
         }
+
         wchar_t priceBuf[32];
         GetWindowTextW(m_hItemPriceEdit, priceBuf, 32);
         std::wstring priceStr = priceBuf;
@@ -580,6 +522,7 @@ private:
             MessageBoxW(m_hWnd, L"Цена не может быть отрицательной", L"Ошибка", MB_OK);
             return;
         }
+
         int qty = 1;
         wchar_t qtyBuf[16];
         GetWindowTextW(m_hItemQtyEdit, qtyBuf, 16);
@@ -593,6 +536,7 @@ private:
             MessageBoxW(m_hWnd, L"Количество не менее 1", L"Ошибка", MB_OK);
             return;
         }
+
         wchar_t condBuf[256], noteBuf[512];
         GetWindowTextW(m_hItemConditionEdit, condBuf, 256);
         GetWindowTextW(m_hItemNoteEdit, noteBuf, 512);
@@ -603,13 +547,16 @@ private:
         item["quantity"] = qty;
         item["condition"] = wstring_to_utf8(condBuf);
         item["note"] = wstring_to_utf8(noteBuf);
+
         m_tempItems.push_back(item);
         updateTempItemsList();
+
         SetWindowTextW(m_hItemDescEdit, L"");
         SetWindowTextW(m_hItemPriceEdit, L"");
         SetWindowTextW(m_hItemQtyEdit, L"1");
         SetWindowTextW(m_hItemConditionEdit, L"");
         SetWindowTextW(m_hItemNoteEdit, L"");
+
         updateNextItemNumber();
         SetFocus(m_hItemDescEdit);
     }
@@ -620,30 +567,42 @@ private:
             MessageBoxW(m_hWnd, L"Нет позиций для сохранения", L"Внимание", MB_OK);
             return;
         }
+
         std::wstring authToken = g_authManager.getAuthToken();
         if (authToken.empty()) {
             MessageBoxW(m_hWnd, L"Ошибка авторизации. Токен отсутствует или истёк. Перезапустите приложение.", L"Ошибка", MB_OK);
             g_logger.error(L"onItemSave: auth token is empty or invalid");
             return;
         }
+
         m_isSaving = true;
         EnableWindow(m_hItemSaveBtn, FALSE);
+
         json request;
         request["client_id"] = m_currentClientId;
         request["items"] = m_tempItems;
-        auto response = g_httpsClient.post(L"/api/v1/items/batch", request, authToken);
-        m_isSaving = false;
-        EnableWindow(m_hItemSaveBtn, TRUE);
-        if (response && response->contains("success") && (*response)["success"].get<bool>()) {
-            MessageBoxW(m_hWnd, L"Товары успешно сохранены!", L"Успех", MB_OK);
-            returnToQueueList();
-        }
-        else {
-            std::wstring err = L"Ошибка сохранения.";
-            if (response && response->contains("error"))
-                err += L"\n" + utf8_to_wstring((*response)["error"].get<std::string>());
-            MessageBoxW(m_hWnd, err.c_str(), L"Ошибка", MB_OK);
-        }
+
+        // АСИНХРОННОЕ СОХРАНЕНИЕ: выносим POST-запрос из UI-потока
+        std::thread([this, request, authToken]() {
+            g_logger.info(L"onItemSave: async POST request started");
+            auto response = g_httpsClient.post(L"/api/v1/items/batch", request, authToken);
+
+            bool success = false;
+            std::wstring errorMsg = L"Ошибка сохранения.";
+
+            if (response && response->contains("success") && (*response)["success"].get<bool>()) {
+                success = true;
+            }
+            else {
+                if (response && response->contains("error"))
+                    errorMsg += L"\n" + utf8_to_wstring((*response)["error"].get<std::string>());
+            }
+
+            // Передаем результат в UI-поток через динамически выделенную структуру
+            using SaveResult = std::pair<bool, std::wstring>;
+            SaveResult* res = new SaveResult(success, errorMsg);
+            PostMessageW(m_hWnd, WM_APP + 3, 0, (LPARAM)res);
+            }).detach();
     }
 
     void onItemCancel() {
@@ -662,7 +621,7 @@ private:
         m_currentMode = Mode::QUEUE_LIST;
         showItemInputControls(false);
         refreshList();
-        updateUI();  // обновим состояние кнопок
+        updateUI();
     }
 
     void showItemInputForm(int clientId, const std::wstring& ticketNumber,
@@ -678,16 +637,22 @@ private:
         m_currentMode = Mode::ITEM_INPUT;
 
         repositionItemInputControls();
-        loadClientItems(clientId);
+
+        // АСИНХРОННАЯ ЗАГРУЗКА: выносим сетевой запрос из UI-потока, чтобы избежать зависания и неотрисовки полей
+        std::thread([this, clientId]() {
+            g_logger.info(L"showItemInputForm: async loadClientItems started for clientId=" + std::to_wstring(clientId));
+            loadClientItems(clientId);
+            // Уведомляем UI-поток о завершении загрузки для безопасного обновления контролов
+            PostMessageW(m_hWnd, WM_APP + 2, 0, 0);
+            }).detach();
+
         setCurrentDateTime();
-        updateNextItemNumber();
-        updateTempItemsList();
+        // updateNextItemNumber() и updateTempItemsList() будут вызваны в обработчике WM_APP + 2
         showItemInputControls(true);
 
-        // Отключаем кнопки "Принять" и "Обслужен" в режиме ввода
         EnableWindow(m_hAcceptBtn, FALSE);
         EnableWindow(m_hServeBtn, FALSE);
-        g_logger.info(L"showItemInputForm: accept and serve buttons disabled");
+        g_logger.info(L"showItemInputForm: accept and serve buttons disabled, async load dispatched");
     }
 
     // ---- Обработчики кнопок ----
@@ -698,11 +663,13 @@ private:
             return;
         }
         m_selectedIndex = sel;
+
         LRESULT itemData = SendMessageW(m_hListBox, LB_GETITEMDATA, sel, 0);
         if (itemData == LB_ERR || itemData < 0 || itemData >= (LRESULT)m_tickets.size()) {
             MessageBoxW(m_hWnd, L"Ошибка идентификации", L"Ошибка", MB_OK);
             return;
         }
+
         std::string ticketNumberUtf8;
         int clientId = -1;
         {
@@ -711,9 +678,10 @@ private:
             ticketNumberUtf8 = ticket["ticket_number"].get<std::string>();
             if (ticket.contains("client_id")) clientId = ticket["client_id"].get<int>();
         }
+
         std::wstring ticketNumber = utf8_to_wstring(ticketNumberUtf8);
 
-        if (m_currentQueueType == L"general" || m_currentQueueType == L"extra_20" || m_currentQueueType == L"trust"|| m_currentQueueType == L"paid"|| m_currentQueueType == L"expensive") {
+        if (m_currentQueueType == L"general" || m_currentQueueType == L"extra_20" || m_currentQueueType == L"trust" || m_currentQueueType == L"paid" || m_currentQueueType == L"expensive") {
             if (clientId <= 0) {
                 MessageBoxW(m_hWnd, L"Нет client_id", L"Ошибка", MB_OK);
                 return;
@@ -721,6 +689,7 @@ private:
             speak(ticketNumber, L"1");
             std::wstring clientName = L"Клиент #" + std::to_wstring(clientId);
             showItemInputForm(clientId, ticketNumber, L"1", clientName);
+
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
                 if (itemData < (LRESULT)m_tickets.size())
@@ -741,6 +710,7 @@ private:
         json request;
         request["ticket_number"] = ticketNumberUtf8;
         auto response = g_httpsClient.post(endpoint, request, L"");
+
         if (response && response->contains("success") && (*response)["success"].get<bool>()) {
             std::string windowNumber = response->value("window_number", "1");
             std::wstring windowW = utf8_to_wstring(windowNumber);
@@ -748,7 +718,9 @@ private:
             if (m_currentQueueType == L"first_time") numberToSpeak = ticketNumber;
             else if (clientId >= 0) numberToSpeak = std::to_wstring(clientId);
             else numberToSpeak = ticketNumber;
+
             speak(numberToSpeak, windowW);
+
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
                 if (itemData < (LRESULT)m_tickets.size())
@@ -773,17 +745,20 @@ private:
             g_logger.warning(L"onServe: called in ITEM_INPUT mode, ignoring");
             return;
         }
+
         int sel = (int)SendMessageW(m_hListBox, LB_GETCURSEL, 0, 0);
         if (sel == LB_ERR) {
             MessageBoxW(m_hWnd, L"Выберите талон", L"Внимание", MB_OK);
             return;
         }
         m_selectedIndex = sel;
+
         LRESULT itemData = SendMessageW(m_hListBox, LB_GETITEMDATA, sel, 0);
         if (itemData == LB_ERR || itemData < 0 || itemData >= (LRESULT)m_tickets.size()) {
             MessageBoxW(m_hWnd, L"Ошибка идентификации", L"Ошибка", MB_OK);
             return;
         }
+
         std::string ticketNumberUtf8;
         int clientId = -1;
         {
@@ -792,8 +767,8 @@ private:
             ticketNumberUtf8 = ticket["ticket_number"].get<std::string>();
             if (ticket.contains("client_id")) clientId = ticket["client_id"].get<int>();
         }
-        std::wstring ticketNumber = utf8_to_wstring(ticketNumberUtf8);
 
+        std::wstring ticketNumber = utf8_to_wstring(ticketNumberUtf8);
         std::wstring endpoint;
         if (m_currentQueueType == L"first_time") endpoint = L"/api/v1/queue/first_time/serve";
         else if (m_currentQueueType == L"trust") endpoint = L"/api/v1/queue/trust/serve";
@@ -802,6 +777,7 @@ private:
         json request;
         request["ticket_number"] = ticketNumberUtf8;
         auto response = g_httpsClient.post(endpoint, request, L"");
+
         if (response && response->contains("success") && (*response)["success"].get<bool>()) {
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
@@ -813,19 +789,13 @@ private:
             }
             updateUI();
 
-            // === НОВАЯ ЛОГИКА: автоматический переход к следующему клиенту в общей очереди ===
-            if ((m_currentQueueType == L"general" || m_currentQueueType == L"extra_20" || m_currentQueueType == L"trust"|| m_currentQueueType == L"paid"||m_currentQueueType == L"expensive") && !m_tickets.empty()) {
+            if ((m_currentQueueType == L"general" || m_currentQueueType == L"extra_20" || m_currentQueueType == L"trust" || m_currentQueueType == L"paid" || m_currentQueueType == L"expensive") && !m_tickets.empty()) {
                 g_logger.info(L"onServe: auto-accepting next client in general queue");
-                // Выбираем первый талон и принимаем его
-                // Устанавливаем выделение на первый элемент и вызываем onAccept
                 SendMessageW(m_hListBox, LB_SETCURSEL, 0, 0);
                 m_selectedIndex = 0;
-                // Небольшая задержка для обновления UI, затем вызываем onAccept
-                // Но мы уже в потоке UI, поэтому вызываем напрямую
-                onAccept();  // вызовет показ формы для следующего клиента
+                onAccept();
             }
             else {
-                // Если очередь не general или пуста, просто озвучиваем следующий, если есть
                 if (!m_tickets.empty()) {
                     int newIdx = m_selectedIndex;
                     if (newIdx < 0) newIdx = 0;
@@ -873,6 +843,7 @@ private:
                 });
             return 0;
         }
+
         pThis = (WorkerWindow*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
         if (!pThis) return DefWindowProc(hWnd, msg, wParam, lParam);
 
@@ -888,8 +859,10 @@ private:
                 int height = rc.bottom - rc.top;
                 int leftListWidth = (width * 20) / 100;
                 if (leftListWidth < 180) leftListWidth = 180;
+
                 SetWindowPos(pThis->m_hListBox, NULL, 20, 60, leftListWidth - 40, height - 190, SWP_NOZORDER);
                 SetWindowPos(pThis->m_hStatusLabel, NULL, 20, height - 120, leftListWidth - 40, 30, SWP_NOZORDER);
+
                 int btnW = (leftListWidth - 40 - 10) / 2;
                 SetWindowPos(pThis->m_hAcceptBtn, NULL, 20, height - 80, btnW, 50, SWP_NOZORDER);
                 SetWindowPos(pThis->m_hServeBtn, NULL, 20 + btnW + 10, height - 80, btnW, 50, SWP_NOZORDER);
@@ -901,6 +874,32 @@ private:
         case WM_APP + 1:
             pThis->updateUI();
             return 0;
+
+        case WM_APP + 2:
+            // Загрузка товаров завершена, обновляем UI-контролы
+            g_logger.info(L"WndProc: WM_APP + 2 received, updating item input UI");
+            pThis->updateNextItemNumber();
+            pThis->updateTempItemsList();
+            return 0;
+
+        case WM_APP + 3: {
+            // Сохранение товаров завершено, обрабатываем результат
+            using SaveResult = std::pair<bool, std::wstring>;
+            SaveResult* res = reinterpret_cast<SaveResult*>(lParam);
+            pThis->m_isSaving = false;
+            EnableWindow(pThis->m_hItemSaveBtn, TRUE);
+
+            if (res->first) {
+                MessageBoxW(pThis->m_hWnd, L"Товары успешно сохранены!", L"Успех", MB_OK);
+                pThis->returnToQueueList();
+            }
+            else {
+                MessageBoxW(pThis->m_hWnd, res->second.c_str(), L"Ошибка", MB_OK);
+            }
+            delete res;
+            return 0;
+        }
+
         case WM_COMMAND: {
             WORD id = LOWORD(wParam);
             WORD code = HIWORD(wParam);
@@ -959,14 +958,14 @@ private:
         int width = rc.right - rc.left;
         int height = rc.bottom - rc.top;
 
-        // Основной шрифт (24 pt)
         m_hFont = CreateFontW(24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
-        // Мелкий шрифт для кнопок (18 pt)
+
         m_hSmallFont = CreateFontW(18, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
+
         m_hBrush = CreateSolidBrush(RGB(240, 240, 240));
 
         m_hComboQueue = CreateWindowExW(0, L"COMBOBOX", L"",
@@ -983,6 +982,7 @@ private:
             { L"Платный прием", L"paid" },
             { L"Дорогой товар", L"expensive" }
         };
+
         m_queueTypeIds.clear();
         for (const auto& entry : entries) {
             int idx = (int)SendMessageW(m_hComboQueue, CB_ADDSTRING, 0, (LPARAM)entry.displayName);
@@ -1009,14 +1009,12 @@ private:
 
         int btnW = (leftListWidth - 40 - 10) / 2;
 
-        // Кнопка "Принять" – мелкий шрифт
         m_hAcceptBtn = CreateWindowExW(0, L"BUTTON", L"Принять",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             20, height - 80, btnW, 50,
             m_hWnd, (HMENU)1, g_hInstance, nullptr);
         SendMessageW(m_hAcceptBtn, WM_SETFONT, (WPARAM)m_hSmallFont, TRUE);
 
-        // Кнопка "Обслужен (Следующий)" – мелкий шрифт
         m_hServeBtn = CreateWindowExW(0, L"BUTTON", L"Обслужен (Следующий)",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             20 + btnW + 10, height - 80, btnW, 50,
@@ -1032,16 +1030,18 @@ private:
         int rightStart = leftListWidth + 20;
         int rightWidth = width - rightStart - 20;
         if (rightWidth < 400) rightWidth = 400;
+
         createItemInputControls(rightStart, 80, rightWidth);
         showItemInputControls(true);
-
         setCurrentDateTime();
+
         SetWindowTextW(m_hItemNumberEdit, L"");
         SetWindowTextW(m_hItemDescEdit, L"");
         SetWindowTextW(m_hItemPriceEdit, L"");
         SetWindowTextW(m_hItemQtyEdit, L"");
         SetWindowTextW(m_hItemConditionEdit, L"");
         SetWindowTextW(m_hItemNoteEdit, L"");
+
         m_tempItems.clear();
         m_currentClientId = -1;
         updateTempItemsList();
@@ -1093,11 +1093,14 @@ public:
 
         int screenW = GetSystemMetrics(SM_CXSCREEN);
         int screenH = GetSystemMetrics(SM_CYSCREEN);
+
         m_hWnd = CreateWindowExW(0, L"WorkerWindowClass", L"Товаровед - Управление очередями",
             WS_OVERLAPPEDWINDOW,
             0, 0, screenW, screenH,
             nullptr, nullptr, g_hInstance, this);
+
         if (!m_hWnd) return;
+
         ShowWindow(m_hWnd, SW_SHOW);
         UpdateWindow(m_hWnd);
 

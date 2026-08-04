@@ -7,9 +7,9 @@
 #include <vector>
 #include <algorithm>
 #include <nlohmann/json.hpp>
+
 #include "config.h"
 #include "logger.h"
-#include "database_local.h"
 #include "https_client.h"
 #include "auth_manager.h"
 #include "string_utils.h"
@@ -20,6 +20,26 @@ extern Logger g_logger;
 extern HTTPSClient g_httpsClient;
 extern AuthManager g_authManager;
 extern HINSTANCE g_hInstance;
+
+
+#define IDC_REG_TITLE           5001
+#define IDC_REG_PHONE_LABEL     5002
+#define IDC_REG_PHONE           5003
+#define IDC_REG_LASTNAME_LABEL  5004
+#define IDC_REG_LASTNAME        5005
+#define IDC_REG_FIRSTNAME_LABEL 5006
+#define IDC_REG_FIRSTNAME       5007
+#define IDC_REG_MIDDLENAME_LABEL 5008
+#define IDC_REG_MIDDLENAME      5009
+#define IDC_REG_EMAIL_LABEL     5010
+#define IDC_REG_EMAIL           5011
+#define IDC_REG_STATUS          5012
+#define IDC_REG_SUBMIT          5013
+#define IDC_REG_BACK            5014
+#define IDC_REG_CLOSE           5015
+#define IDC_OTP_CODE_LABEL      5016
+#define IDC_OTP_CODE_EDIT       5017
+#define IDC_OTP_VERIFY_BTN      5018
 
 namespace RegUtils {
     inline std::wstring extractDigits(const std::wstring& input) {
@@ -87,25 +107,6 @@ namespace RegUtils {
     }
 }
 
-#define IDC_REG_TITLE           5001
-#define IDC_REG_PHONE_LABEL     5002
-#define IDC_REG_PHONE           5003
-#define IDC_REG_LASTNAME_LABEL  5004
-#define IDC_REG_LASTNAME        5005
-#define IDC_REG_FIRSTNAME_LABEL 5006
-#define IDC_REG_FIRSTNAME       5007
-#define IDC_REG_MIDDLENAME_LABEL 5008
-#define IDC_REG_MIDDLENAME      5009
-#define IDC_REG_EMAIL_LABEL     5010
-#define IDC_REG_EMAIL           5011
-#define IDC_REG_STATUS          5012
-#define IDC_REG_SUBMIT          5013
-#define IDC_REG_BACK            5014
-#define IDC_REG_CLOSE           5015
-#define IDC_OTP_CODE_LABEL      5016
-#define IDC_OTP_CODE_EDIT       5017
-#define IDC_OTP_VERIFY_BTN      5018
-
 class RegistrationWindow {
 private:
     HWND m_hWnd, m_hPhoneEdit, m_hLastNameEdit, m_hFirstNameEdit, m_hMiddleNameEdit, m_hEmailEdit;
@@ -114,10 +115,11 @@ private:
     HFONT m_hFontTitle, m_hFontButton, m_hFontLabel, m_hFontEdit;
     HBRUSH m_hGreenBrush, m_hRedBrush, m_hWhiteBrush;
     std::vector<HWND> m_buttons;
-
-    bool m_isOtpMode;
+        
     std::wstring m_currentPhone;
     std::wstring m_currentEmail;
+
+    std::string m_role;  // "client" или "worker"
 
     static constexpr const wchar_t* CLASS_NAME = L"RegistrationWindowClass";
 
@@ -159,7 +161,7 @@ private:
             SendMessageW(hEdit, WM_SETFONT, (WPARAM)m_hFontEdit, TRUE);
             SendMessageW(hEdit, EM_SETLIMITTEXT, (WPARAM)maxLen, 0);
             return hEdit;
-            };
+        };
 
         m_hPhoneEdit = createLabeledEdit(IDC_REG_PHONE_LABEL, IDC_REG_PHONE, L"Телефон:", 0, 0, 30);
         m_hLastNameEdit = createLabeledEdit(IDC_REG_LASTNAME_LABEL, IDC_REG_LASTNAME, L"Фамилия:", 1, 0, 40);
@@ -169,19 +171,6 @@ private:
 
         m_hStatusLabel = CreateWindowExW(0, L"STATIC", L"", WS_VISIBLE | WS_CHILD | SS_CENTER, startX, startY + 5 * rowHeight + 10, labelWidth + editWidth + 20, 40, m_hWnd, (HMENU)(INT_PTR)IDC_REG_STATUS, g_hInstance, nullptr);
         SendMessageW(m_hStatusLabel, WM_SETFONT, (WPARAM)m_hFontLabel, TRUE);
-
-        // Элементы OTP (изначально скрыты)
-        m_hOtpCodeLabel = CreateWindowExW(0, L"STATIC", L"Введите 6-ти значный код:", WS_CHILD | SS_RIGHT, startX, startY + 100, labelWidth, editHeight, m_hWnd, (HMENU)(INT_PTR)IDC_OTP_CODE_LABEL, g_hInstance, nullptr);
-        SendMessageW(m_hOtpCodeLabel, WM_SETFONT, (WPARAM)m_hFontLabel, TRUE);
-        m_hOtpCodeEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL | ES_NUMBER, startX + labelWidth + 20, startY + 100, editWidth, editHeight, m_hWnd, (HMENU)(INT_PTR)IDC_OTP_CODE_EDIT, g_hInstance, nullptr);
-        SendMessageW(m_hOtpCodeEdit, WM_SETFONT, (WPARAM)m_hFontEdit, TRUE);
-        SendMessageW(m_hOtpCodeEdit, EM_SETLIMITTEXT, (WPARAM)6, 0);
-        m_hOtpVerifyBtn = CreateWindowExW(0, L"BUTTON", L"Подтвердить вход", WS_CHILD | BS_PUSHBUTTON | BS_NOTIFY, startX, startY + 180, 300, Config::BUTTON_HEIGHT, m_hWnd, (HMENU)(INT_PTR)IDC_OTP_VERIFY_BTN, g_hInstance, nullptr);
-        SendMessageW(m_hOtpVerifyBtn, WM_SETFONT, (WPARAM)m_hFontButton, TRUE);
-
-        ShowWindow(m_hOtpCodeLabel, SW_HIDE);
-        ShowWindow(m_hOtpCodeEdit, SW_HIDE);
-        ShowWindow(m_hOtpVerifyBtn, SW_HIDE);
 
         const int btnWidth = 300, btnY = startY + 5 * rowHeight + 20;
         HWND hSubmitBtn = CreateWindowExW(0, L"BUTTON", L"Зарегистрировать", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_NOTIFY, startX, btnY, btnWidth, Config::BUTTON_HEIGHT, m_hWnd, (HMENU)(INT_PTR)IDC_REG_SUBMIT, g_hInstance, nullptr);
@@ -220,50 +209,12 @@ private:
         g_logger.info(L"[setAuthTokensFromResponse] Auth tokens successfully set for phone: " + m_currentPhone);
         g_logger.info(L"[setAuthTokensFromResponse] access_token: " + RegUtils::utf8_to_wstring(accessToken.substr(0, 20)) + L"...");
     }
+	// -------------------------------------------------------------------------
+	// Устанавливает роль пользователя для регистрации ("client" или "worker")
+    void setRole(const std::string& role) { m_role = role; }
 
     void onSubmit() {
-        // ВЕТВЛЕНИЕ 1: Мы уже в режиме ввода OTP?
-        if (m_isOtpMode) {
-            g_logger.info(L"[onSubmit] OTP mode active. Verifying code...");
-            wchar_t code[10]; GetWindowTextW(m_hOtpCodeEdit, code, 10);
-            std::wstring codeStr(code);
-
-            if (codeStr.length() != 6) {
-                SetWindowTextW(m_hStatusLabel, L"Код должен состоять ровно из 6 цифр");
-                SetFocus(m_hOtpCodeEdit); return;
-            }
-
-            SetWindowTextW(m_hStatusLabel, L"Проверка кода...");
-            EnableWindow(m_hOtpVerifyBtn, FALSE);
-
-            json request;
-            request["phone"] = RegUtils::wstring_to_utf8(m_currentPhone);
-            request["code"] = RegUtils::wstring_to_utf8(codeStr);
-
-            auto response = g_httpsClient.post(L"/api/v1/auth/email_otp/verify", request);
-            if (response && response->contains("success") && (*response)["success"].get<bool>()) {
-                // =============================================================
-                // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Сохраняем токены в AuthManager
-                // =============================================================
-                setAuthTokensFromResponse(*response);
-
-                SetWindowTextW(m_hStatusLabel, L"Успешная аутентификация!");
-                g_logger.info(L"[onSubmit] Email OTP verified successfully. JWT acquired and stored in AuthManager.");
-                Sleep(1000);
-                DestroyWindow(m_hWnd);
-            }
-            else {
-                SetWindowTextW(m_hStatusLabel, L"Неверный или истекший код. Попробуйте снова.");
-                SetWindowTextW(m_hOtpCodeEdit, L"");
-                SetFocus(m_hOtpCodeEdit);
-                EnableWindow(m_hOtpVerifyBtn, TRUE);
-                g_logger.warning(L"[onSubmit] Email OTP verification FAILED");
-            }
-            return;
-        }
-
-        // ВЕТВЛЕНИЕ 2: Обычная первичная регистрация
-        g_logger.info(L"[onSubmit] Starting primary registration flow...");
+        g_logger.info(L"[onSubmit] Starting registration flow...");
         wchar_t buf[128];
         GetWindowTextW(m_hPhoneEdit, buf, 128);     std::wstring phone = RegUtils::trim(buf);
         GetWindowTextW(m_hLastNameEdit, buf, 128);  std::wstring lastName = RegUtils::trim(buf);
@@ -271,18 +222,39 @@ private:
         GetWindowTextW(m_hMiddleNameEdit, buf, 128); std::wstring middleName = RegUtils::trim(buf);
         GetWindowTextW(m_hEmailEdit, buf, 128);     std::wstring email = RegUtils::trim(buf);
 
+        // Валидация
         std::wstring normalizedPhone = RegUtils::normalizePhone(phone);
-        if (normalizedPhone.empty()) { SetWindowTextW(m_hStatusLabel, L"Ошибка: введите 10 или 11 цифр"); SetFocus(m_hPhoneEdit); return; }
-        if (!RegUtils::isValidName(lastName, 40)) { SetWindowTextW(m_hStatusLabel, L"Фамилия: от 1 до 40 букв"); SetFocus(m_hLastNameEdit); return; }
-        if (!RegUtils::isValidName(firstName, 20)) { SetWindowTextW(m_hStatusLabel, L"Имя: от 1 до 20 букв"); SetFocus(m_hFirstNameEdit); return; }
-        if (!middleName.empty() && !RegUtils::isValidName(middleName, 20)) { SetWindowTextW(m_hStatusLabel, L"Отчество: от 1 до 20 букв"); SetFocus(m_hMiddleNameEdit); return; }
-        if (!email.empty() && !RegUtils::isValidEmail(email)) { SetWindowTextW(m_hStatusLabel, L"E-mail: неверный формат"); SetFocus(m_hEmailEdit); return; }
+        if (normalizedPhone.empty()) {
+            SetWindowTextW(m_hStatusLabel, L"Ошибка: введите 10 или 11 цифр");
+            SetFocus(m_hPhoneEdit);
+            return;
+        }
+        if (!RegUtils::isValidName(lastName, 40)) {
+            SetWindowTextW(m_hStatusLabel, L"Фамилия: от 1 до 40 букв");
+            SetFocus(m_hLastNameEdit);
+            return;
+        }
+        if (!RegUtils::isValidName(firstName, 20)) {
+            SetWindowTextW(m_hStatusLabel, L"Имя: от 1 до 20 букв");
+            SetFocus(m_hFirstNameEdit);
+            return;
+        }
+        if (!middleName.empty() && !RegUtils::isValidName(middleName, 20)) {
+            SetWindowTextW(m_hStatusLabel, L"Отчество: от 1 до 20 букв");
+            SetFocus(m_hMiddleNameEdit);
+            return;
+        }
+        if (!email.empty() && !RegUtils::isValidEmail(email)) {
+            SetWindowTextW(m_hStatusLabel, L"E-mail: неверный формат");
+            SetFocus(m_hEmailEdit);
+            return;
+        }
 
+        // Блокируем кнопку отправки и показываем статус
         EnableWindow(GetDlgItem(m_hWnd, IDC_REG_SUBMIT), FALSE);
         SetWindowTextW(m_hStatusLabel, L"Обработка данных...");
 
-        LocalDB::addClient(normalizedPhone, lastName + (firstName.empty() ? L"" : L" " + firstName) + (middleName.empty() ? L"" : L" " + middleName), email);
-
+        // Формируем запрос с указанием роли (важно!)
         json request;
         request["phone"] = RegUtils::wstring_to_utf8(normalizedPhone);
         request["last_name"] = RegUtils::wstring_to_utf8(lastName);
@@ -291,101 +263,49 @@ private:
         request["email"] = RegUtils::wstring_to_utf8(email);
         request["items_submitted"] = 0;
         request["items_sold"] = 0;
+        request["role"] = m_role;   // <-- ДОБАВЛЕНО: передаём роль ("client" или "worker")
 
-        g_logger.info(L"Sending registration request for: " + normalizedPhone);
+        g_logger.info(L"Sending registration request for: " + normalizedPhone + L", role=" + RegUtils::utf8_to_wstring(m_role));
+
         auto response = g_httpsClient.post(L"/api/v1/clients/register", request);
 
+        // Обработка ответа
         if (response && response->contains("success") && (*response)["success"].get<bool>()) {
-            bool alreadyExists = response->contains("already_exists") && (*response)["already_exists"].get<bool>();
-            g_logger.info(L"Server response: success=true, already_exists=" + std::to_wstring(alreadyExists ? 1 : 0));
-
-            if (alreadyExists) {
-                // БЛОК ДЛЯ СУЩЕСТВУЮЩЕГО ПОЛЬЗОВАТЕЛЯ
-                g_logger.info(L"User exists. Requesting Email OTP for: " + normalizedPhone);
-                m_currentPhone = normalizedPhone;
-                m_currentEmail = email;
-
-                json otpRequest;
-                otpRequest["phone"] = RegUtils::wstring_to_utf8(normalizedPhone);
-                otpRequest["email"] = RegUtils::wstring_to_utf8(email);
-
-                auto otpResponse = g_httpsClient.post(L"/api/v1/auth/email_otp/request", otpRequest);
-
-                if (otpResponse && otpResponse->contains("success") && (*otpResponse)["success"].get<bool>()) {
-                    m_isOtpMode = true;
-
-                    // 1. Скрываем поля регистрации
-                    ShowWindow(m_hPhoneEdit, SW_HIDE); ShowWindow(GetDlgItem(m_hWnd, IDC_REG_PHONE_LABEL), SW_HIDE);
-                    ShowWindow(m_hLastNameEdit, SW_HIDE); ShowWindow(GetDlgItem(m_hWnd, IDC_REG_LASTNAME_LABEL), SW_HIDE);
-                    ShowWindow(m_hFirstNameEdit, SW_HIDE); ShowWindow(GetDlgItem(m_hWnd, IDC_REG_FIRSTNAME_LABEL), SW_HIDE);
-                    ShowWindow(m_hMiddleNameEdit, SW_HIDE); ShowWindow(GetDlgItem(m_hWnd, IDC_REG_MIDDLENAME_LABEL), SW_HIDE);
-                    ShowWindow(m_hEmailEdit, SW_HIDE); ShowWindow(GetDlgItem(m_hWnd, IDC_REG_EMAIL_LABEL), SW_HIDE);
-                    ShowWindow(GetDlgItem(m_hWnd, IDC_REG_SUBMIT), SW_HIDE);
-
-                    // 2. Перестраиваем UI
-                    RECT rc; GetClientRect(m_hWnd, &rc);
-                    int clientWidth = rc.right - rc.left;
-                    const int labelWidth = 200, editWidth = 400;
-                    const int startX = (clientWidth - labelWidth - editWidth) / 2;
-                    const int startY = 140;
-
-                    SetWindowPos(m_hStatusLabel, NULL, startX, startY + 10, labelWidth + editWidth + 20, 60, SWP_NOZORDER);
-                    SetWindowTextW(m_hStatusLabel, (L"Пользователь уже зарегистрирован.\nКод отправлен на: " + email).c_str());
-
-                    SetWindowPos(m_hOtpCodeLabel, NULL, startX, startY + 80, labelWidth, 40, SWP_NOZORDER | SWP_SHOWWINDOW);
-                    SetWindowPos(m_hOtpCodeEdit, NULL, startX + labelWidth + 20, startY + 80, editWidth, 40, SWP_NOZORDER | SWP_SHOWWINDOW);
-
-                    const int btnWidth = 300, btnHeight = Config::BUTTON_HEIGHT, btnY = startY + 160;
-                    SetWindowPos(m_hOtpVerifyBtn, NULL, startX, btnY, btnWidth, btnHeight, SWP_NOZORDER | SWP_SHOWWINDOW);
-                    SetWindowPos(GetDlgItem(m_hWnd, IDC_REG_BACK), NULL, startX + labelWidth + editWidth + 20 - btnWidth, btnY, btnWidth, btnHeight, SWP_NOZORDER | SWP_SHOWWINDOW);
-
-                    SetWindowTextW(m_hOtpCodeEdit, L"");
-                    SetFocus(m_hOtpCodeEdit);
-                    g_logger.info(L"UI successfully switched to Email OTP input mode");
-                }
-                else {
-                    SetWindowTextW(m_hStatusLabel, L"Ошибка отправки кода на почту. Попробуйте позже.");
-                    g_logger.error(L"Failed to request Email OTP");
-                    EnableWindow(GetDlgItem(m_hWnd, IDC_REG_SUBMIT), TRUE);
-                }
+            // Сохраняем JWT-токены (сервер возвращает их всегда)
+            if (response->contains("access_token") && response->contains("refresh_token")) {
+                std::string access = (*response)["access_token"].get<std::string>();
+                std::string refresh = (*response)["refresh_token"].get<std::string>();
+                int64_t expires = (*response)["expires_at"].get<int64_t>();
+                g_authManager.setAuthTokens(access, refresh, expires, wstring_to_utf8(normalizedPhone));
+                g_logger.info(L"Tokens saved for " + normalizedPhone);
             }
             else {
-                // БЛОК ДЛЯ НОВОГО ПОЛЬЗОВАТЕЛЯ
-                g_logger.info(L"New user registered successfully: " + normalizedPhone);
-                SetWindowTextW(m_hStatusLabel, L"Регистрация прошла успешно!");
-
-                // Инициализируем TOTP для нового пользователя
-                auto totpResult = g_authManager.setupTOTP(normalizedPhone);
-                if (totpResult.success) {
-                    g_logger.info(L"TOTP initialized successfully for new user");
-                }
-                else {
-                    g_logger.warning(L"TOTP setup failed for new user: " + normalizedPhone);
-                }
-
-                // =============================================================
-                // ✅ ДОПОЛНИТЕЛЬНО: Для нового пользователя также устанавливаем
-                //    токен, если сервер вернул его в ответе на регистрацию.
-                //    (Предполагаем, что сервер может сразу вернуть токены)
-                // =============================================================
-                if (response->contains("access_token") && response->contains("refresh_token")) {
-                    setAuthTokensFromResponse(*response);
-                    g_logger.info(L"[onSubmit] Auth tokens set for new user from registration response.");
-                }
-                else {
-                    g_logger.warning(L"[onSubmit] No tokens in registration response. User will need to login.");
-                }
-
-                Sleep(1500);
-                DestroyWindow(m_hWnd);
+                g_logger.warning(L"Server response success but no tokens returned");
             }
+
+            bool alreadyExists = response->contains("already_exists") && (*response)["already_exists"].get<bool>();
+            if (alreadyExists) {
+                SetWindowTextW(m_hStatusLabel, L"Пользователь уже существует. Выполнен автоматический вход.");
+                g_logger.info(L"User already exists, tokens issued and login performed.");
+            }
+            else {
+                SetWindowTextW(m_hStatusLabel, L"Регистрация успешна!");
+            }
+
+            // Небольшая задержка, чтобы пользователь увидел сообщение, затем закрываем окно
+            Sleep(1000);
+            DestroyWindow(m_hWnd);
         }
         else {
+            // Ошибка – показываем сообщение и разблокируем кнопку, окно НЕ закрываем
             std::wstring errMsg = L"Ошибка регистрации";
-            if (response && response->contains("error")) errMsg = RegUtils::utf8_to_wstring((*response)["error"].get<std::string>());
+            if (response && response->contains("error")) {
+                errMsg = RegUtils::utf8_to_wstring((*response)["error"].get<std::string>());
+            }
             SetWindowTextW(m_hStatusLabel, errMsg.c_str());
-            g_logger.error(L"Server registration failed: " + normalizedPhone);
+            g_logger.error(L"Server registration failed: " + normalizedPhone + L", error: " + errMsg);
             EnableWindow(GetDlgItem(m_hWnd, IDC_REG_SUBMIT), TRUE);
+            // Не закрываем окно, чтобы пользователь мог исправить данные и повторить попытку
         }
     }
 
@@ -448,7 +368,7 @@ public:
         m_hMiddleNameEdit(nullptr), m_hEmailEdit(nullptr), m_hStatusLabel(nullptr), m_hCloseBtn(nullptr),
         m_hOtpCodeLabel(nullptr), m_hOtpCodeEdit(nullptr), m_hOtpVerifyBtn(nullptr),
         m_hFontTitle(nullptr), m_hFontButton(nullptr), m_hFontLabel(nullptr), m_hFontEdit(nullptr),
-        m_hGreenBrush(nullptr), m_hRedBrush(nullptr), m_hWhiteBrush(nullptr), m_isOtpMode(false) {
+        m_hGreenBrush(nullptr), m_hRedBrush(nullptr), m_hWhiteBrush(nullptr) {
     }
 
     ~RegistrationWindow() { releaseFontsAndBrushes(); }
@@ -470,7 +390,7 @@ public:
         }
         int x = (GetSystemMetrics(SM_CXSCREEN) - 800) / 2;
         int y = (GetSystemMetrics(SM_CYSCREEN) - 600) / 2;
-        m_hWnd = CreateWindowExW(WS_EX_WINDOWEDGE, CLASS_NAME, L"Регистрация клиента - Киоск",
+        m_hWnd = CreateWindowExW(WS_EX_WINDOWEDGE, CLASS_NAME, L"Регистрация клиента - ",
             WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME), x, y, 800, 600, hParent, nullptr, g_hInstance, this);
         if (m_hWnd) { ShowWindow(m_hWnd, SW_SHOW); UpdateWindow(m_hWnd); SetFocus(m_hPhoneEdit); }
     }

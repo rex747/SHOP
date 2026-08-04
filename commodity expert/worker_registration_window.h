@@ -1,4 +1,4 @@
-// worker_registration_window.h (исправленная версия)
+п»ї// worker_registration_window.h (РёСЃРїСЂР°РІР»РµРЅРЅР°СЏ РІРµСЂСЃРёСЏ)
 #pragma once
 
 #include <windows.h>
@@ -15,6 +15,7 @@
 extern Logger g_logger;
 extern HTTPSClient g_httpsClient;
 extern HINSTANCE g_hInstance;
+extern AuthManager g_authManager;
 
 using json = nlohmann::json;
 
@@ -32,6 +33,72 @@ using json = nlohmann::json;
 #define IDC_WORKER_REG_STATUS       6012
 #define IDC_WORKER_REG_SUBMIT       6013
 #define IDC_WORKER_REG_CANCEL       6014
+
+namespace RegUtils {
+    inline std::wstring extractDigits(const std::wstring& input) {
+        std::wstring digits;
+        digits.reserve(input.size());
+        for (wchar_t ch : input) {
+            if (ch >= L'0' && ch <= L'9') digits += ch;
+        }
+        return digits;
+    }
+
+    inline std::wstring normalizePhone(const std::wstring& input) {
+        std::wstring digits = extractDigits(input);
+        if (digits.length() == 11) {
+            if (digits[0] == L'7' || digits[0] == L'8') return L"+7" + digits.substr(1);
+            return L"";
+        }
+        if (digits.length() == 10) return L"+7" + digits;
+        return L"";
+    }
+
+    inline bool isValidName(const std::wstring& name, size_t maxLen) {
+        if (name.empty() || name.length() > maxLen) return false;
+        bool hasLetter = false;
+        for (wchar_t ch : name) {
+            if (iswalpha(ch)) hasLetter = true;
+            else if (ch != L' ' && ch != L'-' && ch != L'\'') return false;
+        }
+        return hasLetter;
+    }
+
+    inline bool isValidEmail(const std::wstring& email) {
+        if (email.empty() || email.length() > 30) return false;
+        auto atPos = email.find(L'@');
+        if (atPos == std::wstring::npos || atPos == 0 || atPos == email.length() - 1) return false;
+        auto dotPos = email.find(L'.', atPos);
+        if (dotPos == std::wstring::npos || dotPos == email.length() - 1) return false;
+        return true;
+    }
+
+    inline std::wstring trim(const std::wstring& s) {
+        size_t start = s.find_first_not_of(L" \t");
+        size_t end = s.find_last_not_of(L" \t");
+        return (start == std::wstring::npos) ? L"" : s.substr(start, end - start + 1);
+    }
+
+    inline std::string wstring_to_utf8(const std::wstring& wstr) {
+        if (wstr.empty()) return {};
+        // Р‘РµР· -1 в†’ СЂР°Р·РјРµСЂ Р‘Р•Р— Р·Р°РІРµСЂС€Р°СЋС‰РµРіРѕ РЅСѓР»СЏ
+        int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(),
+            static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+        if (size_needed <= 0) return {};
+        std::string result(size_needed, 0);
+        WideCharToMultiByte(CP_UTF8, 0, wstr.data(),
+            static_cast<int>(wstr.size()), result.data(), size_needed, nullptr, nullptr);
+        return result;
+    }
+
+    inline std::wstring utf8_to_wstring(const std::string& str) {
+        if (str.empty()) return L"";
+        int size = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
+        std::wstring wstr(size, 0);
+        MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &wstr[0], size);
+        return wstr;
+    }
+}
 
 class WorkerRegistrationWindow {
 private:
@@ -91,15 +158,15 @@ private:
         int startX = (clientWidth - labelWidth - editWidth) / 2;
         int startY = 80;
 
-        // Заголовок
-        HWND hTitle = CreateWindowExW(0, L"STATIC", L"Регистрация товароведа",
+        // Р—Р°РіРѕР»РѕРІРѕРє
+        HWND hTitle = CreateWindowExW(0, L"STATIC", L"Р РµРіРёСЃС‚СЂР°С†РёСЏ С‚РѕРІР°СЂРѕРІРµРґР°",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             0, 20, clientWidth, 60,
             m_hWnd, (HMENU)(INT_PTR)IDC_WORKER_REG_TITLE, g_hInstance, nullptr);
         SendMessageW(hTitle, WM_SETFONT, (WPARAM)m_hFontTitle, TRUE);
 
-        // Телефон (нередактируемый)
-        HWND hLabel = CreateWindowExW(0, L"STATIC", L"Телефон:",
+        // РўРµР»РµС„РѕРЅ (РЅРµСЂРµРґР°РєС‚РёСЂСѓРµРјС‹Р№)
+        HWND hLabel = CreateWindowExW(0, L"STATIC", L"РўРµР»РµС„РѕРЅ:",
             WS_VISIBLE | WS_CHILD | SS_RIGHT,
             startX, startY, labelWidth, editHeight,
             m_hWnd, (HMENU)(INT_PTR)IDC_WORKER_REG_PHONE_LABEL, g_hInstance, nullptr);
@@ -113,8 +180,8 @@ private:
         SetWindowTextW(m_hPhoneEdit, m_phone.c_str());
         startY += rowHeight;
 
-        // Фамилия
-        hLabel = CreateWindowExW(0, L"STATIC", L"Фамилия:",
+        // Р¤Р°РјРёР»РёСЏ
+        hLabel = CreateWindowExW(0, L"STATIC", L"Р¤Р°РјРёР»РёСЏ:",
             WS_VISIBLE | WS_CHILD | SS_RIGHT,
             startX, startY, labelWidth, editHeight,
             m_hWnd, (HMENU)(INT_PTR)IDC_WORKER_REG_LASTNAME_LABEL, g_hInstance, nullptr);
@@ -128,8 +195,8 @@ private:
         SendMessageW(m_hLastNameEdit, EM_SETLIMITTEXT, 40, 0);
         startY += rowHeight;
 
-        // Имя
-        hLabel = CreateWindowExW(0, L"STATIC", L"Имя:",
+        // РРјСЏ
+        hLabel = CreateWindowExW(0, L"STATIC", L"РРјСЏ:",
             WS_VISIBLE | WS_CHILD | SS_RIGHT,
             startX, startY, labelWidth, editHeight,
             m_hWnd, (HMENU)(INT_PTR)IDC_WORKER_REG_FIRSTNAME_LABEL, g_hInstance, nullptr);
@@ -143,8 +210,8 @@ private:
         SendMessageW(m_hFirstNameEdit, EM_SETLIMITTEXT, 40, 0);
         startY += rowHeight;
 
-        // Отчество
-        hLabel = CreateWindowExW(0, L"STATIC", L"Отчество:",
+        // РћС‚С‡РµСЃС‚РІРѕ
+        hLabel = CreateWindowExW(0, L"STATIC", L"РћС‚С‡РµСЃС‚РІРѕ:",
             WS_VISIBLE | WS_CHILD | SS_RIGHT,
             startX, startY, labelWidth, editHeight,
             m_hWnd, (HMENU)(INT_PTR)IDC_WORKER_REG_MIDDLENAME_LABEL, g_hInstance, nullptr);
@@ -159,7 +226,7 @@ private:
         startY += rowHeight;
 
         // E-mail
-        hLabel = CreateWindowExW(0, L"STATIC", L"E-mail (опционально):",
+        hLabel = CreateWindowExW(0, L"STATIC", L"E-mail (РѕРїС†РёРѕРЅР°Р»СЊРЅРѕ):",
             WS_VISIBLE | WS_CHILD | SS_RIGHT,
             startX, startY, labelWidth, editHeight,
             m_hWnd, (HMENU)(INT_PTR)IDC_WORKER_REG_EMAIL_LABEL, g_hInstance, nullptr);
@@ -173,7 +240,7 @@ private:
         SendMessageW(m_hEmailEdit, EM_SETLIMITTEXT, 64, 0);
         startY += rowHeight + 10;
 
-        // Статус
+        // РЎС‚Р°С‚СѓСЃ
         m_hStatusLabel = CreateWindowExW(0, L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             startX, startY, labelWidth + editWidth + 10, 30,
@@ -181,89 +248,70 @@ private:
         SendMessageW(m_hStatusLabel, WM_SETFONT, (WPARAM)m_hFontLabel, TRUE);
         startY += 40;
 
-        // Кнопки
+        // РљРЅРѕРїРєРё
         int btnWidth = 180, btnHeight = 40, gap = 20;
         int totalBtns = 2;
         int startBtnX = (clientWidth - (btnWidth * totalBtns + gap * (totalBtns - 1))) / 2;
 
-        HWND hSubmit = CreateWindowExW(0, L"BUTTON", L"Зарегистрировать",
+        HWND hSubmit = CreateWindowExW(0, L"BUTTON", L"Р—Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°С‚СЊ",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             startBtnX, startY, btnWidth, btnHeight,
             m_hWnd, (HMENU)(INT_PTR)IDC_WORKER_REG_SUBMIT, g_hInstance, nullptr);
         SendMessageW(hSubmit, WM_SETFONT, (WPARAM)m_hFontButton, TRUE);
 
-        HWND hCancel = CreateWindowExW(0, L"BUTTON", L"Отмена",
+        HWND hCancel = CreateWindowExW(0, L"BUTTON", L"РћС‚РјРµРЅР°",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             startBtnX + btnWidth + gap, startY, btnWidth, btnHeight,
             m_hWnd, (HMENU)(INT_PTR)IDC_WORKER_REG_CANCEL, g_hInstance, nullptr);
         SendMessageW(hCancel, WM_SETFONT, (WPARAM)m_hFontButton, TRUE);
 
-        // Устанавливаем фокус на фамилию
+        // РЈСЃС‚Р°РЅР°РІР»РёРІР°РµРј С„РѕРєСѓСЃ РЅР° С„Р°РјРёР»РёСЋ
         SetFocus(m_hLastNameEdit);
     }
-
-    // Валидация ФИО (только буквы, пробелы, дефис, апостроф)
-    bool isValidName(const std::wstring& name) {
-        if (name.empty() || name.length() > 40) return false;
-        bool hasLetter = false;
-        for (wchar_t ch : name) {
-            if (iswalpha(ch)) hasLetter = true;
-            else if (ch != L' ' && ch != L'-' && ch != L'\'') return false;
-        }
-        return hasLetter;
-    }
-
-    bool isValidEmail(const std::wstring& email) {
-        if (email.empty()) return true; // опционально
-        if (email.length() > 64) return false;
-        auto atPos = email.find(L'@');
-        if (atPos == std::wstring::npos || atPos == 0 || atPos == email.length() - 1) return false;
-        auto dotPos = email.find(L'.', atPos);
-        if (dotPos == std::wstring::npos || dotPos == email.length() - 1) return false;
-        return true;
-    }
-
+        
     void onSubmit() {
+        g_logger.info(L"[onSubmit] Starting registration for commodity expert...");
+
         wchar_t buf[128];
 
         GetWindowTextW(m_hLastNameEdit, buf, 128);
         std::wstring lastName = std::wstring(buf);
-        if (!isValidName(lastName)) {
-            SetWindowTextW(m_hStatusLabel, L"Фамилия: от 1 до 40 букв");
+        if (!RegUtils::isValidName(lastName, 40)) {
+            SetWindowTextW(m_hStatusLabel, L"Р¤Р°РјРёР»РёСЏ: РѕС‚ 1 РґРѕ 40 Р±СѓРєРІ");
             SetFocus(m_hLastNameEdit);
             return;
         }
 
         GetWindowTextW(m_hFirstNameEdit, buf, 128);
         std::wstring firstName = std::wstring(buf);
-        if (!isValidName(firstName)) {
-            SetWindowTextW(m_hStatusLabel, L"Имя: от 1 до 40 букв");
+        if (!RegUtils::isValidName(firstName, 40)) {
+            SetWindowTextW(m_hStatusLabel, L"РРјСЏ: РѕС‚ 1 РґРѕ 40 Р±СѓРєРІ");
             SetFocus(m_hFirstNameEdit);
             return;
         }
 
         GetWindowTextW(m_hMiddleNameEdit, buf, 128);
         std::wstring middleName = std::wstring(buf);
-        if (!middleName.empty() && !isValidName(middleName)) {
-            SetWindowTextW(m_hStatusLabel, L"Отчество: от 1 до 40 букв");
+        if (!RegUtils::trim(middleName).empty() && !RegUtils::isValidName(middleName, 40)) {
+            SetWindowTextW(m_hStatusLabel, L"РћС‚С‡РµСЃС‚РІРѕ: РѕС‚ 1 РґРѕ 40 Р±СѓРєРІ");
             SetFocus(m_hMiddleNameEdit);
             return;
         }
 
         GetWindowTextW(m_hEmailEdit, buf, 128);
         std::wstring email = std::wstring(buf);
-        if (!isValidEmail(email)) {
-            SetWindowTextW(m_hStatusLabel, L"Некорректный e-mail");
+        if (!RegUtils::isValidEmail(email)) {
+            SetWindowTextW(m_hStatusLabel, L"РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ e-mail");
             SetFocus(m_hEmailEdit);
             return;
         }
 
-        // Отключаем кнопки во время запроса
+        // РћС‚РєР»СЋС‡Р°РµРј РєРЅРѕРїРєРё РІРѕ РІСЂРµРјСЏ Р·Р°РїСЂРѕСЃР°
         EnableWindow(GetDlgItem(m_hWnd, IDC_WORKER_REG_SUBMIT), FALSE);
         EnableWindow(GetDlgItem(m_hWnd, IDC_WORKER_REG_CANCEL), FALSE);
-        SetWindowTextW(m_hStatusLabel, L"Отправка данных...");
+        SetWindowTextW(m_hStatusLabel, L"РћС‚РїСЂР°РІРєР° РґР°РЅРЅС‹С…...");
 
-        // Формируем запрос на регистрацию с ролью 'worker'
+        // Р¤РѕСЂРјРёСЂСѓРµРј Р·Р°РїСЂРѕСЃ РЅР° СЂРµРіРёСЃС‚СЂР°С†РёСЋ СЃ СЂРѕР»СЊСЋ 'worker'
         json request;
         request["phone"] = wstring_to_utf8(m_phone);
         request["last_name"] = wstring_to_utf8(lastName);
@@ -272,7 +320,7 @@ private:
         request["email"] = wstring_to_utf8(email);
         request["items_submitted"] = 0;
         request["items_sold"] = 0;
-        request["role"] = "worker";   // <-- ключевое отличие: роль worker
+        request["role"] = "worker";   // <-- РєР»СЋС‡РµРІРѕРµ РѕС‚Р»РёС‡РёРµ: СЂРѕР»СЊ worker
 
         g_logger.info(L"WorkerRegistrationWindow: sending registration request for " + m_phone);
 
@@ -282,20 +330,31 @@ private:
         EnableWindow(GetDlgItem(m_hWnd, IDC_WORKER_REG_CANCEL), TRUE);
 
         if (response && response->contains("success") && (*response)["success"].get<bool>()) {
-            // Регистрация успешна
+            // РЎРѕС…СЂР°РЅСЏРµРј JWT-С‚РѕРєРµРЅС‹ (СЃРµСЂРІРµСЂ РІРѕР·РІСЂР°С‰Р°РµС‚ РёС… РІСЃРµРіРґР°)
+            if (response->contains("access_token") && response->contains("refresh_token")) {
+                std::string access = (*response)["access_token"].get<std::string>();
+                std::string refresh = (*response)["refresh_token"].get<std::string>();
+                int64_t expires = (*response)["expires_at"].get<int64_t>();
+                g_authManager.setAuthTokens(access, refresh, expires, RegUtils::wstring_to_utf8(m_phone));
+                g_logger.info(L"Tokens saved for " + RegUtils::normalizePhone(m_phone));
+            }
+            else {
+                g_logger.warning(L"Server response success but no tokens returned");
+            }
+            // Р РµРіРёСЃС‚СЂР°С†РёСЏ СѓСЃРїРµС€РЅР°
             g_logger.info(L"WorkerRegistrationWindow: registration successful for " + m_phone);
-            SetWindowTextW(m_hStatusLabel, L"Регистрация успешна!");
-            // Даём пользователю увидеть сообщение, затем закрываем окно с IDOK
+            SetWindowTextW(m_hStatusLabel, L"Р РµРіРёСЃС‚СЂР°С†РёСЏ СѓСЃРїРµС€РЅР°!");
+            // Р”Р°С‘Рј РїРѕР»СЊР·РѕРІР°С‚РµР»СЋ СѓРІРёРґРµС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ, Р·Р°С‚РµРј Р·Р°РєСЂС‹РІР°РµРј РѕРєРЅРѕ СЃ IDOK
             m_dialogResult = IDOK;
-            // Небольшая задержка перед закрытием
+            // РќРµР±РѕР»СЊС€Р°СЏ Р·Р°РґРµСЂР¶РєР° РїРµСЂРµРґ Р·Р°РєСЂС‹С‚РёРµРј
             SetTimer(m_hWnd, 1, 800, [](HWND h, UINT, UINT_PTR, DWORD) {
                 KillTimer(h, 1);
                 DestroyWindow(h);
                 });
         }
         else {
-            // Ошибка регистрации
-            std::wstring errMsg = L"Ошибка регистрации.";
+            // РћС€РёР±РєР° СЂРµРіРёСЃС‚СЂР°С†РёРё
+            std::wstring errMsg = L"РћС€РёР±РєР° СЂРµРіРёСЃС‚СЂР°С†РёРё.";
             if (response && response->contains("error")) {
                 errMsg += L"\n" + utf8_to_wstring((*response)["error"].get<std::string>());
             }
@@ -374,7 +433,7 @@ private:
         }
         case WM_DESTROY:
             pThis->releaseFontsAndBrushes();
-            // delete pThis; // управление памятью вне класса
+            // delete pThis; // СѓРїСЂР°РІР»РµРЅРёРµ РїР°РјСЏС‚СЊСЋ РІРЅРµ РєР»Р°СЃСЃР°
             return 0;
         }
         return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -391,13 +450,13 @@ public:
     }
 
     ~WorkerRegistrationWindow() {
-        // Ресурсы освобождаются в WM_DESTROY
+        // Р РµСЃСѓСЂСЃС‹ РѕСЃРІРѕР±РѕР¶РґР°СЋС‚СЃСЏ РІ WM_DESTROY
     }
 
     /**
-     * Показывает модальное окно регистрации товароведа.
-     * @param hParent родительское окно (обычно LoginWindow)
-     * @return IDOK, если регистрация успешна, иначе IDCANCEL
+     * РџРѕРєР°Р·С‹РІР°РµС‚ РјРѕРґР°Р»СЊРЅРѕРµ РѕРєРЅРѕ СЂРµРіРёСЃС‚СЂР°С†РёРё С‚РѕРІР°СЂРѕРІРµРґР°.
+     * @param hParent СЂРѕРґРёС‚РµР»СЊСЃРєРѕРµ РѕРєРЅРѕ (РѕР±С‹С‡РЅРѕ LoginWindow)
+     * @return IDOK, РµСЃР»Рё СЂРµРіРёСЃС‚СЂР°С†РёСЏ СѓСЃРїРµС€РЅР°, РёРЅР°С‡Рµ IDCANCEL
      */
     int show(HWND hParent) {
         g_logger.info(L"WorkerRegistrationWindow::show() called, phone=" + m_phone);
@@ -425,7 +484,7 @@ public:
         int x = (GetSystemMetrics(SM_CXSCREEN) - width) / 2;
         int y = (GetSystemMetrics(SM_CYSCREEN) - height) / 2;
 
-        m_hWnd = CreateWindowExW(WS_EX_WINDOWEDGE, CLASS_NAME, L"Регистрация товароведа",
+        m_hWnd = CreateWindowExW(WS_EX_WINDOWEDGE, CLASS_NAME, L"Р РµРіРёСЃС‚СЂР°С†РёСЏ С‚РѕРІР°СЂРѕРІРµРґР°",
             WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME),
             x, y, width, height,
             hParent, nullptr, g_hInstance, this);
