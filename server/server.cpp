@@ -115,12 +115,6 @@ private:
             if (target == "/api/v1/clients/register" && method == http::verb::post) {
                 handleClientRegister(client_ip);
             }
-            else if (target == "/api/v1/auth/totp/setup" && method == http::verb::post) {
-                handleTOTPSetup(client_ip);
-            }
-            else if (target == "/api/v1/auth/totp/verify" && method == http::verb::post) {
-                handleTOTPVerify(client_ip);
-            }
             else if (target == "/api/v1/clients/by_phone" && method == http::verb::post) {
                 handleClientByPhone(client_ip);
             }
@@ -248,7 +242,7 @@ private:
         int items_sold = body.value("items_sold", 0);
 
         // === Явно извлекаем роль из запроса ===
-        std::string role = body.value("worker", "client");
+        std::string role = body.value("role", "client");
         g_serverLogger.info("Client registration role extracted from payload: " + role);
 
         std::string digits;
@@ -276,6 +270,20 @@ private:
             return;
         }
 
+        // Генерация токенов для любого успешного случая (новый или существующий)
+        auto tokens = auth_->generateTokens(phone);
+        auto now = std::chrono::system_clock::now();
+        int64_t expiresAt = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count() + Config::JWT_ACCESS_EXPIRY_SECONDS;
+
+        json resp;
+        resp["success"] = ok;
+        resp["phone"] = phone;
+        resp["already_exists"] = already_exists;
+        resp["role"] = role;
+        resp["access_token"] = tokens.first;
+        resp["refresh_token"] = tokens.second;
+        resp["expires_at"] = expiresAt;
+
         g_serverLogger.info("Client registration attempt for: " + phone +
             " | Success: " + std::to_string(ok) +
             " | Already exists: " + std::to_string(already_exists) +
@@ -283,103 +291,12 @@ private:
 
         response_.result(http::status::ok);
         response_.set(http::field::content_type, "application/json");
-        json resp = { {"success", ok}, {"phone", phone}, {"already_exists", already_exists}, {"role", role} };
         response_.body() = resp.dump();
         response_.prepare_payload();
         g_serverLogger.info("Client registration successful for: " + phone + " from " + client_ip + " | Already exists: " + std::to_string(already_exists));
     }
 
-    void handleTOTPSetup(const std::string& client_ip) {
-        if (!rate_limiter_->allow(client_ip + "_setup")) {
-            response_.result(http::status::too_many_requests);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", "Rate limit exceeded"} }.dump();
-            response_.prepare_payload();
-            return;
-        }
-
-        json body;
-        try {
-            body = json::parse(request_.body());
-        }
-        catch (const json::parse_error& e) {
-            response_.result(http::status::bad_request);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
-            response_.prepare_payload();
-            return;
-        }
-
-        std::string phone = body["phone"].get<std::string>();
-        std::string digits;
-        for (char c : phone) if (c >= '0' && c <= '9') digits += c;
-        if (digits.length() == 11 && (digits[0] == '7' || digits[0] == '8')) {
-            phone = "+7" + digits.substr(1);
-        }
-
-        auto secretOpt = db_->getTOTPSecret(phone);
-        std::string secret;
-        if (secretOpt && !secretOpt->empty()) {
-            secret = *secretOpt;
-        }
-        else {
-            secret = auth_->generateTOTPSecret();
-            db_->setTOTPSecret(phone, secret);
-        }
-
-        std::string uri = auth_->generateTOTPURI(secret, phone);
-
-        response_.result(http::status::ok);
-        response_.set(http::field::content_type, "application/json");
-        response_.body() = json{ {"success", true}, {"secret", secret}, {"uri", uri} }.dump();
-        response_.prepare_payload();
-    }
-
-    void handleTOTPVerify(const std::string& client_ip) {
-        if (!rate_limiter_->allow(client_ip + "_verify")) {
-            response_.result(http::status::too_many_requests);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", "Rate limit exceeded"} }.dump();
-            response_.prepare_payload();
-            return;
-        }
-
-        json body;
-        try {
-            body = json::parse(request_.body());
-        }
-        catch (const json::parse_error& e) {
-            response_.result(http::status::bad_request);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
-            response_.prepare_payload();
-            return;
-        }
-
-        std::string phone = body["phone"].get<std::string>();
-        std::string code = body["code"].get<std::string>();
-
-        std::string digits;
-        for (char c : phone) if (c >= '0' && c <= '9') digits += c;
-        if (digits.length() == 11 && (digits[0] == '7' || digits[0] == '8')) {
-            phone = "+7" + digits.substr(1);
-        }
-
-        if (auth_->verifyTOTP(phone, code)) {
-            auto tokens = auth_->generateTokens(phone);
-            response_.result(http::status::ok);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"access_token", tokens.first}, {"refresh_token", tokens.second}, {"success", true} }.dump();
-            g_serverLogger.info("TOTP verification successful for: " + phone);
-        }
-        else {
-            response_.result(http::status::unauthorized);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", "Invalid TOTP code or replay detected"} }.dump();
-            g_serverLogger.warning("TOTP verification FAILED for: " + phone);
-        }
-        response_.prepare_payload();
-    }
+   
     
     // -------------------------------------------------------------------------
     // POST /api/v1/clients/by_phone (post-метод)
