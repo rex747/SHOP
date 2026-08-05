@@ -870,17 +870,34 @@ public:
         return result;
     }
 
+    // =========================================================================
+    // ИСПРАВЛЕННЫЙ МЕТОД: getNextItemNumber
+    // =========================================================================
+    // ПРИЧИНА ОШИБКИ: Метод создавал собственную pqxx::work (транзакцию),
+    // но вызывался из addItemsBatch, где уже была открыта транзакция на том
+    // же соединении conn_. pqxx не позволяет иметь две активные pqxx::work
+    // на одном соединении одновременно.
+    //
+    // РЕШЕНИЕ: Метод принимает ссылку на pqxx::transaction_base и выполняет
+    // запрос в рамках уже существующей транзакции, не создавая новую.
+    // =========================================================================
     /**
-     * Получить следующий порядковый номер товара для клиента (начиная с 1)
+     * Получить следующий порядковый номер товара для клиента (начиная с 1).
+     * Выполняется в рамках переданной транзакции txn.
+     * @param clientId ID клиента
+     * @param txn активная транзакция, в которой выполняется запрос
+     * @return следующий номер товара
      */
-    int getNextItemNumber(int clientId) {
+    int getNextItemNumber(int clientId, pqxx::transaction_base& txn) {
         try {
-            pqxx::work txn{ *conn_ };
             auto res = txn.exec(
                 "SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE client_id = $1",
                 pqxx::params{ clientId }
             );
-            return res[0][0].as<int>();
+            int nextNum = res[0][0].as<int>();
+            g_serverLogger.info("getNextItemNumber: clientId=" + std::to_string(clientId) +
+                ", nextNumber=" + std::to_string(nextNum));
+            return nextNum;
         }
         catch (const std::exception& e) {
             g_serverLogger.error("getNextItemNumber error: " + std::string(e.what()));
@@ -890,12 +907,12 @@ public:
 
     /**
      * Добавить один товар (используется внутри пакетного метода)
+     * ИСПРАВЛЕНИЕ: Метод также принимает ссылку на транзакцию.
      */
     bool addItem(int clientId, int itemNumber, const std::string& description,
         double price, int quantity, const std::string& condition,
-        const std::string& note) {
+        const std::string& note, pqxx::transaction_base& txn) {
         try {
-            pqxx::work txn{ *conn_ };
             txn.exec(
                 "INSERT INTO items (client_id, item_number, description, estimated_price, "
                 "quantity, condition, note) "
@@ -904,7 +921,6 @@ public:
                               condition.empty() ? std::optional<std::string>{} : condition,
                               note.empty() ? std::optional<std::string>{} : note }
             );
-            txn.commit();
             g_serverLogger.info("Added item " + std::to_string(itemNumber) +
                 " for client " + std::to_string(clientId));
             return true;
@@ -916,7 +932,11 @@ public:
     }
 
     /**
-     * Пакетное добавление нескольких товаров для одного клиента
+     * Пакетное добавление нескольких товаров для одного клиента.
+     * ИСПРАВЛЕНИЕ: getNextItemNumber теперь вызывается с передачей текущей
+     * транзакции txn, что исключает конфликт "Started new transaction while
+     * transaction was still active".
+     *
      * @param clientId ID клиента
      * @param items массив JSON-объектов с полями: description, estimated_price,
      *              quantity, condition, note
@@ -927,16 +947,25 @@ public:
             g_serverLogger.warning("addItemsBatch: empty or invalid items array");
             return false;
         }
+
         try {
             pqxx::work txn{ *conn_ };
-            // Получаем следующий номер один раз для всех позиций
-            int nextNumber = getNextItemNumber(clientId);
+
+            // ИСПРАВЛЕНИЕ: Передаём txn в getNextItemNumber вместо создания
+            // новой транзакции внутри него.
+            int nextNumber = getNextItemNumber(clientId, txn);
+
+            g_serverLogger.info("addItemsBatch: clientId=" + std::to_string(clientId) +
+                ", itemsCount=" + std::to_string(items.size()) +
+                ", startingNumber=" + std::to_string(nextNumber));
+
             for (const auto& item : items) {
                 std::string desc = item.value("description", "");
                 double price = item.value("estimated_price", 0.0);
                 int quantity = item.value("quantity", 1);
                 std::string condition = item.value("condition", "");
                 std::string note = item.value("note", "");
+
                 txn.exec(
                     "INSERT INTO items (client_id, item_number, description, estimated_price, "
                     "quantity, condition, note) "
@@ -946,9 +975,10 @@ public:
                                   note.empty() ? std::optional<std::string>{} : note }
                 );
             }
+
             txn.commit();
-            g_serverLogger.info("addItemsBatch: added " + std::to_string(items.size()) +
-                " items for client " + std::to_string(clientId));
+            g_serverLogger.info("addItemsBatch: successfully added " +
+                std::to_string(items.size()) + " items for client " + std::to_string(clientId));
             return true;
         }
         catch (const std::exception& e) {

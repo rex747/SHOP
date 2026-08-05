@@ -1043,25 +1043,31 @@ private:
     }
 
     // =========================================================================
-    // POST /api/v1/items/batch  (массовое сохранение товаров)
-    // =========================================================================
+ // POST /api/v1/items/batch  (массовое сохранение товаров)
+ // ИСПРАВЛЕНИЕ: Добавлено подробное логирование clientId из тела запроса
+ // для однозначной диагностики проблем с client_id = -1.
+ // =========================================================================
     void handleAddItemsBatch(const std::string& client_ip) {
         // 1. Проверка авторизации
         std::string authHeader;
         auto it = request_.find(http::field::authorization);
         if (it != request_.end()) authHeader = it->value();
+
         if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
             response_.result(http::status::unauthorized);
             response_.body() = json{ {"error", "Missing or invalid Authorization"} }.dump();
             response_.prepare_payload();
+            g_serverLogger.warning("handleAddItemsBatch: missing auth from " + client_ip);
             return;
         }
+
         std::string token = authHeader.substr(7);
         auto phoneOpt = auth_->verifyJWT(token);
         if (!phoneOpt) {
             response_.result(http::status::unauthorized);
             response_.body() = json{ {"error", "Invalid token"} }.dump();
             response_.prepare_payload();
+            g_serverLogger.warning("handleAddItemsBatch: invalid token from " + client_ip);
             return;
         }
 
@@ -1072,17 +1078,40 @@ private:
             response_.result(http::status::bad_request);
             response_.body() = json{ {"error", "Invalid JSON"} }.dump();
             response_.prepare_payload();
+            g_serverLogger.warning("handleAddItemsBatch: JSON parse error from " + client_ip);
             return;
         }
+
         if (!body.contains("client_id") || !body["client_id"].is_number() ||
             !body.contains("items") || !body["items"].is_array()) {
             response_.result(http::status::bad_request);
             response_.body() = json{ {"error", "Missing client_id or items array"} }.dump();
             response_.prepare_payload();
+            g_serverLogger.warning("handleAddItemsBatch: missing fields from " + client_ip);
             return;
         }
+
         int clientId = body["client_id"].get<int>();
         json items = body["items"];
+
+        // =========================================================================
+        // ИСПРАВЛЕНИЕ: Явная валидация clientId на сервере.
+        // Если клиент прислал clientId <= 0 (например, -1 из-за ошибки UI),
+        // немедленно возвращаем 400 Bad Request без обращения к БД.
+        // =========================================================================
+        if (clientId <= 0) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid client_id: must be positive"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.error("handleAddItemsBatch: received invalid clientId=" +
+                std::to_string(clientId) + " from " + client_ip +
+                " (worker phone: " + *phoneOpt + ")");
+            return;
+        }
+
+        g_serverLogger.info("handleAddItemsBatch: clientId=" + std::to_string(clientId) +
+            ", itemsCount=" + std::to_string(items.size()) +
+            ", worker=" + *phoneOpt + ", from=" + client_ip);
 
         // 3. Проверяем аутентификацию и роль
         auto clientOpt = db_->getClientByPhone(*phoneOpt);
@@ -1090,27 +1119,27 @@ private:
             response_.result(http::status::forbidden);
             response_.body() = json{ {"error", "Access denied: user not found"} }.dump();
             response_.prepare_payload();
+            g_serverLogger.warning("handleAddItemsBatch: user not found for phone " + *phoneOpt);
             return;
         }
 
-        // === ИСПРАВЛЕНИЕ: товаровед (worker) может добавлять товары для ЛЮБОГО клиента,
-        //    т.к. он принимает товар от клиентов в очереди. Обычный клиент — только в свою карточку. ===
+        // Товаровед (worker) может добавлять товары для ЛЮБОГО клиента
         if (clientOpt->role != "worker") {
             if (clientOpt->id != clientId) {
                 response_.result(http::status::forbidden);
                 response_.body() = json{ {"error", "Access denied"} }.dump();
                 response_.prepare_payload();
+                g_serverLogger.warning("handleAddItemsBatch: non-worker access denied for " + *phoneOpt);
                 return;
             }
         }
-        // Для worker'а проверка clientOpt->id != clientId НЕ выполняется — доступ разрешен
 
-        // === проверка роли (оставляем для явности: только worker может использовать batch) ===
+        // Проверка роли: только worker может использовать batch
         if (clientOpt->role != "worker") {
             response_.result(http::status::forbidden);
             response_.body() = json{ {"error", "Access denied: worker role required"} }.dump();
             response_.prepare_payload();
-            g_serverLogger.warning("Non-worker tried to add items: " + *phoneOpt);
+            g_serverLogger.warning("handleAddItemsBatch: non-worker tried to add items: " + *phoneOpt);
             return;
         }
 
@@ -1124,7 +1153,7 @@ private:
         else {
             response_.result(http::status::internal_server_error);
             response_.body() = json{ {"error", "Failed to save items"} }.dump();
-            g_serverLogger.error("handleAddItemsBatch: failed for client " + std::to_string(clientId));
+            g_serverLogger.error("handleAddItemsBatch: FAILED for client " + std::to_string(clientId));
         }
         response_.prepare_payload();
     }
