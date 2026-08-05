@@ -562,9 +562,29 @@ private:
     }
 
     void onItemSave() {
-        if (m_isSaving) return;
+        if (m_isSaving) {
+            g_logger.warning(L"onItemSave: already saving, ignoring duplicate request");
+            return;
+        }
+
         if (m_tempItems.empty()) {
             MessageBoxW(m_hWnd, L"Нет позиций для сохранения", L"Внимание", MB_OK);
+            return;
+        }
+
+        // =========================================================================
+        // ИСПРАВЛЕНИЕ: Валидация m_currentClientId ДО отправки запроса.
+        // Если товаровед не нажал «Принять» и не выбрал талон, m_currentClientId
+        // остаётся -1 (из createControls). В этом случае отправка невозможна.
+        // =========================================================================
+        if (m_currentClientId <= 0) {
+            g_logger.error(L"onItemSave: BLOCKED - m_currentClientId=" +
+                std::to_wstring(m_currentClientId) +
+                L" (invalid). Ticket was not accepted via Accept button.");
+            MessageBoxW(m_hWnd,
+                L"Ошибка: клиент не выбран.\n"
+                L"Необходимо выбрать талон из очереди и нажать кнопку «Принять».",
+                L"Ошибка", MB_OK | MB_ICONERROR);
             return;
         }
 
