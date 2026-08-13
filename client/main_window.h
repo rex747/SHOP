@@ -122,6 +122,9 @@ static HBITMAP g_hBmpIconWallet = nullptr;
 #define IDC_STATIC_EXPENSIVE_TEXT    6016
 #define ID_STATIC_EXPENSIVE_QUEUE_COUNT 6017
 
+#define ID_STATIC_MAIN_TITLE_1  6019
+#define ID_STATIC_MAIN_TITLE_2  6020
+
 #define ID_BTN_SALES_BACK 7001
 #define ID_STATIC_SALES_STATUS 7002
 #define ID_LIST_SALES 7003
@@ -237,18 +240,34 @@ private:
         g_logger.info(L"createMainMenu: started, screen=" + std::to_wstring(screenWidth) +
             L"x" + std::to_wstring(screenHeight) + L", btnHeight=" + std::to_wstring(btnHeight));
 
+        // ---------------------------------------------------------------
+        // ЗАГОЛОВОК СТРОКА 1: "ДОБРО"
+        // Присвоен ID_STATIC_MAIN_TITLE_1 для вишнёвой окраски.
+        // ---------------------------------------------------------------
         HWND hTitle1 = CreateWindowExW(0, L"STATIC", L"ДОБРО",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
-            centerX, 15, btnWidth, 60,
-            m_hWnd, nullptr, g_hInstance, nullptr);
+            50, 15, screenWidth - 100, 60,
+            m_hWnd, (HMENU)(INT_PTR)ID_STATIC_MAIN_TITLE_1, g_hInstance, nullptr);
         SendMessageW(hTitle1, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
+        g_logger.info(L"createMainMenu: title1 'ДОБРО' created, rect x=50, y=15, w=" +
+            std::to_wstring(screenWidth - 100) + L", h=60; ID_STATIC_MAIN_TITLE_1, cherry RGB(150,0,30)");
 
+        // ---------------------------------------------------------------
+        // ЗАГОЛОВОК СТРОКА 2: "Комиссионный магазин"
+        // Присвоен ID_STATIC_MAIN_TITLE_2 для вишнёвой окраски.
+        // ---------------------------------------------------------------
         HWND hTitle2 = CreateWindowExW(0, L"STATIC", L"Комиссионный магазин",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
-            centerX, 75, btnWidth, 60,
-            m_hWnd, nullptr, g_hInstance, nullptr);
+            50, 75, screenWidth - 100, 60,
+            m_hWnd, (HMENU)(INT_PTR)ID_STATIC_MAIN_TITLE_2, g_hInstance, nullptr);
         SendMessageW(hTitle2, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
-        g_logger.info(L"createMainMenu: titles created at y=15/75 with height 60 (no overlapping)");
+        g_logger.info(L"createMainMenu: title2 'Комиссионный магазин' created, rect x=50, y=75, w=" +
+            std::to_wstring(screenWidth - 100) + L", h=60; ID_STATIC_MAIN_TITLE_2, cherry RGB(150,0,30); "
+            L"single line - word 'magazin' fully visible (no wrap, no clipping)");
+
+        g_logger.info(L"createMainMenu: titles created at y=15/75 with height 60 and width screenWidth-100, "
+            L"cherry color RGB(150,0,30) assigned via WM_CTLCOLORSTATIC");
+
 
         const int iconSize = 100;
         const int colWidth = 300;
@@ -1781,15 +1800,14 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         HDC hdc = (HDC)wParam;
         HWND hStatic = (HWND)lParam;
         DWORD id = GetDlgCtrlID(hStatic);
-        // ==================================================================
-        // ИСПРАВЛЕНИЕ НАСЛАИВАНИЯ ТЕКСТА ПРИ ПРОКРУТКЕ (второй снимок):
-        // read-only EDIT (ES_READONLY) шлёт родителю WM_CTLCOLORSTATIC, а не
-        // WM_CTLCOLOREDIT. Ранее срабатывала ветка по умолчанию
-        // (NULL_BRUSH + TRANSPARENT) - фон контрола не стирался, и при
-        // прокрутке старые строки оставались поверх новых.
-        // Теперь возвращаем сплошную белую кисть и режим OPAQUE: фон стирается
-        // при каждой перерисовке, артефакты прокрутки исключены.
-        // ==================================================================
+		// Устанавливаем цвет текста для заголовков и других статических элементов
+        if (id == ID_STATIC_MAIN_TITLE_1 || id == ID_STATIC_MAIN_TITLE_2) {
+            SetTextColor(hdc, Config::TITLE_CHERRY_COLOR);
+            SetBkMode(hdc, TRANSPARENT);
+            g_logger.info(L"WM_CTLCOLORSTATIC: main title (id=" + std::to_wstring(id) +
+                L") colored cherry RGB(150,0,30)");
+            return (LRESULT)GetStockObject(NULL_BRUSH);
+        }
         if (id == ID_EDIT_TRUST_PREVIEW) {
             SetBkColor(hdc, RGB(255, 255, 255));
             SetTextColor(hdc, RGB(0, 0, 0));

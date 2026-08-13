@@ -37,6 +37,7 @@ namespace Config {
     constexpr COLORREF SECONDARY_COLOR = RGB(33, 150, 243);
     constexpr COLORREF ACCENT_COLOR = RGB(255, 87, 34);
     constexpr COLORREF BACK_BUTTON_COLOR = RGB(211, 47, 47);
+	constexpr COLORREF TITLE_CHERRY_COLOR = RGB(150, 0, 30); // для заголовка "ДОБРО КОМИССИОННЫЙ МАГАЗИН" - темно-вишневый цвет
 
     // Paths
     inline std::wstring getAppDataPath() {
