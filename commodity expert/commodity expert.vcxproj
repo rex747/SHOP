@@ -136,6 +136,8 @@
   <ItemGroup>
     <ClInclude Include="auth_manager.h" />
     <ClInclude Include="config.h" />
+    <ClInclude Include="director_window.h" />
+    <ClInclude Include="Header.h" />
     <ClInclude Include="https_client.h" />
     <ClInclude Include="logger.h" />
     <ClInclude Include="login_window.h" />

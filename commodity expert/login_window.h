@@ -31,7 +31,8 @@ private:
     enum LoginResultCode {
         RESULT_NETWORK_ERROR = 0,
         RESULT_SUCCESS = 1,
-        RESULT_NOT_FOUND = 2
+        RESULT_NOT_FOUND = 2,
+		RESULT_BLOCKED = 3
     };
 
     HWND m_hWnd;
@@ -340,6 +341,14 @@ private:
                 m_resultCode = RESULT_NETWORK_ERROR;
                 m_loginSuccess = false;
             }
+			// НОВАЯ ПРОВЕРКА: КЛИЕНТ ЗАБЛОКИРОВАН ДИРЕКТОРОМ
+            // Сервер возвращает HTTP 403 с полем "blocked": true
+            else if (response->contains("blocked") && (*response)["blocked"].get<bool>()) {
+                g_logger.warning(L"[LoginWindow] Client is BLOCKED: " + phoneCopy);
+                m_resultCode = RESULT_BLOCKED;  // НОВЫЙ КОД РЕЗУЛЬТАТА
+                m_loginSuccess = false;
+                m_normalizedPhone = phoneCopy;
+            }
             else if (response->contains("id") && response->contains("name") && response->contains("access_token") && response->contains("refresh_token")) {
                 m_resultCode = RESULT_SUCCESS;
                 m_loginSuccess = true;
@@ -380,6 +389,31 @@ private:
             for (HWND hBtn : m_allKeyButtons) EnableWindow(hBtn, TRUE);
             m_isAuthenticating = false;
             g_logger.info(L"LoginWindow: UI re-enabled after network error");
+            break;
+
+        // =====================================================================
+        // НОВЫЙ CASE: КЛИЕНТ ЗАБЛОКИРОВАН ДИРЕКТОРОМ
+        // Показываем сообщение о блокировке и не пускаем в систему
+        // =====================================================================
+        case RESULT_BLOCKED:
+            g_logger.warning(L"LoginWindow: client BLOCKED, showing message for " +
+                m_normalizedPhone);
+
+            // Показываем сообщение о блокировке
+            MessageBoxW(m_hWnd,
+                L"Ваш аккаунт заблокирован.\n\n"
+                L"Обратитесь к администрации магазина.",
+                L"Доступ запрещён",
+                MB_OK | MB_ICONERROR);
+
+            // Очищаем поле ввода и разблокируем UI
+            SetWindowTextW(m_hPhoneEdit, L"");
+            SetWindowTextW(m_hStatusLabel, L"Аккаунт заблокирован");
+            EnableWindow(m_hSubmitBtn, TRUE);
+            for (HWND hBtn : m_allKeyButtons) EnableWindow(hBtn, TRUE);
+            m_isAuthenticating = false;
+
+            g_logger.info(L"LoginWindow: blocked message shown, UI re-enabled");
             break;
 
         case RESULT_SUCCESS:

@@ -602,6 +602,12 @@ private:
         request["client_id"] = m_currentClientId;
         request["items"] = m_tempItems;
 
+        // НОВОЕ: Передаём ID товароведа для отслеживания эффективности
+        int workerId = g_authManager.getClientId();
+        request["worker_id"] = workerId;
+        g_logger.info(L"onItemSave: sending request with worker_id=" +
+            std::to_wstring(workerId));
+
         // АСИНХРОННОЕ СОХРАНЕНИЕ: выносим POST-запрос из UI-потока
         std::thread([this, request, authToken]() {
             g_logger.info(L"onItemSave: async POST request started");
