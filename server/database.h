@@ -237,6 +237,55 @@ public:
             )");
 
             // ========================================================================
+            // МИГРАЦИЯ: добавление колонки is_blocked для блокировки комитентов
+            // ========================================================================
+            txn.exec(R"(
+             DO $$
+             BEGIN
+                 ALTER TABLE clients ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE;
+             EXCEPTION WHEN duplicate_column THEN
+                 NULL;
+             END $$;
+             )");
+
+            // ========================================================================
+            // МИГРАЦИЯ: добавление колонки worker_id для отслеживания товароведа,
+            // который внёс товар (для оценки эффективности товароведов)
+            // ========================================================================
+            txn.exec(R"(
+             DO $$
+             BEGIN
+                 ALTER TABLE items ADD COLUMN IF NOT EXISTS worker_id INTEGER REFERENCES clients(id);
+             EXCEPTION WHEN duplicate_column THEN
+                 NULL;
+             END $$;
+             )");
+
+            // ========================================================================
+            // МИГРАЦИЯ: добавление колонки blocked_at для фиксации времени блокировки
+            // ========================================================================
+            txn.exec(R"(
+             DO $$
+             BEGIN
+                 ALTER TABLE clients ADD COLUMN IF NOT EXISTS blocked_at BIGINT;
+             EXCEPTION WHEN duplicate_column THEN
+                 NULL;
+             END $$;
+             )");
+
+            // ========================================================================
+            // МИГРАЦИЯ: добавление колонки blocked_by для фиксации кто заблокировал
+            // ========================================================================
+            txn.exec(R"(
+             DO $$
+             BEGIN
+                 ALTER TABLE clients ADD COLUMN IF NOT EXISTS blocked_by INTEGER REFERENCES clients(id);
+             EXCEPTION WHEN duplicate_column THEN
+                 NULL;
+             END $$;
+             )");
+
+            // ========================================================================
             // Индексы
             // ========================================================================
             txn.exec("CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(phone)");
@@ -246,6 +295,18 @@ public:
             txn.exec("CREATE INDEX IF NOT EXISTS idx_trust_acceptances_status ON trust_acceptances(status)");
             txn.exec("CREATE INDEX IF NOT EXISTS idx_queue_tickets_status ON queue_tickets(status)");
             txn.exec("CREATE INDEX IF NOT EXISTS idx_first_time_tickets_status ON first_time_tickets(status)");
+            // ========================================================================
+            // ИНДЕКС для быстрого поиска заблокированных клиентов
+            // ========================================================================
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_clients_is_blocked ON clients(is_blocked)");
+
+            // ========================================================================
+            // ИНДЕКС для быстрого поиска товаров по товароведу
+            // ========================================================================
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_items_worker_id ON items(worker_id)");
+            // ИНДЕКС для быстрого поиска товаров по статусу (low_quality)
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_items_status ON items(status)");
+            g_serverLogger.info("Migration: idx_items_status index created");
 
             txn.commit();
             g_serverLogger.info("Database initialized successfully");
@@ -468,7 +529,7 @@ public:
     // Обработчики очереди "На доверии"
     // ===== ДОПОЛНЕНИЯ ДЛЯ ОЧЕРЕДИ trust =====
 
-// Получить список ожидающих талонов trust
+    // Получить список ожидающих талонов trust
     std::vector<json> getWaitingTrustTickets() {
         std::vector<json> result;
         try {
@@ -932,32 +993,35 @@ public:
     }
 
     /**
-     * Пакетное добавление нескольких товаров для одного клиента.
-     * ИСПРАВЛЕНИЕ: getNextItemNumber теперь вызывается с передачей текущей
-     * транзакции txn, что исключает конфликт "Started new transaction while
-     * transaction was still active".
-     *
-     * @param clientId ID клиента
-     * @param items массив JSON-объектов с полями: description, estimated_price,
-     *              quantity, condition, note
-     * @return true если все добавлены успешно
-     */
-    bool addItemsBatch(int clientId, const json& items) {
+  * Пакетное добавление нескольких товаров для одного клиента.
+  *
+  * ИСПРАВЛЕНИЕ E0140: Добавлен параметр workerId (по умолчанию 0).
+  * Теперь сигнатура: addItemsBatch(clientId, items, workerId)
+  *
+  * workerId — ID товароведа, который вносит товары.
+  * Сохраняется для ВСЕХ очередей (общая, +20, доверие, платный, дорогой),
+  * т.к. вызов идёт через единый эндпоинт /api/v1/items/batch.
+  *
+  * @param clientId ID клиента (комитента)
+  * @param items массив JSON-объектов с полями: description, estimated_price,
+  *              quantity, condition, note
+  * @param workerId ID товароведа, который вносит товары (0 = не указан)
+  * @return true если все добавлены успешно
+  */
+    bool addItemsBatch(int clientId, const json& items, int workerId = 0) {
         if (!items.is_array() || items.empty()) {
             g_serverLogger.warning("addItemsBatch: empty or invalid items array");
             return false;
         }
-
         try {
             pqxx::work txn{ *conn_ };
-
-            // ИСПРАВЛЕНИЕ: Передаём txn в getNextItemNumber вместо создания
-            // новой транзакции внутри него.
+            // getNextItemNumber выполняется в рамках текущей транзакции txn
             int nextNumber = getNextItemNumber(clientId, txn);
 
             g_serverLogger.info("addItemsBatch: clientId=" + std::to_string(clientId) +
                 ", itemsCount=" + std::to_string(items.size()) +
-                ", startingNumber=" + std::to_string(nextNumber));
+                ", startingNumber=" + std::to_string(nextNumber) +
+                ", workerId=" + std::to_string(workerId));
 
             for (const auto& item : items) {
                 std::string desc = item.value("description", "");
@@ -966,19 +1030,40 @@ public:
                 std::string condition = item.value("condition", "");
                 std::string note = item.value("note", "");
 
-                txn.exec(
-                    "INSERT INTO items (client_id, item_number, description, estimated_price, "
-                    "quantity, condition, note) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                    pqxx::params{ clientId, nextNumber++, desc, price, quantity,
-                                  condition.empty() ? std::optional<std::string>{} : condition,
-                                  note.empty() ? std::optional<std::string>{} : note }
-                );
+                // =====================================================================
+                // Вставляем товар с worker_id для отслеживания эффективности
+                // товароведа. Работает для ВСЕХ типов очередей.
+                // =====================================================================
+                if (workerId > 0) {
+                    txn.exec(
+                        "INSERT INTO items (client_id, item_number, description, estimated_price, "
+                        "quantity, condition, note, worker_id) "
+                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                        pqxx::params{ clientId, nextNumber++, desc, price, quantity,
+                                      condition.empty() ? std::optional<std::string>{} : condition,
+                                      note.empty() ? std::optional<std::string>{} : note,
+                                      workerId }
+                    );
+                }
+                else {
+                    // Если workerId не указан (для обратной совместимости)
+                    txn.exec(
+                        "INSERT INTO items (client_id, item_number, description, estimated_price, "
+                        "quantity, condition, note) "
+                        "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                        pqxx::params{ clientId, nextNumber++, desc, price, quantity,
+                                      condition.empty() ? std::optional<std::string>{} : condition,
+                                      note.empty() ? std::optional<std::string>{} : note }
+                    );
+                }
             }
 
             txn.commit();
+
             g_serverLogger.info("addItemsBatch: successfully added " +
-                std::to_string(items.size()) + " items for client " + std::to_string(clientId));
+                std::to_string(items.size()) + " items for client " +
+                std::to_string(clientId) + " by worker " + std::to_string(workerId));
+
             return true;
         }
         catch (const std::exception& e) {
@@ -986,4 +1071,387 @@ public:
             return false;
         }
     }
+
+    // =========================================================================
+    // НОВЫЕ МЕТОДЫ ДЛЯ ПАНЕЛИ ДИРЕКТОРА
+    
+    // =========================================================================
+
+    /**
+     * @brief Проверяет, заблокирован ли клиент по ID
+     * @param clientId ID клиента
+     * @return true если клиент заблокирован
+     */
+    bool isClientBlocked(int clientId) {
+        try {
+            pqxx::work txn{ *conn_ };
+            auto result = txn.exec(
+                "SELECT is_blocked FROM clients WHERE id = $1",
+                pqxx::params{ clientId }
+            );
+            if (result.empty()) return false;
+            bool blocked = result[0]["is_blocked"].as<bool>();
+            g_serverLogger.info("isClientBlocked: clientId=" + std::to_string(clientId) +
+                ", blocked=" + std::to_string(blocked));
+            return blocked;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("isClientBlocked error: " + std::string(e.what()));
+            return false;
+        }
+    }
+
+    /**
+     * @brief Проверяет, заблокирован ли клиент по телефону
+     * @param phone Телефон клиента
+     * @return true если клиент заблокирован
+     */
+    bool isClientBlockedByPhone(const std::string& phone) {
+        try {
+            pqxx::work txn{ *conn_ };
+            auto result = txn.exec(
+                "SELECT is_blocked FROM clients WHERE phone = $1",
+                pqxx::params{ phone }
+            );
+            if (result.empty()) return false;
+            bool blocked = result[0]["is_blocked"].as<bool>();
+            g_serverLogger.info("isClientBlockedByPhone: phone=" + phone +
+                ", blocked=" + std::to_string(blocked));
+            return blocked;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("isClientBlockedByPhone error: " + std::string(e.what()));
+            return false;
+        }
+    }
+
+    /**
+     * @brief Блокирует или разблокирует клиента
+     * @param clientId ID клиента для блокировки
+     * @param blocked true - заблокировать, false - разблокировать
+     * @param directorId ID директора, выполняющего блокировку
+     * @return true при успешном выполнении
+     */
+    bool setClientBlocked(int clientId, bool blocked, int directorId) {
+        try {
+            pqxx::work txn{ *conn_ };
+
+            if (blocked) {
+                // Блокировка: устанавливаем is_blocked = TRUE, blocked_at, blocked_by
+                auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                txn.exec(
+                    "UPDATE clients SET is_blocked = TRUE, blocked_at = $2, blocked_by = $3, "
+                    "updated_at = EXTRACT(EPOCH FROM NOW()) WHERE id = $1",
+                    pqxx::params{ clientId, now, directorId }
+                );
+                g_serverLogger.info("setClientBlocked: BLOCKED clientId=" + std::to_string(clientId) +
+                    " by directorId=" + std::to_string(directorId));
+            }
+            else {
+                // Разблокировка: устанавливаем is_blocked = FALSE, очищаем blocked_at, blocked_by
+                txn.exec(
+                    "UPDATE clients SET is_blocked = FALSE, blocked_at = NULL, blocked_by = NULL, "
+                    "updated_at = EXTRACT(EPOCH FROM NOW()) WHERE id = $1",
+                    pqxx::params{ clientId }
+                );
+                g_serverLogger.info("setClientBlocked: UNBLOCKED clientId=" + std::to_string(clientId) +
+                    " by directorId=" + std::to_string(directorId));
+            }
+
+            txn.commit();
+            return true;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("setClientBlocked error: " + std::string(e.what()));
+            return false;
+        }
+    }
+
+    /**
+     * @brief Получает полную статистику для панели директора
+     * Включает: данные о комитентах, эффективность товароведов, не проданные товары
+     * @return JSON объект со статистикой
+     */
+    json getDirectorStats() {
+        json result;
+        try {
+            pqxx::work txn{ *conn_ };
+
+            // =====================================================================
+            // 1. СТАТИСТИКА ПО ВСЕМ КОМИТЕНТАМ
+            // Для каждого комитента: сколько всего сдал товаров, на какую сумму
+            // =====================================================================
+            json clientsArray = json::array();
+            auto clientsResult = txn.exec(
+                "SELECT c.id, c.phone, c.last_name, c.first_name, c.middle_name, "
+                "c.email, c.items_submitted, c.items_sold, c.is_blocked, c.blocked_at, "
+                "COALESCE(SUM(i.quantity), 0) as total_items_count, "
+                "COALESCE(SUM(i.estimated_price * i.quantity), 0) as total_items_value, "
+                "COALESCE(SUM(CASE WHEN i.status = 'sold' THEN i.quantity ELSE 0 END), 0) as sold_items_count, "
+                "COALESCE(SUM(CASE WHEN i.status = 'sold' THEN i.estimated_price * i.quantity ELSE 0 END), 0) as sold_items_value, "
+                "COALESCE(SUM(CASE WHEN i.status = 'low_quality' OR i.status = 'unsold_quality' THEN i.quantity ELSE 0 END), 0) as low_quality_count, "
+                "COALESCE(SUM(CASE WHEN i.status = 'low_quality' OR i.status = 'unsold_quality' THEN i.estimated_price * i.quantity ELSE 0 END), 0) as low_quality_value "
+                "FROM clients c "
+                "LEFT JOIN items i ON c.id = i.client_id "
+                "WHERE c.role = 'client' OR c.role IS NULL "
+                "GROUP BY c.id, c.phone, c.last_name, c.first_name, c.middle_name, "
+                "c.email, c.items_submitted, c.items_sold, c.is_blocked, c.blocked_at "
+                "ORDER BY c.last_name, c.first_name"
+            );
+
+            for (const auto& row : clientsResult) {
+                json client;
+                client["id"] = row["id"].as<int>();
+                client["phone"] = row["phone"].as<std::string>();
+
+                std::string last = row["last_name"].as<std::string>();
+                std::string first = row["first_name"].as<std::string>();
+                std::string mid = row["middle_name"].is_null() ? "" : row["middle_name"].as<std::string>();
+                client["full_name"] = last + " " + first + (mid.empty() ? "" : " " + mid);
+
+                client["email"] = row["email"].is_null() ? "" : row["email"].as<std::string>();
+                client["items_submitted"] = row["items_submitted"].as<int>();
+                client["items_sold"] = row["items_sold"].as<int>();
+                client["is_blocked"] = row["is_blocked"].as<bool>();
+
+                if (!row["blocked_at"].is_null()) {
+                    client["blocked_at"] = row["blocked_at"].as<int64_t>();
+                }
+                else {
+                    client["blocked_at"] = nullptr;
+                }
+
+                client["total_items_count"] = row["total_items_count"].as<int>();
+                client["total_items_value"] = row["total_items_value"].as<double>();
+                client["sold_items_count"] = row["sold_items_count"].as<int>();
+                client["sold_items_value"] = row["sold_items_value"].as<double>();
+                client["low_quality_count"] = row["low_quality_count"].as<int>();
+                client["low_quality_value"] = row["low_quality_value"].as<double>();
+
+                // Вычисляем количество не проданных товаров (не продано из-за низкого качества)
+                int totalItems = row["total_items_count"].as<int>();
+                int soldItems = row["sold_items_count"].as<int>();
+                int lowQualityItems = row["low_quality_count"].as<int>();
+                client["unsold_count"] = totalItems - soldItems - lowQualityItems;
+
+                clientsArray.push_back(client);
+
+                g_serverLogger.info("getDirectorStats: client id=" + std::to_string(row["id"].as<int>()) +
+                    ", phone=" + row["phone"].as<std::string>() +
+                    ", total_items=" + std::to_string(row["total_items_count"].as<int>()) +
+                    ", total_value=" + std::to_string(row["total_items_value"].as<double>()) +
+                    ", sold_value=" + std::to_string(row["sold_items_value"].as<double>()) +
+                    ", low_quality=" + std::to_string(row["low_quality_count"].as<int>()));
+            }
+            result["clients"] = clientsArray;
+
+            // =====================================================================
+            // 2. ЭФФЕКТИВНОСТЬ ТОВАРОВЕДОВ
+            // Для каждого товароведа: на какую сумму вносит товары в БД,
+            // на какую сумму продано товаров
+            // =====================================================================
+            json workersArray = json::array();
+            auto workersResult = txn.exec(
+                "SELECT w.id, w.phone, w.last_name, w.first_name, w.middle_name, "
+                "w.email, "
+                "COALESCE(SUM(i.estimated_price * i.quantity), 0) as total_entered_value, "
+                "COALESCE(COUNT(i.id), 0) as total_entered_count, "
+                "COALESCE(SUM(CASE WHEN i.status = 'sold' THEN i.estimated_price * i.quantity ELSE 0 END), 0) as total_sold_value, "
+                "COALESCE(SUM(CASE WHEN i.status = 'sold' THEN i.quantity ELSE 0 END), 0) as total_sold_count "
+                "FROM clients w "
+                "LEFT JOIN items i ON w.id = i.worker_id "
+                "WHERE w.role = 'worker' "
+                "GROUP BY w.id, w.phone, w.last_name, w.first_name, w.middle_name, w.email "
+                "ORDER BY total_entered_value DESC"
+            );
+
+            for (const auto& row : workersResult) {
+                json worker;
+                worker["id"] = row["id"].as<int>();
+                worker["phone"] = row["phone"].as<std::string>();
+
+                std::string last = row["last_name"].as<std::string>();
+                std::string first = row["first_name"].as<std::string>();
+                std::string mid = row["middle_name"].is_null() ? "" : row["middle_name"].as<std::string>();
+                worker["full_name"] = last + " " + first + (mid.empty() ? "" : " " + mid);
+
+                worker["email"] = row["email"].is_null() ? "" : row["email"].as<std::string>();
+                worker["total_entered_value"] = row["total_entered_value"].as<double>();
+                worker["total_entered_count"] = row["total_entered_count"].as<int>();
+                worker["total_sold_value"] = row["total_sold_value"].as<double>();
+                worker["total_sold_count"] = row["total_sold_count"].as<int>();
+
+                // Вычисляем эффективность (процент проданного)
+                double enteredValue = row["total_entered_value"].as<double>();
+                double soldValue = row["total_sold_value"].as<double>();
+                double efficiency = (enteredValue > 0) ? (soldValue / enteredValue * 100.0) : 0.0;
+                worker["efficiency_percent"] = efficiency;
+
+                workersArray.push_back(worker);
+
+                g_serverLogger.info("getDirectorStats: worker id=" + std::to_string(row["id"].as<int>()) +
+                    ", phone=" + row["phone"].as<std::string>() +
+                    ", entered_value=" + std::to_string(row["total_entered_value"].as<double>()) +
+                    ", sold_value=" + std::to_string(row["total_sold_value"].as<double>()) +
+                    ", efficiency=" + std::to_string(efficiency) + "%");
+            }
+            result["workers"] = workersArray;
+
+            // =====================================================================
+            // 3. ТОВАРЫ НЕ ПРОДАННЫЕ ИЗ-ЗА НИЗКОГО КАЧЕСТВА
+            // =====================================================================
+            json lowQualityArray = json::array();
+            auto lowQualityResult = txn.exec(
+                "SELECT i.id, i.item_number, i.description, i.estimated_price, "
+                "i.quantity, i.condition, i.note, i.created_at, i.status, "
+                "c.id as client_id, c.phone as client_phone, "
+                "c.last_name || ' ' || c.first_name as client_name, "
+                "w.id as worker_id, w.last_name || ' ' || w.first_name as worker_name "
+                "FROM items i "
+                "JOIN clients c ON i.client_id = c.id "
+                "LEFT JOIN clients w ON i.worker_id = w.id "
+                "WHERE i.status = 'low_quality' OR i.status = 'unsold_quality' "
+                "ORDER BY i.created_at DESC"
+            );
+
+            for (const auto& row : lowQualityResult) {
+                json item;
+                item["id"] = row["id"].as<int>();
+                item["item_number"] = row["item_number"].as<int>();
+                item["description"] = row["description"].as<std::string>();
+                item["estimated_price"] = row["estimated_price"].as<double>();
+                item["quantity"] = row["quantity"].as<int>();
+                item["condition"] = row["condition"].is_null() ? "" : row["condition"].as<std::string>();
+                item["note"] = row["note"].is_null() ? "" : row["note"].as<std::string>();
+                item["created_at"] = row["created_at"].as<int64_t>();
+                item["status"] = row["status"].as<std::string>();
+                item["client_id"] = row["client_id"].as<int>();
+                item["client_phone"] = row["client_phone"].as<std::string>();
+                item["client_name"] = row["client_name"].as<std::string>();
+                item["worker_name"] = row["worker_name"].is_null() ? "" : row["worker_name"].as<std::string>();
+
+                lowQualityArray.push_back(item);
+
+                g_serverLogger.info("getDirectorStats: low_quality item id=" +
+                    std::to_string(row["id"].as<int>()) +
+                    ", desc=" + row["description"].as<std::string>() +
+                    ", price=" + std::to_string(row["estimated_price"].as<double>()));
+            }
+            result["low_quality_items"] = lowQualityArray;
+
+            // =====================================================================
+            // 4. ОБЩАЯ СВОДКА
+            // =====================================================================
+            json summary;
+
+            // Общие суммы по всем комитентам
+            auto summaryResult = txn.exec(
+                "SELECT "
+                "COALESCE(SUM(i.quantity), 0) as total_items, "
+                "COALESCE(SUM(i.estimated_price * i.quantity), 0) as total_value, "
+                "COALESCE(SUM(CASE WHEN i.status = 'sold' THEN i.quantity ELSE 0 END), 0) as total_sold, "
+                "COALESCE(SUM(CASE WHEN i.status = 'sold' THEN i.estimated_price * i.quantity ELSE 0 END), 0) as total_sold_value, "
+                "COALESCE(SUM(CASE WHEN i.status = 'low_quality' OR i.status = 'unsold_quality' THEN i.quantity ELSE 0 END), 0) as total_low_quality, "
+                "COALESCE(SUM(CASE WHEN i.status = 'low_quality' OR i.status = 'unsold_quality' THEN i.estimated_price * i.quantity ELSE 0 END), 0) as total_low_quality_value, "
+                "COUNT(DISTINCT c.id) as total_clients, "
+                "COUNT(DISTINCT CASE WHEN c.is_blocked = TRUE THEN c.id END) as blocked_clients_count "
+                "FROM items i "
+                "LEFT JOIN clients c ON i.client_id = c.id"
+            );
+
+            if (!summaryResult.empty()) {
+                summary["total_items"] = summaryResult[0]["total_items"].as<int>();
+                summary["total_value"] = summaryResult[0]["total_value"].as<double>();
+                summary["total_sold"] = summaryResult[0]["total_sold"].as<int>();
+                summary["total_sold_value"] = summaryResult[0]["total_sold_value"].as<double>();
+                summary["total_low_quality"] = summaryResult[0]["total_low_quality"].as<int>();
+                summary["total_low_quality_value"] = summaryResult[0]["total_low_quality_value"].as<double>();
+                summary["total_clients"] = summaryResult[0]["total_clients"].as<int>();
+                summary["blocked_clients_count"] = summaryResult[0]["blocked_clients_count"].as<int>();
+
+                g_serverLogger.info("getDirectorStats: SUMMARY - total_items=" +
+                    std::to_string(summary["total_items"].get<int>()) +
+                    ", total_value=" + std::to_string(summary["total_value"].get<double>()) +
+                    ", total_sold=" + std::to_string(summary["total_sold"].get<int>()) +
+                    ", total_sold_value=" + std::to_string(summary["total_sold_value"].get<double>()) +
+                    ", low_quality=" + std::to_string(summary["total_low_quality"].get<int>()));
+            }
+            result["summary"] = summary;
+
+            g_serverLogger.info("getDirectorStats: completed successfully, clients=" +
+                std::to_string(clientsArray.size()) +
+                ", workers=" + std::to_string(workersArray.size()) +
+                ", low_quality_items=" + std::to_string(lowQualityArray.size()));
+
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getDirectorStats error: " + std::string(e.what()));
+            result["error"] = e.what();
+        }
+
+        return result;
+    }
+
+    /**
+     * @brief Получает список всех клиентов с возможностью фильтрации
+     * @param includeBlocked включать заблокированных клиентов
+     * @return JSON массив клиентов
+     */
+    json getAllClients(bool includeBlocked = true) {
+        json result = json::array();
+        try {
+            pqxx::work txn{ *conn_ };
+
+            std::string query =
+                "SELECT id, phone, last_name, first_name, middle_name, email, "
+                "role, is_blocked, blocked_at, items_submitted, items_sold, created_at "
+                "FROM clients WHERE (role = 'client' OR role IS NULL)";
+
+            if (!includeBlocked) {
+                query += " AND is_blocked = FALSE";
+            }
+
+            query += " ORDER BY last_name, first_name";
+
+            auto res = txn.exec(query);
+
+            for (const auto& row : res) {
+                json client;
+                client["id"] = row["id"].as<int>();
+                client["phone"] = row["phone"].as<std::string>();
+
+                std::string last = row["last_name"].as<std::string>();
+                std::string first = row["first_name"].as<std::string>();
+                std::string mid = row["middle_name"].is_null() ? "" : row["middle_name"].as<std::string>();
+                client["full_name"] = last + " " + first + (mid.empty() ? "" : " " + mid);
+
+                client["email"] = row["email"].is_null() ? "" : row["email"].as<std::string>();
+                client["role"] = row["role"].is_null() ? "client" : row["role"].as<std::string>();
+                client["is_blocked"] = row["is_blocked"].as<bool>();
+                client["items_submitted"] = row["items_submitted"].as<int>();
+                client["items_sold"] = row["items_sold"].as<int>();
+                client["created_at"] = row["created_at"].as<int64_t>();
+
+                if (!row["blocked_at"].is_null()) {
+                    client["blocked_at"] = row["blocked_at"].as<int64_t>();
+                }
+                else {
+                    client["blocked_at"] = nullptr;
+                }
+
+                result.push_back(client);
+            }
+
+            g_serverLogger.info("getAllClients: returned " + std::to_string(result.size()) +
+                " clients, includeBlocked=" + std::to_string(includeBlocked));
+
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getAllClients error: " + std::string(e.what()));
+        }
+
+        return result;
+    }
+
 };

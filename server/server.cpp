@@ -185,6 +185,22 @@ private:
             else if (target == "/api/v1/items/batch" && method == http::verb::post) {
                 handleAddItemsBatch(client_ip);
             }
+            // =========================================================================
+            // НОВЫЕ РОУТЫ ДЛЯ ПАНЕЛИ ДИРЕКТОРА МАГАЗИНА
+            // =========================================================================
+
+            // GET /api/v1/director/stats - получение полной статистики для директора
+            else if (target.find("/api/v1/director/stats") == 0 && method == http::verb::get) {
+                handleDirectorStats(client_ip);
+            }
+            // POST /api/v1/director/block_client - блокировка/разблокировка клиента
+            else if (target == "/api/v1/director/block_client" && method == http::verb::post) {
+                handleDirectorBlockClient(client_ip);
+            }
+            // GET /api/v1/director/clients - получение списка всех клиентов
+            else if (target.find("/api/v1/director/clients") == 0 && method == http::verb::get) {
+                handleDirectorGetClients(client_ip);
+            }
             else {
                 g_serverLogger.warning("Routing request: " + std::string(http::to_string(method)) + " " + std::string(target) + " -> Not found");
                 response_.result(http::status::not_found);
@@ -334,6 +350,22 @@ private:
             response_.body() = json{ {"error", "Client not found"} }.dump();
             response_.prepare_payload();
             g_serverLogger.warning("Client not found for phone: " + phone);
+            return;
+        }
+
+        // =====================================================================
+        // ПРОВЕРКА БЛОКИРОВКИ КЛИЕНТА
+        // Если клиент заблокирован директором, возвращаем ошибку с сообщением
+        // =====================================================================
+        if (db_->isClientBlockedByPhone(phone)) {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            json blockedResponse;
+            blockedResponse["error"] = "Ваш аккаунт заблокирован. Обратитесь к администрации магазина";
+            blockedResponse["blocked"] = true;
+            response_.body() = blockedResponse.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("BLOCKED client attempted login: phone=" + phone + " from " + client_ip);
             return;
         }
 
@@ -1043,10 +1075,10 @@ private:
     }
 
     // =========================================================================
- // POST /api/v1/items/batch  (массовое сохранение товаров)
- // ИСПРАВЛЕНИЕ: Добавлено подробное логирование clientId из тела запроса
- // для однозначной диагностики проблем с client_id = -1.
- // =========================================================================
+    // POST /api/v1/items/batch  (массовое сохранение товаров)
+    // ИСПРАВЛЕНИЕ: Добавлено подробное логирование clientId из тела запроса
+    // для однозначной диагностики проблем с client_id = -1.
+    // =========================================================================
     void handleAddItemsBatch(const std::string& client_ip) {
         // 1. Проверка авторизации
         std::string authHeader;
@@ -1093,7 +1125,7 @@ private:
 
         int clientId = body["client_id"].get<int>();
         json items = body["items"];
-
+        
         // =========================================================================
         // ИСПРАВЛЕНИЕ: Явная валидация clientId на сервере.
         // Если клиент прислал clientId <= 0 (например, -1 из-за ошибки UI),
@@ -1142,9 +1174,15 @@ private:
             g_serverLogger.warning("handleAddItemsBatch: non-worker tried to add items: " + *phoneOpt);
             return;
         }
+        int workerId = clientOpt->id;
+
+        g_serverLogger.info("handleAddItemsBatch: clientId=" + std::to_string(clientId) +
+            ", itemsCount=" + std::to_string(items.size()) +
+            ", workerId=" + std::to_string(workerId) +
+            ", workerPhone=" + *phoneOpt + ", from=" + client_ip);
 
         // 4. Сохраняем товары
-        if (db_->addItemsBatch(clientId, items)) {
+        if (db_->addItemsBatch(clientId, items, workerId)) {
             response_.result(http::status::ok);
             response_.body() = json{ {"success", true} }.dump();
             g_serverLogger.info("handleAddItemsBatch: saved " + std::to_string(items.size()) +
@@ -1165,6 +1203,325 @@ private:
         response_.set(http::field::content_type, "application/json");
         response_.body() = json{ {"success", success} }.dump();
         response_.prepare_payload();
+    }
+
+    // =========================================================================
+// ОБРАБОТЧИКИ ДЛЯ ПАНЕЛИ ДИРЕКТОРА МАГАЗИНА
+// =========================================================================
+
+/**
+ * @brief Обработчик GET /api/v1/director/stats
+ * Возвращает полную статистику для панели директора:
+ * - Данные о всех комитентах (сдано товаров, суммы)
+ * - Эффективность товароведов (внесено в БД, продано)
+ * - Не проданные товары из-за низкого качества
+ *
+ * ДОСТУП: только для роли 'director' (проверка по телефону +79914869324)
+ */
+    void handleDirectorStats(const std::string& client_ip) {
+        g_serverLogger.info("handleDirectorStats: request from " + client_ip);
+
+        // 1. Проверка авторизации (извлекаем токен)
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) authHeader = it->value();
+
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Missing or invalid Authorization header"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorStats: missing auth from " + client_ip);
+            return;
+        }
+
+        std::string token = authHeader.substr(7); // отрезаем "Bearer "
+
+        // 2. Проверяем токен через AuthService
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid or expired token"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorStats: invalid token from " + client_ip);
+            return;
+        }
+
+        // 3. ПРОВЕРКА РОЛИ ДИРЕКТОРА
+        // Директор магазина определяется по телефону +79914869324
+        // Это захардкоженная проверка согласно требованиям задания
+        constexpr const char* DIRECTOR_PHONE = "+79914869324";
+        if (*phoneOpt != DIRECTOR_PHONE) {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Access denied: director role required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorStats: access denied for phone=" + *phoneOpt +
+                " from " + client_ip + " (director phone required: " + DIRECTOR_PHONE + ")");
+            return;
+        }
+
+        g_serverLogger.info("handleDirectorStats: director authenticated, phone=" + *phoneOpt);
+
+        // 4. Получаем статистику из БД
+        json stats = db_->getDirectorStats();
+
+        // 5. Проверяем, что статистика получена успешно
+        if (stats.contains("error")) {
+            response_.result(http::status::internal_server_error);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Failed to get director stats"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.error("handleDirectorStats: failed to get stats from DB");
+            return;
+        }
+
+        // 6. Отправляем успешный ответ
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = stats.dump();
+        response_.prepare_payload();
+
+        g_serverLogger.info("handleDirectorStats: stats returned successfully to director from " + client_ip);
+    }
+
+    /**
+     * @brief Обработчик POST /api/v1/director/block_client
+     * Блокирует или разблокирует клиента по ID
+     *
+     * Тело запроса:
+     * {
+     *   "client_id": 123,
+     *   "blocked": true  // true - заблокировать, false - разблокировать
+     * }
+     *
+     * ДОСТУП: только для роли 'director' (проверка по телефону +79914869324)
+     */
+    void handleDirectorBlockClient(const std::string& client_ip) {
+        g_serverLogger.info("handleDirectorBlockClient: request from " + client_ip);
+
+        // 1. Проверка авторизации
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) authHeader = it->value();
+
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Missing or invalid Authorization header"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorBlockClient: missing auth from " + client_ip);
+            return;
+        }
+
+        std::string token = authHeader.substr(7);
+
+        // 2. Проверяем токен
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid or expired token"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorBlockClient: invalid token from " + client_ip);
+            return;
+        }
+
+        // 3. ПРОВЕРКА РОЛИ ДИРЕКТОРА
+        constexpr const char* DIRECTOR_PHONE = "+79914869324";
+        if (*phoneOpt != DIRECTOR_PHONE) {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Access denied: director role required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorBlockClient: access denied for phone=" + *phoneOpt +
+                " from " + client_ip);
+            return;
+        }
+
+        // 4. Получаем ID директора из БД
+        auto directorOpt = db_->getClientByPhone(*phoneOpt);
+        if (!directorOpt) {
+            response_.result(http::status::internal_server_error);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Director not found in database"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.error("handleDirectorBlockClient: director not found in DB, phone=" + *phoneOpt);
+            return;
+        }
+        int directorId = directorOpt->id;
+
+        // 5. Разбор JSON тела запроса
+        json body;
+        try {
+            body = json::parse(request_.body());
+            g_serverLogger.info("handleDirectorBlockClient: parsed body: " + body.dump());
+        }
+        catch (const json::parse_error& e) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorBlockClient: JSON parse error from " + client_ip);
+            return;
+        }
+
+        // 6. Валидация обязательных полей
+        if (!body.contains("client_id") || !body["client_id"].is_number()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Missing or invalid client_id"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorBlockClient: missing client_id from " + client_ip);
+            return;
+        }
+
+        if (!body.contains("blocked") || !body["blocked"].is_boolean()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Missing or invalid blocked field"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorBlockClient: missing blocked field from " + client_ip);
+            return;
+        }
+
+        int clientId = body["client_id"].get<int>();
+        bool blocked = body["blocked"].get<bool>();
+
+        g_serverLogger.info("handleDirectorBlockClient: clientId=" + std::to_string(clientId) +
+            ", blocked=" + std::to_string(blocked) +
+            ", directorId=" + std::to_string(directorId));
+
+        // 7. Проверяем, что клиент существует
+        auto clientOpt = db_->getClientById(clientId);
+        if (!clientOpt) {
+            response_.result(http::status::not_found);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Client not found"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorBlockClient: client not found, id=" +
+                std::to_string(clientId));
+            return;
+        }
+
+        // 8. Проверяем, что не пытаемся заблокировать самого директора или товароведа
+        if (clientOpt->role == "director" || clientOpt->role == "worker") {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Cannot block director or worker account"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorBlockClient: attempted to block non-client role=" +
+                clientOpt->role + ", id=" + std::to_string(clientId));
+            return;
+        }
+
+        // 9. Выполняем блокировку/разблокировку
+        if (db_->setClientBlocked(clientId, blocked, directorId)) {
+            response_.result(http::status::ok);
+            response_.set(http::field::content_type, "application/json");
+            json successResponse;
+            successResponse["success"] = true;
+            successResponse["client_id"] = clientId;
+            successResponse["blocked"] = blocked;
+            successResponse["message"] = blocked ?
+                "Клиент успешно заблокирован" :
+                "Клиент успешно разблокирован";
+            response_.body() = successResponse.dump();
+            response_.prepare_payload();
+
+            g_serverLogger.info("handleDirectorBlockClient: SUCCESS - client " +
+                std::to_string(clientId) + (blocked ? " BLOCKED" : " UNBLOCKED") +
+                " by director " + std::to_string(directorId) + " from " + client_ip);
+        }
+        else {
+            response_.result(http::status::internal_server_error);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Failed to update client blocked status"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.error("handleDirectorBlockClient: FAILED to update blocked status for client " +
+                std::to_string(clientId));
+        }
+    }
+
+    /**
+     * @brief Обработчик GET /api/v1/director/clients
+     * Возвращает список всех клиентов с возможностью фильтрации
+     *
+     * Параметры запроса:
+     * - include_blocked=true|false (по умолчанию true)
+     *
+     * ДОСТУП: только для роли 'director' (проверка по телефону +79914869324)
+     */
+    void handleDirectorGetClients(const std::string& client_ip) {
+        g_serverLogger.info("handleDirectorGetClients: request from " + client_ip);
+
+        // 1. Проверка авторизации
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) authHeader = it->value();
+
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Missing or invalid Authorization header"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorGetClients: missing auth from " + client_ip);
+            return;
+        }
+
+        std::string token = authHeader.substr(7);
+
+        // 2. Проверяем токен
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid or expired token"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorGetClients: invalid token from " + client_ip);
+            return;
+        }
+
+        // 3. ПРОВЕРКА РОЛИ ДИРЕКТОРА
+        constexpr const char* DIRECTOR_PHONE = "+79914869324";
+        if (*phoneOpt != DIRECTOR_PHONE) {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Access denied: director role required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorGetClients: access denied for phone=" + *phoneOpt +
+                " from " + client_ip);
+            return;
+        }
+
+        // 4. Парсим параметр include_blocked из query string
+        std::string query = request_.target();
+        bool includeBlocked = true; // по умолчанию включаем заблокированных
+
+        size_t pos = query.find("?include_blocked=");
+        if (pos != std::string::npos) {
+            std::string value = query.substr(pos + 17);
+            size_t end = value.find('&');
+            if (end != std::string::npos) value = value.substr(0, end);
+
+            includeBlocked = (value == "true" || value == "1");
+        }
+
+        g_serverLogger.info("handleDirectorGetClients: includeBlocked=" +
+            std::to_string(includeBlocked));
+
+        // 5. Получаем список клиентов из БД
+        json clients = db_->getAllClients(includeBlocked);
+
+        // 6. Отправляем ответ
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{ {"clients", clients}, {"count", clients.size()} }.dump();
+        response_.prepare_payload();
+
+        g_serverLogger.info("handleDirectorGetClients: returned " +
+            std::to_string(clients.size()) + " clients to director from " + client_ip);
     }
 
     void doWrite() {
