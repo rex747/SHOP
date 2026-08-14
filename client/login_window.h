@@ -54,7 +54,8 @@ private:
     enum LoginResultCode {
         RESULT_NETWORK_ERROR = 0,
         RESULT_SUCCESS = 1,
-        RESULT_NOT_FOUND = 2
+        RESULT_NOT_FOUND = 2,
+        RESULT_BLOCKED = 3   // НОВЫЙ: клиент заблокирован директором магазина
     };
 
     HWND m_hWnd;
@@ -509,6 +510,23 @@ private:
                 m_loginSuccess = false;
                 g_logger.error(L"LoginWindow: network error for " + phoneCopy);
             }
+            // =====================================================================
+            // НОВАЯ ПРОВЕРКА: КЛИЕНТ ЗАБЛОКИРОВАН ДИРЕКТОРОМ МАГАЗИНА
+            // =====================================================================
+            // Сервер возвращает HTTP 403 с JSON:
+            //   {"error": "Ваш аккаунт заблокирован...", "blocked": true}
+            // WinHTTP успешно получает этот ответ (HTTP 403 не является
+            // транспортной ошибкой для WinHttpReceiveResponse).
+            // Проверяем поле "blocked" ДО проверки полей успешного входа,
+            // чтобы не перепутать блокировку с "пользователь не найден".
+            // =====================================================================
+            else if (response->contains("blocked") && (*response)["blocked"].is_boolean() &&
+                (*response)["blocked"].get<bool>()) {
+                g_logger.warning(L"[LoginWindow] Client is BLOCKED by director: " + phoneCopy);
+                m_resultCode = RESULT_BLOCKED;
+                m_loginSuccess = false;
+                m_normalizedPhone = phoneCopy;
+            }
             else if (response->contains("id") && response->contains("name") &&
                 response->contains("access_token") && response->contains("refresh_token")) {
                 m_resultCode = RESULT_SUCCESS;
@@ -548,6 +566,8 @@ private:
             // просто вернёт FALSE, ничего страшного.
             if (IsWindow(hWndCopy)) {
                 PostMessageW(hWndCopy, WM_LOGIN_RESULT, 0, 0);
+                g_logger.info(L"LoginWindow: posted WM_LOGIN_RESULT, code=" +
+                    std::to_wstring(m_resultCode));
             }
             }).detach();
     }
@@ -577,6 +597,43 @@ private:
             // Sleep в UI-потоке недопустим — окно «зависает».
             SetTimer(m_hWnd, TIMER_ID_CLOSE, 500, nullptr);
             g_logger.info(L"LoginWindow: success, timer set (500 ms)");
+            break;
+
+            // =====================================================================
+            // НОВЫЙ CASE: КЛИЕНТ ЗАБЛОКИРОВАН ДИРЕКТОРОМ МАГАЗИНА
+            // =====================================================================
+            // Показываем модальное сообщение о блокировке. После закрытия
+            // MessageBox очищаем поле ввода и разблокируем UI, чтобы
+            // пользователь мог ввести другой номер.
+            // Флаг loginAttempted НЕ устанавливаем, чтобы вызывающий код
+            // (main_window.h) не перенаправлял на handleFirstTime().
+            // =====================================================================
+        case RESULT_BLOCKED:
+            g_logger.warning(L"LoginWindow: client BLOCKED by director, showing message for " +
+                m_normalizedPhone);
+
+            // Показываем сообщение о блокировке
+            MessageBoxW(m_hWnd,
+                L"Ваш аккаунт заблокирован.\n\n"
+                L"Обратитесь к администрации магазина.",
+                L"Доступ запрещён",
+                MB_OK | MB_ICONERROR);
+
+            // Сбрасываем состояние: очищаем поле, разблокируем UI
+            SetWindowTextW(m_hPhoneEdit, L"");
+            SetWindowTextW(m_hStatusLabel, L"Аккаунт заблокирован");
+            EnableWindow(m_hSubmitBtn, TRUE);
+            for (HWND hBtn : m_allKeyButtons) EnableWindow(hBtn, TRUE);
+            m_isAuthenticating = false;
+
+            // ВАЖНО: Сбрасываем флаг попытки входа.
+            // Если этого не сделать, main_window.h в терминале увидит
+            // wasLoginAttempted() == true и перенаправит на handleFirstTime()
+            // вместо того, чтобы просто вернуться в главное меню.
+            g_authManager.setLoginAttempted(false);
+
+            g_logger.info(L"LoginWindow: blocked message shown, UI re-enabled, "
+                L"loginAttempted reset to false");
             break;
 
         case RESULT_NOT_FOUND:
