@@ -285,6 +285,63 @@ public:
              END $$;
              )");
 
+            // НОВАЯ МИГРАЦИЯ: добавление колонок для учёта распределения выручки
+            // между комитентом и магазином.
+            // client_percent  - процент от продажи, который получает комитент
+            // store_percent   - процент от продажи, который получает магазин
+            // client_amount   - сумма выплаты комитенту (цена * кол-во * процент / 100)
+            // store_amount    - сумма прибыли магазина (цена * кол-во * процент / 100)
+            txn.exec(R"(
+             DO $$
+             BEGIN
+                 ALTER TABLE items ADD COLUMN IF NOT EXISTS client_percent DECIMAL(5,2) DEFAULT 0;
+                 ALTER TABLE items ADD COLUMN IF NOT EXISTS store_percent DECIMAL(5,2) DEFAULT 0;
+                 ALTER TABLE items ADD COLUMN IF NOT EXISTS client_amount DECIMAL(10,2) DEFAULT 0;
+                 ALTER TABLE items ADD COLUMN IF NOT EXISTS store_amount DECIMAL(10,2) DEFAULT 0;
+             EXCEPTION WHEN duplicate_column THEN
+                 NULL;
+             END $$;
+             )");
+            g_serverLogger.info("Migration: items commission columns added successfully");
+
+            // ========================================================================
+            // НОВАЯ МИГРАЦИЯ: ПРИЛОЖЕНИЯ К ДОГОВОРУ (чеки комитентов)
+            // Хранит порядковый номер приложения (как 263216 в образце чека),
+            // чтобы по нему можно было найти весь перечень сданных вещей,
+            // количество проданных и возвращённых. Безопасный стиль миграций,
+            // как во всём файле: не ломает работающую БД.
+            // ========================================================================
+            txn.exec(R"(
+                CREATE SEQUENCE IF NOT EXISTS contract_appendices_number_seq
+                START 1;
+            )");
+            txn.exec(R"(
+                CREATE TABLE IF NOT EXISTS contract_appendices (
+                    id SERIAL PRIMARY KEY,
+                    appendix_number BIGINT UNIQUE NOT NULL,
+                    client_id INTEGER REFERENCES clients(id),
+                    worker_id INTEGER REFERENCES clients(id),
+                    created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),
+                    valid_until BIGINT,
+                    total_quantity INTEGER DEFAULT 0,
+                    total_value DECIMAL(10,2) DEFAULT 0,
+                    total_client_amount DECIMAL(10,2) DEFAULT 0
+                )
+            )");
+            txn.exec(R"(
+                DO $$
+                BEGIN
+                    ALTER TABLE items ADD COLUMN IF NOT EXISTS appendix_id BIGINT;
+                EXCEPTION WHEN duplicate_column THEN
+                    NULL;
+                END $$;
+            )");
+
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_contract_appendices_client ON contract_appendices(client_id)");
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_contract_appendices_number ON contract_appendices(appendix_number)");
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_items_appendix_id ON items(appendix_id)");
+            g_serverLogger.info("Migration: contract_appendices table, sequence and items.appendix_id added successfully");
+
             // ========================================================================
             // Индексы
             // ========================================================================
@@ -885,15 +942,13 @@ public:
             return false;
         }
     }
-    // =========================================================================
-    // НОВЫЕ МЕТОДЫ ДЛЯ РАБОТЫ С ТОВАРАМИ КЛИЕНТА (ОБЩАЯ ОЧЕРЕДЬ)
-    // =========================================================================
-
     /**
      * Получить список всех товаров клиента (включая непроданные)
+     * ДОПОЛНЕНИЕ: Теперь возвращает также поля распределения выручки.
      * @param clientId ID клиента
      * @return вектор JSON-объектов с полями: id, item_number, description,
-     *         estimated_price, quantity, sale_date, condition, note, created_at, status
+     *         estimated_price, quantity, sale_date, condition, note, created_at,
+     *         status, client_percent, store_percent, client_amount, store_amount
      */
     std::vector<json> getClientItems(int clientId) {
         std::vector<json> result;
@@ -901,7 +956,8 @@ public:
             pqxx::work txn{ *conn_ };
             auto res = txn.exec(
                 "SELECT id, item_number, description, estimated_price, quantity, "
-                "sale_date, condition, note, created_at, status "
+                "sale_date, condition, note, created_at, status, "
+                "client_percent, store_percent, client_amount, store_amount "
                 "FROM items WHERE client_id = $1 ORDER BY item_number",
                 pqxx::params{ clientId }
             );
@@ -920,6 +976,20 @@ public:
                 item["note"] = row["note"].is_null() ? "" : row["note"].as<std::string>();
                 item["created_at"] = row["created_at"].as<int64_t>();
                 item["status"] = row["status"].is_null() ? "" : row["status"].as<std::string>();
+
+                // =================================================================
+                // НОВЫЕ ПОЛЯ РАСПРЕДЕЛЕНИЯ ВЫРУЧКИ
+                // Если значения NULL (старые записи), возвращаем 0.
+                // =================================================================
+                item["client_percent"] = row["client_percent"].is_null() ?
+                    0.0 : row["client_percent"].as<double>();
+                item["store_percent"] = row["store_percent"].is_null() ?
+                    0.0 : row["store_percent"].as<double>();
+                item["client_amount"] = row["client_amount"].is_null() ?
+                    0.0 : row["client_amount"].as<double>();
+                item["store_amount"] = row["store_amount"].is_null() ?
+                    0.0 : row["store_amount"].as<double>();
+
                 result.push_back(item);
             }
             g_serverLogger.info("getClientItems: " + std::to_string(result.size()) +
@@ -993,22 +1063,19 @@ public:
     }
 
     /**
-  * Пакетное добавление нескольких товаров для одного клиента.
-  *
-  * ИСПРАВЛЕНИЕ E0140: Добавлен параметр workerId (по умолчанию 0).
-  * Теперь сигнатура: addItemsBatch(clientId, items, workerId)
-  *
-  * workerId — ID товароведа, который вносит товары.
-  * Сохраняется для ВСЕХ очередей (общая, +20, доверие, платный, дорогой),
-  * т.к. вызов идёт через единый эндпоинт /api/v1/items/batch.
-  *
-  * @param clientId ID клиента (комитента)
-  * @param items массив JSON-объектов с полями: description, estimated_price,
-  *              quantity, condition, note
-  * @param workerId ID товароведа, который вносит товары (0 = не указан)
-  * @return true если все добавлены успешно
-  */
-    bool addItemsBatch(int clientId, const json& items, int workerId = 0) {
+ * Пакетное добавление товаров + создание «приложения к договору».
+ * ДОПОЛНЕНИЕ (не меняет бизнес-логику):
+ *  - в той же транзакции создаётся запись contract_appendices
+ *    (номер из последовательности contract_appendices_number_seq);
+ *  - каждая вставляемая вещь получает ссылку appendix_id;
+ *  - номер приложения возвращается через outAppendixNumber
+ *    (параметр по умолчанию = nullptr → старые вызовы работают без изменений).
+ * Математика сумм НЕ пересчитывается: totals берутся из переданных
+ * клиентом полей (quantity, estimated_price, client_amount), которые
+ * посчитаны в worker_window.h::onItemAdd() по существующей формуле.
+ */
+    bool addItemsBatch(int clientId, const json& items, int workerId = 0,
+        long long* outAppendixNumber = nullptr) {
         if (!items.is_array() || items.empty()) {
             g_serverLogger.warning("addItemsBatch: empty or invalid items array");
             return false;
@@ -1017,11 +1084,61 @@ public:
             pqxx::work txn{ *conn_ };
             // getNextItemNumber выполняется в рамках текущей транзакции txn
             int nextNumber = getNextItemNumber(clientId, txn);
-
             g_serverLogger.info("addItemsBatch: clientId=" + std::to_string(clientId) +
                 ", itemsCount=" + std::to_string(items.size()) +
                 ", startingNumber=" + std::to_string(nextNumber) +
                 ", workerId=" + std::to_string(workerId));
+
+            // =====================================================================
+            // НОВОЕ: ГЕНЕРАЦИЯ НОМЕРА ПРИЛОЖЕНИЯ (атомарно, в той же транзакции)
+            // =====================================================================
+            long long appendixNumber =
+                txn.exec("SELECT nextval('contract_appendices_number_seq')")
+                .at(0).at(0).as<long long>();
+            g_serverLogger.info("addItemsBatch: generated appendix_number=" +
+                std::to_string(appendixNumber));
+
+            // =====================================================================
+            // НОВОЕ: АГРЕГАТНЫЕ ИТОГИ ДЛЯ ТАБЛИЦЫ contract_appendices.
+            // Только суммирование клиентских значений — формулы не трогаем.
+            // =====================================================================
+            int totalQuantity = 0;
+            double totalValue = 0.0;
+            double totalClientAmount = 0.0;
+            for (const auto& item : items) {
+                int quantity = item.value("quantity", 1);
+                double price = item.value("estimated_price", 0.0);
+                totalQuantity += quantity;
+                totalValue += price * quantity;
+                totalClientAmount += item.value("client_amount", 0.0);
+            }
+            // Срок действия приложения: +15 календарных дней (Ваше решение)
+            int64_t nowSec = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            int64_t validUntil = nowSec + 15 * 86400;
+
+            std::optional<int> workerIdOpt = (workerId > 0) ?
+                std::optional<int>(workerId) : std::nullopt;
+
+            // =====================================================================
+            // НОВОЕ: СОЗДАНИЕ ЗАПИСИ ПРИЛОЖЕНИЯ (до вставки вещей, чтобы
+            // получить id для ссылки items.appendix_id)
+            // =====================================================================
+            auto appRes = txn.exec(
+                "INSERT INTO contract_appendices "
+                "(appendix_number, client_id, worker_id, valid_until, "
+                " total_quantity, total_value, total_client_amount) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+                pqxx::params{ appendixNumber, clientId, workerIdOpt,
+                              validUntil, totalQuantity, totalValue,
+                              totalClientAmount });
+            long long appendixId = appRes.at(0).at(0).as<long long>();
+            g_serverLogger.info("addItemsBatch: contract_appendices row created, id=" +
+                std::to_string(appendixId) + ", number=" +
+                std::to_string(appendixNumber) + ", totalQty=" +
+                std::to_string(totalQuantity) + ", totalValue=" +
+                std::to_string(totalValue) + ", totalClientAmount=" +
+                std::to_string(totalClientAmount));
 
             for (const auto& item : items) {
                 std::string desc = item.value("description", "");
@@ -1029,47 +1146,174 @@ public:
                 int quantity = item.value("quantity", 1);
                 std::string condition = item.value("condition", "");
                 std::string note = item.value("note", "");
-
-                // =====================================================================
-                // Вставляем товар с worker_id для отслеживания эффективности
-                // товароведа. Работает для ВСЕХ типов очередей.
-                // =====================================================================
-                if (workerId > 0) {
-                    txn.exec(
-                        "INSERT INTO items (client_id, item_number, description, estimated_price, "
-                        "quantity, condition, note, worker_id) "
-                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                        pqxx::params{ clientId, nextNumber++, desc, price, quantity,
-                                      condition.empty() ? std::optional<std::string>{} : condition,
-                                      note.empty() ? std::optional<std::string>{} : note,
-                                      workerId }
-                    );
-                }
-                else {
-                    // Если workerId не указан (для обратной совместимости)
-                    txn.exec(
-                        "INSERT INTO items (client_id, item_number, description, estimated_price, "
-                        "quantity, condition, note) "
-                        "VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                        pqxx::params{ clientId, nextNumber++, desc, price, quantity,
-                                      condition.empty() ? std::optional<std::string>{} : condition,
-                                      note.empty() ? std::optional<std::string>{} : note }
-                    );
-                }
+                double clientPercent = item.value("client_percent", 0.0);
+                double storePercent = item.value("store_percent", 0.0);
+                double clientAmount = item.value("client_amount", 0.0);
+                double storeAmount = item.value("store_amount", 0.0);
+                g_serverLogger.info("addItemsBatch: item desc=" + desc +
+                    ", price=" + std::to_string(price) +
+                    ", qty=" + std::to_string(quantity) +
+                    ", clientPercent=" + std::to_string(clientPercent) +
+                    ", storePercent=" + std::to_string(storePercent) +
+                    ", clientAmount=" + std::to_string(clientAmount) +
+                    ", storeAmount=" + std::to_string(storeAmount) +
+                    ", appendixId=" + std::to_string(appendixId));
+                // ВСТАВКА ТОВАРА + ссылка на приложение (13-й параметр)
+                txn.exec(
+                    "INSERT INTO items (client_id, item_number, description, estimated_price, "
+                    "quantity, condition, note, worker_id, client_percent, store_percent, "
+                    "client_amount, store_amount, appendix_id) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                    pqxx::params{ clientId, nextNumber++, desc, price, quantity,
+                                  condition.empty() ? std::optional<std::string>{} : condition,
+                                  note.empty() ? std::optional<std::string>{} : note,
+                                  workerIdOpt, clientPercent, storePercent,
+                                  clientAmount, storeAmount, appendixId });
             }
-
             txn.commit();
-
+            if (outAppendixNumber) *outAppendixNumber = appendixNumber;
             g_serverLogger.info("addItemsBatch: successfully added " +
                 std::to_string(items.size()) + " items for client " +
-                std::to_string(clientId) + " by worker " + std::to_string(workerId));
-
+                std::to_string(clientId) + " by worker " + std::to_string(workerId) +
+                ", appendix_number=" + std::to_string(appendixNumber));
             return true;
         }
         catch (const std::exception& e) {
             g_serverLogger.error("addItemsBatch error: " + std::string(e.what()));
             return false;
         }
+    }
+
+    // =========================================================================
+// НОВЫЕ МЕТОДЫ: ВЫБОРКА «ПРИЛОЖЕНИЕ К ДОГОВОРУ»
+// Позволяют по номеру приложения найти весь перечень вещей,
+// сколько продано и сколько возвращено (по существующим статусам).
+// =========================================================================
+    json getAppendixItemsAndCounters(long long appendixId) {
+        json itemsArray = json::array();
+        int soldCount = 0, returnedCount = 0, pendingCount = 0;
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT item_number, description, quantity, estimated_price, "
+                "condition, note, status, client_amount "
+                "FROM items WHERE appendix_id = $1 ORDER BY item_number",
+                pqxx::params{ appendixId });
+            for (const auto& row : res) {
+                json it;
+                it["item_number"] = row["item_number"].as<int>();
+                it["description"] = row["description"].as<std::string>();
+                it["quantity"] = row["quantity"].as<int>();
+                it["estimated_price"] = row["estimated_price"].as<double>();
+                it["condition"] = row["condition"].is_null() ? "" : row["condition"].as<std::string>();
+                it["note"] = row["note"].is_null() ? "" : row["note"].as<std::string>();
+                it["status"] = row["status"].is_null() ? "" : row["status"].as<std::string>();
+                it["client_amount"] = row["client_amount"].is_null() ? 0.0 : row["client_amount"].as<double>();
+                int qty = row["quantity"].as<int>();
+                std::string st = it["status"].get<std::string>();
+                if (st == "sold") soldCount += qty;                       // продано
+                else if (st == "low_quality" || st == "unsold_quality")
+                    returnedCount += qty;                                 // возвращено (не продано по качеству)
+                else pendingCount += qty;                                 // ещё в продаже
+                itemsArray.push_back(it);
+            }
+            g_serverLogger.info("getAppendixItemsAndCounters: appendixId=" +
+                std::to_string(appendixId) + ", items=" + std::to_string(itemsArray.size()) +
+                ", sold=" + std::to_string(soldCount) +
+                ", returned=" + std::to_string(returnedCount) +
+                ", pending=" + std::to_string(pendingCount));
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getAppendixItemsAndCounters error: " + std::string(e.what()));
+        }
+        json out;
+        out["items"] = itemsArray;
+        out["sold_count"] = soldCount;
+        out["returned_count"] = returnedCount;
+        out["pending_count"] = pendingCount;
+        return out;
+    }
+
+    /**
+     * Полная выборка приложения по его номеру (для будущего быстрого поиска).
+     */
+    json getAppendixByNumber(long long appendixNumber) {
+        json result;
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT a.id, a.appendix_number, a.client_id, a.worker_id, a.created_at, "
+                "a.valid_until, a.total_quantity, a.total_value, a.total_client_amount, "
+                "c.last_name || ' ' || c.first_name || COALESCE(' ' || c.middle_name, '') AS client_name "
+                "FROM contract_appendices a "
+                "LEFT JOIN clients c ON a.client_id = c.id "
+                "WHERE a.appendix_number = $1",
+                pqxx::params{ appendixNumber });
+            if (res.empty()) {
+                result["error"] = "Appendix not found";
+                return result;
+            }
+            const auto& row = res.at(0);
+            result["appendix_number"] = row["appendix_number"].as<long long>();
+            result["client_id"] = row["client_id"].is_null() ? 0 : row["client_id"].as<int>();
+            result["worker_id"] = row["worker_id"].is_null() ? 0 : row["worker_id"].as<int>();
+            result["created_at"] = row["created_at"].is_null() ? 0 : row["created_at"].as<int64_t>();
+            result["valid_until"] = row["valid_until"].is_null() ? 0 : row["valid_until"].as<int64_t>();
+            result["total_quantity"] = row["total_quantity"].as<int>();
+            result["total_value"] = row["total_value"].as<double>();
+            result["total_client_amount"] = row["total_client_amount"].as<double>();
+            result["client_name"] = row["client_name"].is_null() ? "" : row["client_name"].as<std::string>();
+            json itemsBlock = getAppendixItemsAndCounters(row["id"].as<long long>());
+            result["items"] = itemsBlock["items"];
+            result["sold_count"] = itemsBlock["sold_count"];
+            result["returned_count"] = itemsBlock["returned_count"];
+            result["pending_count"] = itemsBlock["pending_count"];
+            g_serverLogger.info("getAppendixByNumber: number=" + std::to_string(appendixNumber) +
+                " returned successfully");
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getAppendixByNumber error: " + std::string(e.what()));
+            result["error"] = e.what();
+        }
+        return result;
+    }
+
+    /**
+     * Последнее приложение клиента (fallback для клиентской печати,
+     * если снапшот в клиенте потерян, например после перезапуска программы).
+     */
+    json getLatestAppendix(int clientId) {
+        json result;
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT id, appendix_number, created_at, valid_until, total_quantity, "
+                "total_value, total_client_amount "
+                "FROM contract_appendices WHERE client_id = $1 "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                pqxx::params{ clientId });
+            if (res.empty()) {
+                result["error"] = "No appendices for client";
+                return result;
+            }
+            const auto& row = res.at(0);
+            result["appendix_number"] = row["appendix_number"].as<long long>();
+            result["client_id"] = clientId;
+            result["created_at"] = row["created_at"].is_null() ? 0 : row["created_at"].as<int64_t>();
+            result["valid_until"] = row["valid_until"].is_null() ? 0 : row["valid_until"].as<int64_t>();
+            result["total_quantity"] = row["total_quantity"].as<int>();
+            result["total_value"] = row["total_value"].as<double>();
+            result["total_client_amount"] = row["total_client_amount"].as<double>();
+            json itemsBlock = getAppendixItemsAndCounters(row["id"].as<long long>());
+            result["items"] = itemsBlock["items"];
+            g_serverLogger.info("getLatestAppendix: clientId=" + std::to_string(clientId) +
+                ", appendix_number=" + std::to_string(result["appendix_number"].get<long long>()));
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getLatestAppendix error: " + std::string(e.what()));
+            result["error"] = e.what();
+        }
+        return result;
     }
 
     // =========================================================================
@@ -1191,7 +1435,9 @@ public:
                 "COALESCE(SUM(CASE WHEN i.status = 'sold' THEN i.quantity ELSE 0 END), 0) as sold_items_count, "
                 "COALESCE(SUM(CASE WHEN i.status = 'sold' THEN i.estimated_price * i.quantity ELSE 0 END), 0) as sold_items_value, "
                 "COALESCE(SUM(CASE WHEN i.status = 'low_quality' OR i.status = 'unsold_quality' THEN i.quantity ELSE 0 END), 0) as low_quality_count, "
-                "COALESCE(SUM(CASE WHEN i.status = 'low_quality' OR i.status = 'unsold_quality' THEN i.estimated_price * i.quantity ELSE 0 END), 0) as low_quality_value "
+                "COALESCE(SUM(CASE WHEN i.status = 'low_quality' OR i.status = 'unsold_quality' THEN i.estimated_price * i.quantity ELSE 0 END), 0) as low_quality_value, "
+                "COALESCE(SUM(i.client_amount), 0) as total_client_amount, "
+                "COALESCE(SUM(i.store_amount), 0) as total_store_amount "
                 "FROM clients c "
                 "LEFT JOIN items i ON c.id = i.client_id "
                 "WHERE c.role = 'client' OR c.role IS NULL "
@@ -1228,6 +1474,12 @@ public:
                 client["sold_items_value"] = row["sold_items_value"].as<double>();
                 client["low_quality_count"] = row["low_quality_count"].as<int>();
                 client["low_quality_value"] = row["low_quality_value"].as<double>();
+
+                // =====================================================================
+                // НОВЫЕ ПОЛЯ: СУММАРНЫЕ ВЫПЛАТЫ КОМИТЕНТУ И ПРИБЫЛЬ МАГАЗИНА
+                // =====================================================================
+                client["total_client_amount"] = row["total_client_amount"].as<double>();
+                client["total_store_amount"] = row["total_store_amount"].as<double>();
 
                 // Вычисляем количество не проданных товаров (не продано из-за низкого качества)
                 int totalItems = row["total_items_count"].as<int>();

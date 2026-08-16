@@ -201,6 +201,15 @@ private:
             else if (target.find("/api/v1/director/clients") == 0 && method == http::verb::get) {
                 handleDirectorGetClients(client_ip);
             }
+            // =========================================================================
+            // НОВЫЕ РОУТЫ: ПРИЛОЖЕНИЯ К ДОГОВОРУ (чеки комитентов)
+            // =========================================================================
+            else if (target.find("/api/v1/appendix/by_number") == 0 && method == http::verb::get) {
+                handleAppendixByNumber(client_ip);
+            }
+            else if (target.find("/api/v1/appendix/latest") == 0 && method == http::verb::get) {
+                handleAppendixLatest(client_ip);
+            }
             else {
                 g_serverLogger.warning("Routing request: " + std::string(http::to_string(method)) + " " + std::string(target) + " -> Not found");
                 response_.result(http::status::not_found);
@@ -1076,15 +1085,14 @@ private:
 
     // =========================================================================
     // POST /api/v1/items/batch  (массовое сохранение товаров)
-    // ИСПРАВЛЕНИЕ: Добавлено подробное логирование clientId из тела запроса
-    // для однозначной диагностики проблем с client_id = -1.
+    // ДОПОЛНЕНИЕ: Добавлена валидация полей распределения выручки
+    // (client_percent, store_percent, client_amount, store_amount)
     // =========================================================================
     void handleAddItemsBatch(const std::string& client_ip) {
         // 1. Проверка авторизации
         std::string authHeader;
         auto it = request_.find(http::field::authorization);
         if (it != request_.end()) authHeader = it->value();
-
         if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
             response_.result(http::status::unauthorized);
             response_.body() = json{ {"error", "Missing or invalid Authorization"} }.dump();
@@ -1092,7 +1100,6 @@ private:
             g_serverLogger.warning("handleAddItemsBatch: missing auth from " + client_ip);
             return;
         }
-
         std::string token = authHeader.substr(7);
         auto phoneOpt = auth_->verifyJWT(token);
         if (!phoneOpt) {
@@ -1125,11 +1132,9 @@ private:
 
         int clientId = body["client_id"].get<int>();
         json items = body["items"];
-        
+
         // =========================================================================
-        // ИСПРАВЛЕНИЕ: Явная валидация clientId на сервере.
-        // Если клиент прислал clientId <= 0 (например, -1 из-за ошибки UI),
-        // немедленно возвращаем 400 Bad Request без обращения к БД.
+        // ВАЛИДАЦИЯ clientId: должен быть положительным
         // =========================================================================
         if (clientId <= 0) {
             response_.result(http::status::bad_request);
@@ -1139,6 +1144,65 @@ private:
                 std::to_string(clientId) + " from " + client_ip +
                 " (worker phone: " + *phoneOpt + ")");
             return;
+        }
+
+        // =========================================================================
+        // НОВОЕ: ВАЛИДАЦИЯ ПОЛЕЙ РАСПРЕДЕЛЕНИЯ ВЫРУЧКИ В КАЖДОМ ТОВАРЕ
+        // Проверяем наличие, диапазон и сумму процентов.
+        // Это гарантирует целостность данных в БД.
+        // =========================================================================
+        for (const auto& item : items) {
+            // Проверка наличия обязательных полей распределения
+            if (!item.contains("client_percent") || !item["client_percent"].is_number() ||
+                !item.contains("store_percent") || !item["store_percent"].is_number()) {
+                response_.result(http::status::bad_request);
+                response_.body() = json{ {"error", "Missing client_percent or store_percent in item"} }.dump();
+                response_.prepare_payload();
+                g_serverLogger.warning("handleAddItemsBatch: missing commission fields from " + client_ip);
+                return;
+            }
+
+            double clientPercent = item["client_percent"].get<double>();
+            double storePercent = item["store_percent"].get<double>();
+
+            // Проверка диапазона процентов
+            if (clientPercent < 0.0 || clientPercent > 100.0) {
+                response_.result(http::status::bad_request);
+                response_.body() = json{ {"error", "client_percent must be between 0 and 100"} }.dump();
+                response_.prepare_payload();
+                g_serverLogger.warning("handleAddItemsBatch: invalid client_percent=" +
+                    std::to_string(clientPercent) + " from " + client_ip);
+                return;
+            }
+            if (storePercent < 0.0 || storePercent > 100.0) {
+                response_.result(http::status::bad_request);
+                response_.body() = json{ {"error", "store_percent must be between 0 and 100"} }.dump();
+                response_.prepare_payload();
+                g_serverLogger.warning("handleAddItemsBatch: invalid store_percent=" +
+                    std::to_string(storePercent) + " from " + client_ip);
+                return;
+            }
+
+            // Проверка суммы процентов (должна быть ровно 100%)
+            double totalPercent = clientPercent + storePercent;
+            if (std::abs(totalPercent - 100.0) > 0.01) {
+                response_.result(http::status::bad_request);
+                response_.body() = json{ {"error", "Sum of client_percent and store_percent must be 100"} }.dump();
+                response_.prepare_payload();
+                g_serverLogger.warning("handleAddItemsBatch: percent sum=" +
+                    std::to_string(totalPercent) + " != 100 from " + client_ip);
+                return;
+            }
+
+            // Проверка наличия сумм выплат (опционально, но рекомендуется)
+            if (!item.contains("client_amount") || !item["client_amount"].is_number() ||
+                !item.contains("store_amount") || !item["store_amount"].is_number()) {
+                response_.result(http::status::bad_request);
+                response_.body() = json{ {"error", "Missing client_amount or store_amount in item"} }.dump();
+                response_.prepare_payload();
+                g_serverLogger.warning("handleAddItemsBatch: missing amount fields from " + client_ip);
+                return;
+            }
         }
 
         g_serverLogger.info("handleAddItemsBatch: clientId=" + std::to_string(clientId) +
@@ -1174,19 +1238,24 @@ private:
             g_serverLogger.warning("handleAddItemsBatch: non-worker tried to add items: " + *phoneOpt);
             return;
         }
-        int workerId = clientOpt->id;
 
+        int workerId = clientOpt->id;
         g_serverLogger.info("handleAddItemsBatch: clientId=" + std::to_string(clientId) +
             ", itemsCount=" + std::to_string(items.size()) +
             ", workerId=" + std::to_string(workerId) +
             ", workerPhone=" + *phoneOpt + ", from=" + client_ip);
 
-        // 4. Сохраняем товары
-        if (db_->addItemsBatch(clientId, items, workerId)) {
+        // 4. Сохраняем товары + создаём приложение к договору (атомарно)
+        long long appendixNumber = 0;
+        if (db_->addItemsBatch(clientId, items, workerId, &appendixNumber)) {
             response_.result(http::status::ok);
-            response_.body() = json{ {"success", true} }.dump();
+            json okResp;
+            okResp["success"] = true;
+            okResp["appendix_number"] = appendixNumber; // <-- НОВОЕ: номер приложения для чека
+            response_.body() = okResp.dump();
             g_serverLogger.info("handleAddItemsBatch: saved " + std::to_string(items.size()) +
-                " items for client " + std::to_string(clientId));
+                " items for client " + std::to_string(clientId) +
+                ", appendix_number=" + std::to_string(appendixNumber));
         }
         else {
             response_.result(http::status::internal_server_error);
@@ -1522,6 +1591,109 @@ private:
 
         g_serverLogger.info("handleDirectorGetClients: returned " +
             std::to_string(clients.size()) + " clients to director from " + client_ip);
+    }
+
+    // =========================================================================
+// GET /api/v1/appendix/by_number?number=...
+// Выборка приложения к договору по номеру: перечень вещей, продано, возвращено.
+// ДОСТУП: только роль worker (товаровед) — как в handleGetItems.
+// =========================================================================
+    void handleAppendixByNumber(const std::string& client_ip) {
+        g_serverLogger.info("handleAppendixByNumber: request from " + client_ip);
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) authHeader = it->value();
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.body() = json{ {"error", "Missing or invalid Authorization"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        auto phoneOpt = auth_->verifyJWT(authHeader.substr(7));
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.body() = json{ {"error", "Invalid token"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        auto clientOpt = db_->getClientByPhone(*phoneOpt);
+        if (!clientOpt || clientOpt->role != "worker") {
+            response_.result(http::status::forbidden);
+            response_.body() = json{ {"error", "Access denied: worker role required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleAppendixByNumber: access denied for " + *phoneOpt);
+            return;
+        }
+        std::string query = request_.target();
+        long long number = 0;
+        size_t pos = query.find("?number=");
+        if (pos != std::string::npos) {
+            try { number = std::stoll(query.substr(pos + 8)); }
+            catch (...) { number = 0; }
+        }
+        if (number <= 0) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Missing or invalid number"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        json data = db_->getAppendixByNumber(number);
+        response_.result(data.contains("error") ? http::status::not_found : http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = data.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("handleAppendixByNumber: number=" + std::to_string(number) + " done");
+    }
+
+    // =========================================================================
+    // GET /api/v1/appendix/latest?client_id=...
+    // Последнее приложение клиента (fallback для печати чека).
+    // ДОСТУП: только роль worker.
+    // =========================================================================
+    void handleAppendixLatest(const std::string& client_ip) {
+        g_serverLogger.info("handleAppendixLatest: request from " + client_ip);
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) authHeader = it->value();
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.body() = json{ {"error", "Missing or invalid Authorization"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        auto phoneOpt = auth_->verifyJWT(authHeader.substr(7));
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.body() = json{ {"error", "Invalid token"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        auto clientOpt = db_->getClientByPhone(*phoneOpt);
+        if (!clientOpt || clientOpt->role != "worker") {
+            response_.result(http::status::forbidden);
+            response_.body() = json{ {"error", "Access denied: worker role required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string query = request_.target();
+        int clientId = 0;
+        size_t pos = query.find("?client_id=");
+        if (pos != std::string::npos) {
+            try { clientId = std::stoi(query.substr(pos + 11)); }
+            catch (...) { clientId = 0; }
+        }
+        if (clientId <= 0) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Missing or invalid client_id"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        json data = db_->getLatestAppendix(clientId);
+        response_.result(data.contains("error") ? http::status::not_found : http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = data.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("handleAppendixLatest: client_id=" + std::to_string(clientId) + " done");
     }
 
     void doWrite() {
