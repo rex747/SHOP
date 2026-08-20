@@ -75,7 +75,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     wcex.lpfnWndProc = MainWndProc;
     wcex.hInstance = hInstance;
     wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+
+    // ИЗМЕНЕНО: Создание желтой кисти для фона главного окна
+    // RGB(255, 255, 0) - стандартный желтый цвет
+    HBRUSH hYellowBrush = CreateSolidBrush(RGB(255, 255, 0));
+    wcex.hbrBackground = hYellowBrush;  // ИЗМЕНЕНО: было (HBRUSH)(COLOR_WINDOW + 1)
+
     wcex.lpszClassName = L"TerminalKioskClass";
     wcex.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     if (!RegisterClassExW(&wcex)) {
@@ -139,11 +144,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     UpdateWindow(g_hMainWnd);
     g_mainWindow.create(g_hMainWnd);
     g_logger.log(LogLevel::INFO, L"Main window created successfully");
+    
     // Main message loop
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
+    }
+    // Очистка GDI объекта желтой кисти
+    if (hYellowBrush) {
+        DeleteObject(hYellowBrush);
     }
     g_logger.log(LogLevel::INFO, L"Terminal application shutdown");
     return static_cast<int>(msg.wParam);

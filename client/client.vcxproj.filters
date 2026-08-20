@@ -78,5 +78,14 @@
     <Image Include="res\icon_wallet.bmp">
       <Filter>Файлы ресурсов</Filter>
     </Image>
+    <Image Include="rc.png">
+      <Filter>Файлы ресурсов</Filter>
+    </Image>
+    <Image Include="rc.bmp">
+      <Filter>Файлы ресурсов</Filter>
+    </Image>
+    <Image Include="res\rc.bmp">
+      <Filter>Файлы ресурсов</Filter>
+    </Image>
   </ItemGroup>
 </Project>

@@ -168,9 +168,12 @@
     <ResourceCompile Include="kiosk_icons.rc" />
   </ItemGroup>
   <ItemGroup>
+    <Image Include="rc.bmp" />
+    <Image Include="rc.png" />
     <Image Include="res\icon_kiosk.bmp" />
     <Image Include="res\icon_no_cach.bmp" />
     <Image Include="res\icon_wallet.bmp" />
+    <Image Include="res\rc.bmp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

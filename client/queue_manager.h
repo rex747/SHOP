@@ -67,6 +67,21 @@ private:
         }
     }
 
+    // ========================================================================
+   // ИСПРАВЛЕННЫЙ МЕТОД: generateLocalTicketNumber
+   // ========================================================================
+   // ПРИЧИНА ИСПРАВЛЕНИЯ:
+   // Номер талона генерировался как prefix + counter, где counter мог расти
+   // бесконечно (std::atomic<int> m_localTicketCounter), что приводило к
+   // длинным номерам (например, G1000, G12345).
+   //
+   // РЕШЕНИЕ:
+   // Ограничиваем номер до 3 знаков, используя циклическую нумерацию:
+   // ((counter - 1) % 999) + 1, и форматируем с ведущими нулями (%03d).
+   // Это гарантирует, что номер всегда будет от 001 до 999.
+   // Метод потокобезопасен: m_localTicketCounter — std::atomic<int>,
+   // а вызов происходит под m_mutex в getTicket() и getTrustAcceptance().
+   // ========================================================================
     std::wstring generateLocalTicketNumber(QueueType type) {
         int counter = m_localTicketCounter++;
         std::wstring prefix;
@@ -78,7 +93,19 @@ private:
         case QueueType::PAID: prefix = L"P"; break;
         case QueueType::EXPENSIVE: prefix = L"D"; break;
         }
-        return prefix + std::to_wstring(counter);
+
+        // Ограничиваем номер до 3 знаков (циклическая нумерация от 1 до 999)
+        int displayNum = ((counter - 1) % 999) + 1;
+        wchar_t numBuf[16];
+        swprintf(numBuf, 16, L"%03d", displayNum);
+
+        std::wstring ticketNumber = prefix + std::wstring(numBuf);
+
+        g_logger.info(L"generateLocalTicketNumber: counter=" + std::to_wstring(counter) +
+            L", displayNum=" + std::to_wstring(displayNum) +
+            L", ticketNumber=" + ticketNumber);
+
+        return ticketNumber;
     }
 
 public:

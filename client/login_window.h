@@ -720,7 +720,12 @@ public:
             wcex.lpfnWndProc = WndProc;
             wcex.hInstance = g_hInstance;
             wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
-            wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+
+            // ИЗМЕНЕНО: Создание желтой кисти для фона окна логина
+            // RGB(255, 255, 0) - желтый цвет для всех страниц клиентской части
+            static HBRUSH hYellowBrush = CreateSolidBrush(RGB(255, 255, 0));
+            wcex.hbrBackground = hYellowBrush;  // ИЗМЕНЕНО: было (HBRUSH)(COLOR_WINDOW + 1)
+
             wcex.lpszClassName = L"LoginWindowClass";
             wcex.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
             if (!RegisterClassExW(&wcex)) {
