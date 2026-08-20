@@ -21,6 +21,7 @@ struct Client {
     std::string name;
     std::string email;
     std::string role; // роль клиент / товаровед
+    std::string birth_date;
     int64_t createdAt;
     bool active;
 };
@@ -337,6 +338,141 @@ public:
                 END $$;
             )");
 
+            // ========================================================================
+            // НОВАЯ МИГРАЦИЯ: ПОДДЕРЖКА ПОШТУЧНОЙ ПРОДАЖИ ТОВАРОВ
+            // Безопасное добавление колонки sold_quantity в таблицу items.
+            // sold_quantity — сколько единиц из партии УЖЕ ПРОДАНО.
+            // Доступный остаток = quantity - sold_quantity.
+            txn.exec(R"(
+                DO $$
+                BEGIN
+                    ALTER TABLE items ADD COLUMN IF NOT EXISTS sold_quantity INTEGER DEFAULT 0;
+                EXCEPTION WHEN duplicate_column THEN
+                    NULL;
+                END $$;
+            )");
+            g_serverLogger.info("Migration: items.sold_quantity added successfully");
+
+            // ========================================================================
+            // НОВАЯ МИГРАЦИЯ: ТАБЛИЦА ЛОГА ПРОДАЖ (item_sales)
+            // Каждая запись = одна проданная единица товара.
+            // Позволяет отслеживать: когда продано, кем (касса/1С), по какой цене.
+            txn.exec(R"(
+                CREATE TABLE IF NOT EXISTS item_sales (
+                    id SERIAL PRIMARY KEY,
+                    item_id INTEGER REFERENCES items(id),
+                    client_id INTEGER REFERENCES clients(id),
+                    quantity_sold INTEGER DEFAULT 1,
+                    sale_price DECIMAL(10,2) DEFAULT 0,
+                    client_amount DECIMAL(10,2) DEFAULT 0,
+                    store_amount DECIMAL(10,2) DEFAULT 0,
+                    sold_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),
+                    source VARCHAR(50) DEFAULT '1C',
+                    receipt_number VARCHAR(100),
+                    barcode_payload TEXT
+                )
+            )");
+
+            // ========================================================================
+            // НОВАЯ МИГРАЦИЯ: ПОЛЕ expired_at В items
+            // Фиксирует момент, когда товар был помечен как "выбывший из продажи"
+            // по истечении 15-дневного срока. NULL = товар ещё активен.
+            // ========================================================================
+            txn.exec(R"(
+                DO $$
+                BEGIN
+                    ALTER TABLE items ADD COLUMN IF NOT EXISTS expired_at BIGINT;
+                EXCEPTION WHEN duplicate_column THEN
+                    NULL;
+                END $$;
+            )");
+            g_serverLogger.info("Migration: items.expired_at added successfully");
+
+            // ========================================================================
+            // НОВАЯ МИГРАЦИЯ: ПОЛЕ expired_processed В contract_appendices
+            // Флаг для фонового процесса: TRUE = приложение уже обработано
+            // как просроченное (предотвращает повторную обработку).
+            // ========================================================================
+            txn.exec(R"(
+                DO $$
+                BEGIN
+                    ALTER TABLE contract_appendices ADD COLUMN IF NOT EXISTS expired_processed BOOLEAN DEFAULT FALSE;
+                EXCEPTION WHEN duplicate_column THEN
+                    NULL;
+                END $$;
+            )");
+            g_serverLogger.info("Migration: contract_appendices.expired_processed added successfully");
+
+            // ========================================================================
+            // НОВАЯ МИГРАЦИЯ: ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ КОМИТЕНТА (для first_time)
+            // birth_date, passport_type, passport_series, passport_number, address
+            // ========================================================================
+            txn.exec(R"(
+                DO $$
+                BEGIN
+                    ALTER TABLE clients ADD COLUMN IF NOT EXISTS birth_date VARCHAR(10);
+                    ALTER TABLE clients ADD COLUMN IF NOT EXISTS passport_type VARCHAR(10) DEFAULT 'rf';
+                    ALTER TABLE clients ADD COLUMN IF NOT EXISTS passport_series VARCHAR(10);
+                    ALTER TABLE clients ADD COLUMN IF NOT EXISTS passport_number VARCHAR(20);
+                    ALTER TABLE clients ADD COLUMN IF NOT EXISTS address TEXT;
+                EXCEPTION WHEN duplicate_column THEN
+                    NULL;
+                END $$;
+            )");
+            g_serverLogger.info("Migration: committee additional fields added (birth_date, passport_*, address)");
+
+            // ========================================================================
+            // МИГРАЦИЯ: Замена UNIQUE ограничений на частичные уникальные индексы
+            // для поддержки циклических коротких номеров талонов (не более 3 знаков).
+            //
+            // ПРИЧИНА:
+            // Полные UNIQUE ограничения на number / ticket_number не позволяют
+            // повторно использовать короткие номера (001-999) после обслуживания
+            // талонов, так как старые записи остаются в таблице со статусом served.
+            //
+            // РЕШЕНИЕ:
+            // Удаляем полные UNIQUE ограничения и создаём частичные уникальные
+            // индексы, которые гарантируют уникальность номера ТОЛЬКО среди
+            // активных талонов (waiting/accepted для очередей, pending/accepted
+            // для доверия). Обслуженные талоны могут иметь повторяющиеся номера,
+            // что позволяет использовать циклическую нумерацию 001-999.
+            //
+            // Это НЕ ЛОМАЕТ бизнес-логику, так как все методы поиска/приёма/
+            // обслуживания талона всегда фильтруют по активному статусу.
+            // ========================================================================
+            txn.exec(R"(
+                DO $$
+                DECLARE r RECORD;
+                BEGIN
+                    -- Удаляем UNIQUE ограничения с queue_tickets.number
+                    FOR r IN (SELECT constraint_name FROM information_schema.table_constraints 
+                              WHERE table_name = 'queue_tickets' AND constraint_type = 'UNIQUE')
+                    LOOP
+                        EXECUTE 'ALTER TABLE queue_tickets DROP CONSTRAINT ' || quote_ident(r.constraint_name);
+                    END LOOP;
+
+                    -- Удаляем UNIQUE ограничения с first_time_tickets.ticket_number
+                    FOR r IN (SELECT constraint_name FROM information_schema.table_constraints 
+                              WHERE table_name = 'first_time_tickets' AND constraint_type = 'UNIQUE')
+                    LOOP
+                        EXECUTE 'ALTER TABLE first_time_tickets DROP CONSTRAINT ' || quote_ident(r.constraint_name);
+                    END LOOP;
+
+                    -- Удаляем UNIQUE ограничения с trust_acceptances.ticket_number
+                    FOR r IN (SELECT constraint_name FROM information_schema.table_constraints 
+                              WHERE table_name = 'trust_acceptances' AND constraint_type = 'UNIQUE')
+                    LOOP
+                        EXECUTE 'ALTER TABLE trust_acceptances DROP CONSTRAINT ' || quote_ident(r.constraint_name);
+                    END LOOP;
+                END $$;
+            )");
+
+            // Создаём частичные уникальные индексы для активных талонов
+            txn.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_tickets_number_active ON queue_tickets(number) WHERE status IN ('waiting', 'accepted')");
+            txn.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_first_time_tickets_number_active ON first_time_tickets(ticket_number) WHERE status IN ('waiting', 'accepted')");
+            txn.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_trust_acceptances_number_active ON trust_acceptances(ticket_number) WHERE status IN ('pending', 'accepted')");
+            g_serverLogger.info("Migration: UNIQUE constraints replaced with partial unique indexes for cyclic ticket numbers (001-999)");
+
             txn.exec("CREATE INDEX IF NOT EXISTS idx_contract_appendices_client ON contract_appendices(client_id)");
             txn.exec("CREATE INDEX IF NOT EXISTS idx_contract_appendices_number ON contract_appendices(appendix_number)");
             txn.exec("CREATE INDEX IF NOT EXISTS idx_items_appendix_id ON items(appendix_id)");
@@ -363,6 +499,12 @@ public:
             txn.exec("CREATE INDEX IF NOT EXISTS idx_items_worker_id ON items(worker_id)");
             // ИНДЕКС для быстрого поиска товаров по статусу (low_quality)
             txn.exec("CREATE INDEX IF NOT EXISTS idx_items_status ON items(status)");
+			// Индекс для быстрого поиска проданных товаров по дате продажи и по источнику (1С/касса)
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_item_sales_item_id ON item_sales(item_id)");
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_item_sales_client_id ON item_sales(client_id)");
+            txn.exec("CREATE INDEX IF NOT EXISTS idx_item_sales_sold_at ON item_sales(sold_at)");
+
+            g_serverLogger.info("Migration: item_sales table created successfully");
             g_serverLogger.info("Migration: idx_items_status index created");
 
             txn.commit();
@@ -381,10 +523,11 @@ public:
         try {
             pqxx::work txn{ *conn_ };
             auto result = txn.exec(
-                "SELECT id, phone, last_name, first_name, middle_name, email, role, created_at FROM clients WHERE phone = $1",
+                "SELECT id, phone, last_name, first_name, middle_name, email, role, birth_date, created_at FROM clients WHERE phone = $1",
                 pqxx::params{ phone }
             );
             if (result.empty()) return std::nullopt;
+
             Client client;
             client.id = result[0]["id"].as<int>();
             client.phone = result[0]["phone"].as<std::string>();
@@ -393,9 +536,11 @@ public:
             std::string mid = result[0]["middle_name"].is_null() ? "" : result[0]["middle_name"].as<std::string>();
             client.name = last + " " + first + (mid.empty() ? "" : " " + mid);
             client.email = result[0]["email"].is_null() ? "" : result[0]["email"].as<std::string>();
-            client.role = result[0]["role"].is_null() ? "client" : result[0]["role"].as<std::string>(); // <-- ДОБАВЛЕНО
+            client.role = result[0]["role"].is_null() ? "client" : result[0]["role"].as<std::string>();
+            client.birth_date = result[0]["birth_date"].is_null() ? "" : result[0]["birth_date"].as<std::string>();
             client.createdAt = result[0]["created_at"].as<int64_t>();
             client.active = true;
+            g_serverLogger.info("getClientByPhone: phone=" + phone + ", birth_date=" + client.birth_date);
             return client;
         }
         catch (const std::exception& e) {
@@ -501,10 +646,11 @@ public:
         try {
             pqxx::work txn{ *conn_ };
             auto result = txn.exec(
-                "SELECT id, phone, last_name, first_name, middle_name, email, role, created_at FROM clients WHERE id = $1",
+                "SELECT id, phone, last_name, first_name, middle_name, email, role, birth_date, created_at FROM clients WHERE id = $1",
                 pqxx::params{ id }
             );
             if (result.empty()) return std::nullopt;
+
             Client client;
             client.id = result[0]["id"].as<int>();
             client.phone = result[0]["phone"].as<std::string>();
@@ -513,9 +659,11 @@ public:
             std::string mid = result[0]["middle_name"].is_null() ? "" : result[0]["middle_name"].as<std::string>();
             client.name = last + " " + first + (mid.empty() ? "" : " " + mid);
             client.email = result[0]["email"].is_null() ? "" : result[0]["email"].as<std::string>();
-            client.role = result[0]["role"].is_null() ? "client" : result[0]["role"].as<std::string>(); // <-- ДОБАВЛЕНО
+            client.role = result[0]["role"].is_null() ? "client" : result[0]["role"].as<std::string>();
+            client.birth_date = result[0]["birth_date"].is_null() ? "" : result[0]["birth_date"].as<std::string>();
             client.createdAt = result[0]["created_at"].as<int64_t>();
             client.active = true;
+            g_serverLogger.info("getClientById: id=" + std::to_string(id) + ", birth_date=" + client.birth_date);
             return client;
         }
         catch (const std::exception& e) {
@@ -541,24 +689,59 @@ public:
         }
     }
 
+    // ========================================================================
+    // ИСПРАВЛЕННЫЙ МЕТОД: createTicket
+    // ========================================================================
+    // ПРИЧИНА ИСПРАВЛЕНИЯ:
+    // Номер талона генерировался длинным: prefix + "-" + time%10000 + "-" + position.
+    // Например: G-1234-56, что превышает 3 знака.
+    //
+    // РЕШЕНИЕ:
+    // Генерируем короткий номер талона (не более 3 знаков): prefix + %03d(position).
+    // Например: G001, G002, ..., G999.
+    // Позиция вычисляется как количество ожидающих талонов + 1 (без изменений).
+    // Благодаря частичному уникальному индексу (см. миграцию выше), короткие
+    // номера могут использоваться циклически без конфликта уникальности.
+    // ========================================================================
     QueueTicket createTicket(int clientId, const std::string& queueType, int itemsCount) {
         QueueTicket ticket;
         try {
             pqxx::work txn{ *conn_ };
+
+            // Определяем префикс очереди (без изменений)
             std::string prefix = (queueType == "general") ? "G" :
                 (queueType == "first_time") ? "F" :
                 (queueType == "extra_20") ? "E" :
                 (queueType == "paid") ? "P" :
                 (queueType == "expensive") ? "D" : "X";
 
+            // Вычисляем позицию: количество ожидающих талонов в данной очереди + 1
             auto countResult = txn.exec(
                 "SELECT COUNT(*) FROM queue_tickets WHERE queue_type = $1 AND status = 'waiting'",
                 pqxx::params{ queueType }
             );
             int position = countResult[0][0].as<int>() + 1;
-            std::string number = prefix + "-" + std::to_string(time(nullptr) % 10000) + "-" + std::to_string(position);
+
+            // =====================================================================
+            // ИСПРАВЛЕНИЕ: Генерируем короткий номер талона (не более 3 знаков).
+            // Используем позицию в очереди с форматированием %03d (001, 002, ..., 999).
+            // Если позиция > 999 (что невозможно из-за лимитов очередей в config_server.h:
+            // MAX_QUEUE_SIZE_GENERAL=100, MAX_QUEUE_SIZE_EXTRA_20=50, MAX_QUEUE_SIZE_PAID=30,
+            // MAX_QUEUE_SIZE_EXPENSIVE=20), ограничиваем до 999 для безопасности.
+            // =====================================================================
+            int displayNum = std::min(position, 999);
+            char numBuf[16];
+            snprintf(numBuf, sizeof(numBuf), "%03d", displayNum);
+            std::string number = prefix + std::string(numBuf);
+
             std::string window = "1";
-            int waitTime = position * 5;
+            int waitTime = position * 5; // 5 минут на человека (математика без изменений)
+
+            g_serverLogger.info("createTicket: queueType=" + queueType +
+                ", position=" + std::to_string(position) +
+                ", ticketNumber=" + number +
+                ", clientId=" + std::to_string(clientId) +
+                ", itemsCount=" + std::to_string(itemsCount));
 
             auto result = txn.exec(
                 "INSERT INTO queue_tickets (number, client_id, queue_type, position, items_count, window_number, estimated_wait_time) "
@@ -566,6 +749,7 @@ public:
                 "RETURNING id, number, position, window_number, estimated_wait_time, created_at",
                 pqxx::params{ number, clientId, queueType, position, itemsCount, window, waitTime }
             );
+
             ticket.id = result[0]["id"].as<int>();
             ticket.number = result[0]["number"].as<std::string>();
             ticket.clientId = clientId;
@@ -576,13 +760,20 @@ public:
             ticket.estimatedWaitTime = result[0]["estimated_wait_time"].as<int>();
             ticket.createdAt = result[0]["created_at"].as<int64_t>();
             ticket.status = "waiting";
+
             txn.commit();
+
+            g_serverLogger.info("createTicket: SUCCESS - ticketNumber=" + ticket.number +
+                ", position=" + std::to_string(ticket.position) +
+                ", waitTime=" + std::to_string(ticket.estimatedWaitTime));
         }
         catch (const std::exception& e) {
+            g_serverLogger.error("createTicket error: " + std::string(e.what()));
             std::cerr << "createTicket error: " << e.what() << std::endl;
         }
         return ticket;
     }
+
     // Обработчики очереди "На доверии"
     // ===== ДОПОЛНЕНИЯ ДЛЯ ОЧЕРЕДИ trust =====
 
@@ -659,23 +850,55 @@ public:
         }
     }
 
+    // ========================================================================
+   // ИСПРАВЛЕННЫЙ МЕТОД: createTrustAcceptance
+   // ========================================================================
+   // ПРИЧИНА ИСПРАВЛЕНИЯ:
+   // Номер талона генерировался длинным: "TR-" + timestamp + "-" + rand%10000.
+   //
+   // РЕШЕНИЕ:
+   // Вычисляем количество ожидающих trust талонов и генерируем короткий номер
+   // (не более 3 знаков): "T" + %03d(position). Например: T001, T002, ..., T999.
+   // Благодаря частичному уникальному индексу (см. миграцию выше), короткие
+   // номера могут использоваться циклически без конфликта уникальности.
+   // ========================================================================
     std::optional<std::string> createTrustAcceptance(int clientId) {
         try {
             pqxx::work txn{ *conn_ };
-            auto now = std::chrono::system_clock::now();
-            auto ts = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
-            std::string ticketNumber = "TR-" + std::to_string(ts) + "-" +
-                std::to_string(rand() % 10000);
-            g_serverLogger.info("Creating TRUST acceptance ticket: " + ticketNumber + " for client " + std::to_string(clientId));
+
+            // =====================================================================
+            // Вычисляем количество ожидающих trust талонов для генерации
+            // короткого номера (не более 3 знаков).
+            // =====================================================================
+            auto countResult = txn.exec(
+                "SELECT COUNT(*) FROM trust_acceptances WHERE status = 'pending'"
+            );
+            int position = countResult[0][0].as<int>() + 1;
+
+            // Генерируем короткий номер талона (не более 3 знаков): "T" + %03d(position)
+            int displayNum = std::min(position, 999);
+            char numBuf[16];
+            snprintf(numBuf, sizeof(numBuf), "%03d", displayNum);
+            std::string ticketNumber = "T" + std::string(numBuf);
+
+            g_serverLogger.info("Creating TRUST acceptance ticket: " + ticketNumber +
+                " for client " + std::to_string(clientId) +
+                ", position=" + std::to_string(position));
 
             auto result = txn.exec(
                 "INSERT INTO trust_acceptances (client_id, ticket_number) "
                 "VALUES ($1, $2) RETURNING ticket_number",
                 pqxx::params{ clientId, ticketNumber }
             );
-            g_serverLogger.info("Inserted TRUST acceptance ticket into database: " + ticketNumber + " for client " + std::to_string(clientId));
+
+            g_serverLogger.info("Inserted TRUST acceptance ticket into database: " + ticketNumber +
+                " for client " + std::to_string(clientId));
+
             txn.commit();
-            g_serverLogger.info("Created TRUST acceptance ticket: " + ticketNumber + " for client " + std::to_string(clientId));
+
+            g_serverLogger.info("Created TRUST acceptance ticket: " + ticketNumber +
+                " for client " + std::to_string(clientId));
+
             return result[0]["ticket_number"].as<std::string>();
         }
         catch (const std::exception& e) {
@@ -706,26 +929,84 @@ public:
         }
     }
 
-    std::string createFirstTimeTicket(const std::string& windowNumber = "1") {
+    // ========================================================================
+   // ИСПРАВЛЕННЫЙ МЕТОД: createFirstTimeTicket
+   // ========================================================================
+   // ПРИЧИНА ИСПРАВЛЕНИЯ:
+   // 1. Метод не вычислял позицию в очереди (количество ожидающих талонов),
+   //    поэтому клиент всегда получал позицию 1 (hardcoded в main_window.h).
+   // 2. Номер талона генерировался длинным: "F-" + timestamp + "-" + rand%10000.
+   // 3. Метод возвращал только std::string (номер), не возвращая позицию,
+   //    окно и время ожидания.
+   //
+   // РЕШЕНИЕ:
+   // 1. Вычисляем позицию как COUNT(*) ожидающих талонов + 1.
+   // 2. Генерируем короткий номер талона (не более 3 знаков): "F" + %03d(position).
+   // 3. Возвращаем JSON с полями ticket_number, position, window_number,
+   //    wait_time_minutes, created_at, чтобы клиент мог отобразить корректную позицию.
+   // 4. Благодаря частичному уникальному индексу (см. миграцию выше), короткие
+   //    номера могут использоваться циклически без конфликта уникальности.
+   // ========================================================================
+    json createFirstTimeTicket(const std::string& windowNumber = "1") {
         try {
             pqxx::work txn{ *conn_ };
-            auto now = std::chrono::system_clock::now();
-            auto ts = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
-            std::string ticketNumber = "F-" + std::to_string(ts) + "-" +
-                std::to_string(rand() % 10000);
+
+            // =====================================================================
+            // Вычисляем позицию: количество ожидающих талонов в очереди "Первый раз" + 1.
+            // Это обеспечивает корректное запоминание последовательно взятых талонов.
+            // =====================================================================
+            auto countResult = txn.exec(
+                "SELECT COUNT(*) FROM first_time_tickets WHERE status = 'waiting'"
+            );
+            int position = countResult[0][0].as<int>() + 1;
+
+            // =====================================================================
+            // Генерируем короткий номер талона (не более 3 знаков).
+            // Используем позицию в очереди с форматированием %03d (001, 002, ..., 999).
+            // Если позиция > 999 (что невозможно из-за лимита MAX_QUEUE_SIZE_FIRST_TIME=20
+            // в config_server.h), ограничиваем до 999 для безопасности.
+            // =====================================================================
+            int displayNum = std::min(position, 999);
+            char numBuf[16];
+            snprintf(numBuf, sizeof(numBuf), "%03d", displayNum);
+            std::string ticketNumber = "F" + std::string(numBuf);
+
+            // Время ожидания: 5 минут на человека (математика как в createTicket)
+            int waitTime = position * 5;
+
+            g_serverLogger.info("createFirstTimeTicket: position=" + std::to_string(position) +
+                ", ticketNumber=" + ticketNumber +
+                ", window=" + windowNumber +
+                ", waitTime=" + std::to_string(waitTime));
 
             auto result = txn.exec(
                 "INSERT INTO first_time_tickets (ticket_number, window_number) "
-                "VALUES ($1, $2) RETURNING id",
+                "VALUES ($1, $2) RETURNING id, created_at",
                 pqxx::params{ ticketNumber, windowNumber }
             );
+
             txn.commit();
-            g_serverLogger.info("Created FIRST_TIME ticket: " + ticketNumber);
-            return ticketNumber;
+
+            // Формируем JSON ответ с полной информацией о талоне
+            json response;
+            response["ticket_number"] = ticketNumber;
+            response["position"] = position;
+            response["window_number"] = windowNumber;
+            response["wait_time_minutes"] = waitTime;
+            response["created_at"] = result[0]["created_at"].as<int64_t>();
+
+            g_serverLogger.info("createFirstTimeTicket: SUCCESS - ticketNumber=" + ticketNumber +
+                ", position=" + std::to_string(position) +
+                ", window=" + windowNumber +
+                ", waitTime=" + std::to_string(waitTime));
+
+            return response;
         }
         catch (const std::exception& e) {
             g_serverLogger.error("createFirstTimeTicket error: " + std::string(e.what()));
-            return "";
+            json error;
+            error["error"] = e.what();
+            return error;
         }
     }
 
@@ -1185,10 +1466,10 @@ public:
     }
 
     // =========================================================================
-// НОВЫЕ МЕТОДЫ: ВЫБОРКА «ПРИЛОЖЕНИЕ К ДОГОВОРУ»
-// Позволяют по номеру приложения найти весь перечень вещей,
-// сколько продано и сколько возвращено (по существующим статусам).
-// =========================================================================
+    // НОВЫЕ МЕТОДЫ: ВЫБОРКА «ПРИЛОЖЕНИЕ К ДОГОВОРУ»
+    // Позволяют по номеру приложения найти весь перечень вещей,
+    // сколько продано и сколько возвращено (по существующим статусам).
+    // =========================================================================
     json getAppendixItemsAndCounters(long long appendixId) {
         json itemsArray = json::array();
         int soldCount = 0, returnedCount = 0, pendingCount = 0;
@@ -1631,6 +1912,32 @@ public:
             }
             result["summary"] = summary;
 
+            // =====================================================================
+            // 5. ТОВАРЫ, ВЫБЫВШИЕ ИЗ ПРОДАЖИ ПО ИСТЕЧЕНИИ 15-ДНЕВНОГО СРОКА
+            // Вызываем существующий метод getExpiredItems() (добавлен ранее).
+            // Возвращаем массив товаров со статусом 'expired' + счётчик.
+            // =====================================================================
+            json expiredArray = getExpiredItems();
+            result["expired_items"] = expiredArray;
+            result["expired_items_count"] = static_cast<int>(expiredArray.size());
+            g_serverLogger.info("getDirectorStats: expired_items_count=" +
+                std::to_string(expiredArray.size()));
+
+            // =====================================================================
+            // 6. ДОПОЛНЕНИЕ СВОДКИ: СЧЁТЧИК ПРОСРОЧЕННЫХ ТОВАРОВ
+            // Добавляем в summary поле expired_items_count, чтобы директор
+            // видел общую цифру прямо в нижней строке сводки.
+            // =====================================================================
+            summary["expired_items_count"] = static_cast<int>(expiredArray.size());
+            result["summary"] = summary;
+
+            g_serverLogger.info("getDirectorStats: completed successfully, clients=" +
+                std::to_string(clientsArray.size()) +
+                ", workers=" + std::to_string(workersArray.size()) +
+                ", low_quality_items=" + std::to_string(lowQualityArray.size()) +
+                ", expired_items=" + std::to_string(expiredArray.size()));
+            result["summary"] = summary;
+
             g_serverLogger.info("getDirectorStats: completed successfully, clients=" +
                 std::to_string(clientsArray.size()) +
                 ", workers=" + std::to_string(workersArray.size()) +
@@ -1704,6 +2011,384 @@ public:
         }
 
         return result;
+    }
+
+    // =========================================================================
+    // НОВЫЙ МЕТОД: РЕГИСТРАЦИЯ ПРОДАЖИ ОДНОЙ ЕДИНИЦЫ ТОВАРА
+    // Вызывается при получении уведомления от кассы Атол 77Ф через 1С.
+    // Атомарно: увеличивает sold_quantity, создаёт запись в item_sales,
+    // обновляет статус если все единицы проданы.
+    //
+    // @param itemId       — ID товара в таблице items
+    // @param salePrice    — цена продажи (из чека кассы)
+    // @param source       — источник продажи ("1C", "ATOL_77F", и т.д.)
+    // @param receiptNumber— номер чека из кассы
+    // @param barcodePayload — содержимое штрих-кода (для аудита)
+    // @return true при успешной регистрации продажи
+    // =========================================================================
+    bool registerItemSale(int itemId, double salePrice, const std::string& source,
+        const std::string& receiptNumber, const std::string& barcodePayload) {
+        try {
+            pqxx::work txn{ *conn_ };
+
+            // =================================================================
+            // ШАГ 1: Блокируем строку товара для атомарного обновления.
+            // FOR UPDATE предотвращает гонку при одновременных продажах.
+            // =================================================================
+            auto itemRes = txn.exec(
+                "SELECT id, client_id, quantity, sold_quantity, estimated_price, "
+                "client_percent, store_percent, status "
+                "FROM items WHERE id = $1 FOR UPDATE",
+                pqxx::params{ itemId }
+            );
+
+            if (itemRes.empty()) {
+                g_serverLogger.error("registerItemSale: item not found, id=" + std::to_string(itemId));
+                return false;
+            }
+
+            int currentQty = itemRes[0]["quantity"].as<int>();
+            int currentSold = itemRes[0]["sold_quantity"].as<int>();
+            int clientId = itemRes[0]["client_id"].as<int>();
+            double estimatedPrice = itemRes[0]["estimated_price"].as<double>();
+            double clientPercent = itemRes[0]["client_percent"].is_null() ? 0.0 :
+                itemRes[0]["client_percent"].as<double>();
+            double storePercent = itemRes[0]["store_percent"].is_null() ? 0.0 :
+                itemRes[0]["store_percent"].as<double>();
+            std::string currentStatus = itemRes[0]["status"].is_null() ? "pending" :
+                itemRes[0]["status"].as<std::string>();
+
+            int availableQty = currentQty - currentSold;
+
+            g_serverLogger.info("registerItemSale: itemId=" + std::to_string(itemId) +
+                ", clientId=" + std::to_string(clientId) +
+                ", qty=" + std::to_string(currentQty) +
+                ", sold=" + std::to_string(currentSold) +
+                ", available=" + std::to_string(availableQty) +
+                ", price=" + std::to_string(salePrice) +
+                ", source=" + source);
+
+            // =================================================================
+            // ШАГ 2: Проверка — есть ли доступные единицы для продажи.
+            // =================================================================
+            if (availableQty <= 0) {
+                g_serverLogger.warning("registerItemSale: no available units for item " +
+                    std::to_string(itemId) + ", available=" + std::to_string(availableQty));
+                return false;
+            }
+
+            // =================================================================
+            // ШАГ 3: Проверка статуса — нельзя продавать expired/sold товары.
+            // =================================================================
+            if (currentStatus == "expired" || currentStatus == "sold" ||
+                currentStatus == "low_quality" || currentStatus == "unsold_quality") {
+                g_serverLogger.warning("registerItemSale: item " + std::to_string(itemId) +
+                    " has status '" + currentStatus + "', sale REJECTED");
+                return false;
+            }
+
+            // =================================================================
+            // ШАГ 4: Вычисление сумм распределения выручки.
+            // Математика: client_amount = price * client_percent / 100
+            //             store_amount  = price * store_percent / 100
+            // Это ЕДИНИЧНАЯ сумма (за 1 штуку), не за всю партию.
+            // =================================================================
+            double unitClientAmount = salePrice * clientPercent / 100.0;
+            double unitStoreAmount = salePrice * storePercent / 100.0;
+
+            // =================================================================
+            // ШАГ 5: Увеличиваем sold_quantity на 1.
+            // =================================================================
+            int newSoldQty = currentSold + 1;
+            std::string newStatus = (newSoldQty >= currentQty) ? "sold" : "pending";
+
+            txn.exec(
+                "UPDATE items SET sold_quantity = $2, status = $3, "
+                "sale_date = CASE WHEN $3 = 'sold' THEN EXTRACT(EPOCH FROM NOW()) ELSE sale_date END "
+                "WHERE id = $1",
+                pqxx::params{ itemId, newSoldQty, newStatus }
+            );
+
+            g_serverLogger.info("registerItemSale: item " + std::to_string(itemId) +
+                " updated: sold_quantity=" + std::to_string(newSoldQty) +
+                ", newStatus=" + newStatus);
+
+            // =================================================================
+            // ШАГ 6: Создаём запись в логе продаж item_sales.
+            // =================================================================
+            txn.exec(
+                "INSERT INTO item_sales (item_id, client_id, quantity_sold, sale_price, "
+                "client_amount, store_amount, source, receipt_number, barcode_payload) "
+                "VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8)",
+                pqxx::params{ itemId, clientId, salePrice, unitClientAmount,
+                              unitStoreAmount, source,
+                              receiptNumber.empty() ? std::optional<std::string>{} : receiptNumber,
+                              barcodePayload.empty() ? std::optional<std::string>{} : barcodePayload }
+            );
+
+            // =================================================================
+            // ШАГ 7: Обновляем счётчики клиента (items_sold).
+            // =================================================================
+            txn.exec(
+                "UPDATE clients SET items_sold = items_sold + 1, "
+                "updated_at = EXTRACT(EPOCH FROM NOW()) WHERE id = $1",
+                pqxx::params{ clientId }
+            );
+
+            txn.commit();
+            g_serverLogger.info("registerItemSale: SUCCESS - itemId=" + std::to_string(itemId) +
+                ", newSoldQty=" + std::to_string(newSoldQty) +
+                ", clientAmount=" + std::to_string(unitClientAmount) +
+                ", storeAmount=" + std::to_string(unitStoreAmount));
+            return true;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("registerItemSale error: " + std::string(e.what()));
+            return false;
+        }
+    }
+
+    // =========================================================================
+    // НОВЫЙ МЕТОД: ПОИСК ТОВАРА ПО ШТРИХ-КОДУ (для кассы Атол 77Ф)
+    // Штрих-код ценника содержит: FIO=...;ID=...;NAME=...;PRICE=...;PAY=...
+    // Для идентификации конкретной единицы используем appendix_number + ordinal
+    // из тега "<appendix_number>+<ordinal>" на ценнике.
+    //
+    // @param appendixNumber — номер приложения к договору
+    // @param ordinal        — порядковый номер единицы в приложении
+    // @return JSON с данными товара или error
+    // =========================================================================
+    json findItemByBarcode(int clientId, double price) {
+        try {
+            pqxx::work txn{ *conn_ };
+            // Ищем товар клиента с matching price и доступным остатком
+            auto res = txn.exec(
+                "SELECT id, item_number, description, estimated_price, quantity, "
+                "sold_quantity, status, client_percent, store_percent, "
+                "client_amount, store_amount, appendix_id "
+                "FROM items WHERE client_id = $1 AND estimated_price = $2 "
+                "AND status = 'pending' AND (quantity - sold_quantity) > 0 "
+                "ORDER BY id LIMIT 1",
+                pqxx::params{ clientId, price }
+            );
+
+            if (res.empty()) {
+                g_serverLogger.warning("findItemByBarcode: no matching item for clientId=" +
+                    std::to_string(clientId) + ", price=" + std::to_string(price));
+                json err;
+                err["error"] = "Item not found or no available units";
+                return err;
+            }
+
+            json item;
+            item["id"] = res[0]["id"].as<int>();
+            item["item_number"] = res[0]["item_number"].as<int>();
+            item["description"] = res[0]["description"].as<std::string>();
+            item["estimated_price"] = res[0]["estimated_price"].as<double>();
+            item["quantity"] = res[0]["quantity"].as<int>();
+            item["sold_quantity"] = res[0]["sold_quantity"].as<int>();
+            item["available"] = res[0]["quantity"].as<int>() - res[0]["sold_quantity"].as<int>();
+            item["status"] = res[0]["status"].as<std::string>();
+            item["client_percent"] = res[0]["client_percent"].is_null() ? 0.0 :
+                res[0]["client_percent"].as<double>();
+            item["store_percent"] = res[0]["store_percent"].is_null() ? 0.0 :
+                res[0]["store_percent"].as<double>();
+            item["appendix_id"] = res[0]["appendix_id"].is_null() ? 0 :
+                res[0]["appendix_id"].as<long long>();
+
+            g_serverLogger.info("findItemByBarcode: found itemId=" +
+                std::to_string(item["id"].get<int>()) + " for clientId=" +
+                std::to_string(clientId) + ", price=" + std::to_string(price));
+            return item;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("findItemByBarcode error: " + std::string(e.what()));
+            json err;
+            err["error"] = e.what();
+            return err;
+        }
+    }
+
+    // =========================================================================
+    // НОВЫЙ МЕТОД: ОБРАБОТКА ПРОСРОЧЕННЫХ ПРИЛОЖЕНИЙ (15-дневный SLA)
+    // Вызывается фоновым процессом. Помечает товары как "выбывшие из продажи"
+    // если valid_until приложения истёк.
+    //
+    // @return количество обработанных приложений
+    // =========================================================================
+    int processExpiredAppendices() {
+        int processedCount = 0;
+        try {
+            pqxx::work txn{ *conn_ };
+            int64_t nowSec = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+
+            // =================================================================
+            // Находим все приложения, у которых истёк срок действия
+            // и которые ещё не были обработаны как просроченные.
+            // =================================================================
+            auto expiredRes = txn.exec(
+                "SELECT id, appendix_number, client_id, valid_until, total_quantity "
+                "FROM contract_appendices "
+                "WHERE valid_until < $1 AND expired_processed = FALSE",
+                pqxx::params{ nowSec }
+            );
+
+            g_serverLogger.info("processExpiredAppendices: found " +
+                std::to_string(expiredRes.size()) + " expired appendices to process");
+
+            for (const auto& row : expiredRes) {
+                long long appendixId = row["id"].as<long long>();
+                long long appendixNumber = row["appendix_number"].as<long long>();
+                int clientId = row["client_id"].as<int>();
+
+                g_serverLogger.info("processExpiredAppendices: processing appendix " +
+                    std::to_string(appendixNumber) + " (id=" + std::to_string(appendixId) +
+                    ", clientId=" + std::to_string(clientId) + ")");
+
+                // =================================================================
+                // Помечаем все товары данного приложения как "expired",
+                // НО ТОЛЬКО те, которые ещё не проданы (status = 'pending').
+                // Проданные товары остаются со статусом 'sold'.
+                // =================================================================
+                auto updateRes = txn.exec(
+                    "UPDATE items SET status = 'expired', expired_at = $2 "
+                    "WHERE appendix_id = $1 AND status = 'pending' "
+                    "AND (quantity - sold_quantity) > 0",
+                    pqxx::params{ appendixId, nowSec }
+                );
+
+                int expiredItemsCount = static_cast<int>(updateRes.affected_rows());
+                g_serverLogger.info("processExpiredAppendices: marked " +
+                    std::to_string(expiredItemsCount) + " items as expired for appendix " +
+                    std::to_string(appendixNumber));
+
+                // =================================================================
+                // Помечаем приложение как обработанное.
+                // =================================================================
+                txn.exec(
+                    "UPDATE contract_appendices SET expired_processed = TRUE WHERE id = $1",
+                    pqxx::params{ appendixId }
+                );
+
+                processedCount++;
+            }
+
+            txn.commit();
+            g_serverLogger.info("processExpiredAppendices: completed, processed " +
+                std::to_string(processedCount) + " appendices");
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("processExpiredAppendices error: " + std::string(e.what()));
+        }
+        return processedCount;
+    }
+
+    // =========================================================================
+    // НОВЫЙ МЕТОД: ПОЛУЧЕНИЕ ПРОСРОЧЕННЫХ ТОВАРОВ ДЛЯ ПАНЕЛИ ДИРЕКТОРА
+    // Возвращает все товары со статусом 'expired' для отображения
+    // в DirectorWindow (вкладка "Выбывшие из продажи по сроку").
+    // =========================================================================
+    json getExpiredItems() {
+        json result = json::array();
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT i.id, i.item_number, i.description, i.estimated_price, "
+                "i.quantity, i.sold_quantity, i.condition, i.note, i.created_at, "
+                "i.expired_at, i.status, "
+                "c.id as client_id, c.phone as client_phone, "
+                "c.last_name || ' ' || c.first_name || COALESCE(' ' || c.middle_name, '') as client_name, "
+                "a.appendix_number, a.valid_until "
+                "FROM items i "
+                "JOIN clients c ON i.client_id = c.id "
+                "LEFT JOIN contract_appendices a ON i.appendix_id = a.id "
+                "WHERE i.status = 'expired' "
+                "ORDER BY i.expired_at DESC"
+            );
+
+            for (const auto& row : res) {
+                json item;
+                item["id"] = row["id"].as<int>();
+                item["item_number"] = row["item_number"].as<int>();
+                item["description"] = row["description"].as<std::string>();
+                item["estimated_price"] = row["estimated_price"].as<double>();
+                item["quantity"] = row["quantity"].as<int>();
+                item["sold_quantity"] = row["sold_quantity"].as<int>();
+                item["unsold_quantity"] = row["quantity"].as<int>() - row["sold_quantity"].as<int>();
+                item["condition"] = row["condition"].is_null() ? "" : row["condition"].as<std::string>();
+                item["note"] = row["note"].is_null() ? "" : row["note"].as<std::string>();
+                item["created_at"] = row["created_at"].as<int64_t>();
+                item["expired_at"] = row["expired_at"].is_null() ? 0 : row["expired_at"].as<int64_t>();
+                item["status"] = row["status"].as<std::string>();
+                item["client_id"] = row["client_id"].as<int>();
+                item["client_phone"] = row["client_phone"].as<std::string>();
+                item["client_name"] = row["client_name"].as<std::string>();
+                item["appendix_number"] = row["appendix_number"].is_null() ? 0 :
+                    row["appendix_number"].as<long long>();
+                item["valid_until"] = row["valid_until"].is_null() ? 0 :
+                    row["valid_until"].as<int64_t>();
+                result.push_back(item);
+            }
+
+            g_serverLogger.info("getExpiredItems: returned " + std::to_string(result.size()) +
+                " expired items");
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getExpiredItems error: " + std::string(e.what()));
+        }
+        return result;
+    }
+
+    // ========================================================================
+    // НОВЫЙ МЕТОД: РЕГИСТРАЦИЯ КОМИТЕНТА С ДОПОЛНИТЕЛЬНЫМИ ДАННЫМИ
+    // Вызывается из worker_window.h при выборе очереди "first_time"
+    // ========================================================================
+    std::pair<bool, int> registerCommittee(const std::string& phone,
+        const std::string& last_name, const std::string& first_name,
+        const std::string& middle_name, const std::string& birth_date,
+        const std::string& passport_type, const std::string& passport_series,
+        const std::string& passport_number, const std::string& address) {
+        try {
+            pqxx::work txn{ *conn_ };
+            // Проверяем, существует ли клиент с таким телефоном
+            auto exist = txn.exec("SELECT id FROM clients WHERE phone = $1", pqxx::params{ phone });
+            int clientId = 0;
+            if (!exist.empty()) {
+                // Обновляем существующего клиента
+                clientId = exist[0]["id"].as<int>();
+                txn.exec(
+                    "UPDATE clients SET last_name=$2, first_name=$3, middle_name=$4, "
+                    "birth_date=$5, passport_type=$6, passport_series=$7, passport_number=$8, "
+                    "address=$9, updated_at=EXTRACT(EPOCH FROM NOW()) "
+                    "WHERE id=$1",
+                    pqxx::params{ clientId, last_name, first_name,
+                        middle_name.empty() ? std::optional<std::string>{} : std::optional<std::string>(middle_name),
+                        birth_date, passport_type, passport_series, passport_number, address }
+                );
+            }
+            else {
+                // Создаем нового клиента с ролью 'client'
+                auto result = txn.exec(
+                    "INSERT INTO clients (phone, last_name, first_name, middle_name, "
+                    "birth_date, passport_type, passport_series, passport_number, address, role) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'client') "
+                    "RETURNING id",
+                    pqxx::params{ phone, last_name, first_name,
+                        middle_name.empty() ? std::optional<std::string>{} : std::optional<std::string>(middle_name),
+                        birth_date, passport_type, passport_series, passport_number, address }
+                );
+                clientId = result[0]["id"].as<int>();
+            }
+            txn.commit();
+            g_serverLogger.info("registerCommittee: success, clientId=" + std::to_string(clientId) +
+                ", phone=" + phone);
+            return { true, clientId };
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("registerCommittee error: " + std::string(e.what()));
+            return { false, 0 };
+        }
     }
 
 };

@@ -202,6 +202,29 @@ private:
                 handleDirectorGetClients(client_ip);
             }
             // =========================================================================
+            // НОВЫЙ РОУТ: РЕГИСТРАЦИЯ ПРОДАЖИ ТОВАРА (от кассы Атол 77Ф через 1С)
+            // POST /api/v1/sale/register
+            // Тело запроса:
+            // {
+            //   "client_id": 123,          // ID комитента (из штрих-кода)
+            //   "item_price": 1500.00,     // Цена продажи (из чека)
+            //   "source": "ATOL_77F",      // Источник (касса)
+            //   "receipt_number": "ЧК-001",// Номер чека из кассы
+            //   "barcode_payload": "FIO=...;ID=...;NAME=...;PRICE=...;PAY=..."
+            // }
+            // =========================================================================
+            else if (target == "/api/v1/sale/register" && method == http::verb::post) {
+                handleSaleRegister(client_ip);
+            }
+            // =========================================================================
+            // НОВЫЙ РОУТ: ПОЛУЧЕНИЕ ПРОСРОЧЕННЫХ ТОВАРОВ ДЛЯ ДИРЕКТОРА
+            // GET /api/v1/director/expired_items
+            // ДОСТУП: только директор (+79914869324)
+            // =========================================================================
+            else if (target.find("/api/v1/director/expired_items") == 0 && method == http::verb::get) {
+                handleDirectorExpiredItems(client_ip);
+            }
+            // =========================================================================
             // НОВЫЕ РОУТЫ: ПРИЛОЖЕНИЯ К ДОГОВОРУ (чеки комитентов)
             // =========================================================================
             else if (target.find("/api/v1/appendix/by_number") == 0 && method == http::verb::get) {
@@ -210,6 +233,13 @@ private:
             else if (target.find("/api/v1/appendix/latest") == 0 && method == http::verb::get) {
                 handleAppendixLatest(client_ip);
             }
+            // =========================================================================
+            // НОВЫЙ РОУТ: РЕГИСТРАЦИЯ КОМИТЕНТА С ДОПОЛНИТЕЛЬНЫМИ ДАННЫМИ
+            // POST /api/v1/clients/register_committee
+            // =========================================================================
+            else if (target == "/api/v1/clients/register_committee" && method == http::verb::post) {
+                handleRegisterCommittee(client_ip);
+            }
             else {
                 g_serverLogger.warning("Routing request: " + std::string(http::to_string(method)) + " " + std::string(target) + " -> Not found");
                 response_.result(http::status::not_found);
@@ -217,6 +247,7 @@ private:
                 response_.body() = json{ {"error", "Not found"} }.dump();
                 response_.prepare_payload();
             }
+            
         }
         catch (const exception& e) {
             g_serverLogger.error("Exception during request handling: " + std::string(e.what()));
@@ -320,9 +351,7 @@ private:
         response_.prepare_payload();
         g_serverLogger.info("Client registration successful for: " + phone + " from " + client_ip + " | Already exists: " + std::to_string(already_exists));
     }
-
-   
-    
+        
     // -------------------------------------------------------------------------
     // POST /api/v1/clients/by_phone (post-метод)
     // -------------------------------------------------------------------------
@@ -688,11 +717,15 @@ private:
         resp["phone"] = clientOpt->phone;
         resp["name"] = clientOpt->name;
         resp["email"] = clientOpt->email;
+        resp["birth_date"] = clientOpt->birth_date;
+
         response_.result(http::status::ok);
         response_.set(http::field::content_type, "application/json");
         response_.body() = resp.dump();
         response_.prepare_payload();
-        g_serverLogger.info("Client data returned for id " + std::to_string(id) + " (" + clientOpt->phone + ")");
+
+        g_serverLogger.info("Client data returned for id " + std::to_string(id) +
+            " (" + clientOpt->phone + ", birth_date=" + clientOpt->birth_date + ") from " + client_ip);
     }
 
     void handleGetTicket(const std::string& client_ip) {
@@ -719,19 +752,84 @@ private:
         response_.prepare_payload();
     }
 	// --- методы для работы с очередью для пользователей, пришедших впервые (first_time) ---
+// ========================================================================
+// ОБРАБОТЧИК: handleFirstTimeCreate
+// POST /api/v1/queue/first_time/create
+// ========================================================================
+// СОГЛАСОВАННОСТЬ ТИПОВ:
+// queue_->createFirstTimeTicket(window) возвращает json-объект.
+// Данный метод работает ИМЕННО С json, не выполняя никаких преобразований
+// в std::string. Это исключает ошибку type_error.302.
+//
+// ВОЗВРАЩАЕТ КЛИЕНТУ:
+// {
+//   "ticket_number":     "F028",   // короткий номер (не более 3 знаков)
+//   "position":          28,        // корректная позиция в очереди
+//   "window_number":     "1",       // окно приёма
+//   "wait_time_minutes": 140,       // расчётное время ожидания
+//   "created_at":        1787654321 // метка времени создания
+// }
+// ========================================================================
     void handleFirstTimeCreate(const std::string& client_ip) {
+        // ------------------------------------------------------------------
+        // ШАГ 1: Разбор тела запроса. Тело может отсутствовать или быть
+        // некорректным — в этом случае используем окно по умолчанию "1".
+        // ------------------------------------------------------------------
         json body;
-        try { body = json::parse(request_.body()); }
-        catch (...) { /* ignore */ }
+        try {
+            body = json::parse(request_.body());
+            g_serverLogger.info("handleFirstTimeCreate: parsed body: " + body.dump());
+        }
+        catch (const std::exception& e) {
+            // Не прерываем обработку: отсутствие тела не является ошибкой,
+            // так как окно по умолчанию "1" допустимо бизнес-логикой.
+            g_serverLogger.warning("handleFirstTimeCreate: body parse skipped (" +
+                std::string(e.what()) + "), using default window=1");
+        }
+
+        // ------------------------------------------------------------------
+        // ШАГ 2: Извлекаем номер окна (по умолчанию "1").
+        // ------------------------------------------------------------------
         std::string window = body.value("window", "1");
-        std::string ticketNumber = queue_->createFirstTimeTicket(window);
-        if (ticketNumber.empty()) {
+
+        g_serverLogger.info("handleFirstTimeCreate: request from " + client_ip +
+            ", window=" + window);
+
+        // ------------------------------------------------------------------
+        // ШАГ 3: Создаём талон. queue_->createFirstTimeTicket() возвращает
+        // json-объект. НИКАКОГО преобразования в std::string здесь нет.
+        // ------------------------------------------------------------------
+        json ticket = queue_->createFirstTimeTicket(window);
+
+        // ------------------------------------------------------------------
+        // ШАГ 4: Проверяем результат. Если Database вернул json с полем
+        // "error" — значит, создание талона не удалось.
+        // ------------------------------------------------------------------
+        if (ticket.contains("error")) {
+            g_serverLogger.error("handleFirstTimeCreate: failed to create ticket: " +
+                ticket["error"].dump());
             response_.result(http::status::internal_server_error);
+            response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Failed to create ticket"} }.dump();
         }
         else {
+            // ------------------------------------------------------------------
+            // ШАГ 5: Успешное создание. Логируем с безопасным извлечением полей
+            // (метод value() с fallback не бросает исключений).
+            // ------------------------------------------------------------------
+            g_serverLogger.info("handleFirstTimeCreate: ticket created: number=" +
+                ticket.value("ticket_number", std::string("UNKNOWN")) +
+                ", position=" + std::to_string(ticket.value("position", 0)) +
+                ", window=" + ticket.value("window_number", std::string("1")) +
+                ", waitTime=" + std::to_string(ticket.value("wait_time_minutes", 0)) +
+                ", client=" + client_ip);
+
             response_.result(http::status::ok);
-            response_.body() = json{ {"ticket_number", ticketNumber} }.dump();
+            response_.set(http::field::content_type, "application/json");
+            // Возвращаем ВЕСЬ json-объект как есть. Клиент (main_window.h
+            // handleFirstTime) извлечёт из него ticket_number, position,
+            // window_number, wait_time_minutes.
+            response_.body() = ticket.dump();
         }
         response_.prepare_payload();
     }
@@ -1275,18 +1373,18 @@ private:
     }
 
     // =========================================================================
-// ОБРАБОТЧИКИ ДЛЯ ПАНЕЛИ ДИРЕКТОРА МАГАЗИНА
-// =========================================================================
+    // ОБРАБОТЧИКИ ДЛЯ ПАНЕЛИ ДИРЕКТОРА МАГАЗИНА
+    // =========================================================================
 
-/**
- * @brief Обработчик GET /api/v1/director/stats
- * Возвращает полную статистику для панели директора:
- * - Данные о всех комитентах (сдано товаров, суммы)
- * - Эффективность товароведов (внесено в БД, продано)
- * - Не проданные товары из-за низкого качества
- *
- * ДОСТУП: только для роли 'director' (проверка по телефону +79914869324)
- */
+    /**
+     * @brief Обработчик GET /api/v1/director/stats
+     * Возвращает полную статистику для панели директора:
+     * - Данные о всех комитентах (сдано товаров, суммы)
+     * - Эффективность товароведов (внесено в БД, продано)
+     * - Не проданные товары из-за низкого качества
+     *
+     * ДОСТУП: только для роли 'director' (проверка по телефону +79914869324)
+     */
     void handleDirectorStats(const std::string& client_ip) {
         g_serverLogger.info("handleDirectorStats: request from " + client_ip);
 
@@ -1594,10 +1692,10 @@ private:
     }
 
     // =========================================================================
-// GET /api/v1/appendix/by_number?number=...
-// Выборка приложения к договору по номеру: перечень вещей, продано, возвращено.
-// ДОСТУП: только роль worker (товаровед) — как в handleGetItems.
-// =========================================================================
+    // GET /api/v1/appendix/by_number?number=...
+    // Выборка приложения к договору по номеру: перечень вещей, продано, возвращено.
+    // ДОСТУП: только роль worker (товаровед) — как в handleGetItems.
+    // =========================================================================
     void handleAppendixByNumber(const std::string& client_ip) {
         g_serverLogger.info("handleAppendixByNumber: request from " + client_ip);
         std::string authHeader;
@@ -1694,6 +1792,290 @@ private:
         response_.body() = data.dump();
         response_.prepare_payload();
         g_serverLogger.info("handleAppendixLatest: client_id=" + std::to_string(clientId) + " done");
+    }
+
+    // =========================================================================
+    // ОБРАБОТЧИК POST /api/v1/sale/register
+    // Регистрация продажи одной единицы товара.
+    // Вызывается из 1С после пробития чека на кассе Атол 77Ф.
+    //
+    // Логика:
+    // 1. Парсим штрих-код или принимаем client_id + item_price
+    // 2. Находим товар в БД по client_id и цене
+    // 3. Атомарно списываем одну единицу (sold_quantity += 1)
+    // 4. Фиксируем продажу в item_sales
+    // 5. Если все единицы проданы → status = 'sold'
+    // =========================================================================
+    void handleSaleRegister(const std::string& client_ip) {
+        g_serverLogger.info("handleSaleRegister: request from " + client_ip);
+
+        // =====================================================================
+        // ШАГ 1: Разбор JSON тела запроса
+        // =====================================================================
+        json body;
+        try {
+            body = json::parse(request_.body());
+            g_serverLogger.info("handleSaleRegister: parsed body: " + body.dump());
+        }
+        catch (const json::parse_error& e) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleSaleRegister: JSON parse error from " + client_ip);
+            return;
+        }
+
+        // =====================================================================
+        // ШАГ 2: Валидация обязательных полей
+        // =====================================================================
+        if (!body.contains("client_id") || !body["client_id"].is_number()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Missing or invalid client_id"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleSaleRegister: missing client_id from " + client_ip);
+            return;
+        }
+
+        if (!body.contains("item_price") || !body["item_price"].is_number()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Missing or invalid item_price"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleSaleRegister: missing item_price from " + client_ip);
+            return;
+        }
+
+        int clientId = body["client_id"].get<int>();
+        double itemPrice = body["item_price"].get<double>();
+        std::string source = body.value("source", std::string("1C"));
+        std::string receiptNumber = body.value("receipt_number", std::string(""));
+        std::string barcodePayload = body.value("barcode_payload", std::string(""));
+
+        g_serverLogger.info("handleSaleRegister: clientId=" + std::to_string(clientId) +
+            ", itemPrice=" + std::to_string(itemPrice) +
+            ", source=" + source +
+            ", receiptNumber=" + receiptNumber);
+
+        // =====================================================================
+        // ШАГ 3: Проверка, что клиент существует и не заблокирован
+        // =====================================================================
+        auto clientOpt = db_->getClientById(clientId);
+        if (!clientOpt) {
+            response_.result(http::status::not_found);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Client not found"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleSaleRegister: client not found, id=" +
+                std::to_string(clientId));
+            return;
+        }
+
+        if (db_->isClientBlocked(clientId)) {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Client is blocked, sale rejected"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleSaleRegister: BLOCKED client " +
+                std::to_string(clientId) + " attempted sale");
+            return;
+        }
+
+        // =====================================================================
+        // ШАГ 4: Поиск товара по client_id и цене
+        // =====================================================================
+        json itemData = db_->findItemByBarcode(clientId, itemPrice);
+        if (itemData.contains("error")) {
+            response_.result(http::status::not_found);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = itemData.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleSaleRegister: item not found for clientId=" +
+                std::to_string(clientId) + ", price=" + std::to_string(itemPrice));
+            return;
+        }
+
+        int itemId = itemData["id"].get<int>();
+        g_serverLogger.info("handleSaleRegister: matched itemId=" + std::to_string(itemId) +
+            ", available=" + std::to_string(itemData["available"].get<int>()));
+
+        // =====================================================================
+        // ШАГ 5: Регистрация продажи (атомарная операция в БД)
+        // =====================================================================
+        bool saleSuccess = db_->registerItemSale(itemId, itemPrice, source,
+            receiptNumber, barcodePayload);
+
+        if (saleSuccess) {
+            response_.result(http::status::ok);
+            response_.set(http::field::content_type, "application/json");
+            json successResp;
+            successResp["success"] = true;
+            successResp["item_id"] = itemId;
+            successResp["client_id"] = clientId;
+            successResp["sale_price"] = itemPrice;
+            successResp["remaining_units"] = itemData["available"].get<int>() - 1;
+            response_.body() = successResp.dump();
+            g_serverLogger.info("handleSaleRegister: SALE REGISTERED SUCCESSFULLY - itemId=" +
+                std::to_string(itemId) + ", clientId=" + std::to_string(clientId));
+        }
+        else {
+            response_.result(http::status::conflict);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Sale registration failed: no available units or item expired"} }.dump();
+            g_serverLogger.error("handleSaleRegister: SALE REGISTRATION FAILED for itemId=" +
+                std::to_string(itemId));
+        }
+        response_.prepare_payload();
+    }
+
+    // =========================================================================
+    // ОБРАБОТЧИК GET /api/v1/director/expired_items
+    // Возвращает список товаров, выбывших из продажи по истечении 15 дней.
+    // ДОСТУП: только директор (+79914869324)
+    // =========================================================================
+    void handleDirectorExpiredItems(const std::string& client_ip) {
+        g_serverLogger.info("handleDirectorExpiredItems: request from " + client_ip);
+
+        // Проверка авторизации
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) authHeader = it->value();
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Missing or invalid Authorization header"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        std::string token = authHeader.substr(7);
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid or expired token"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // Проверка роли директора
+        constexpr const char* DIRECTOR_PHONE = "+79914869324";
+        if (*phoneOpt != DIRECTOR_PHONE) {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Access denied: director role required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorExpiredItems: access denied for phone=" + *phoneOpt);
+            return;
+        }
+
+        // Получение просроченных товаров
+        json expiredItems = db_->getExpiredItems();
+
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{
+            {"expired_items", expiredItems},
+            {"count", expiredItems.size()}
+        }.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("handleDirectorExpiredItems: returned " +
+            std::to_string(expiredItems.size()) + " expired items to director");
+    }
+
+    // =========================================================================
+    // ОБРАБОТЧИК POST /api/v1/clients/register_committee
+    // Регистрация комитента с дополнительными данными (first_time)
+    // =========================================================================
+    void handleRegisterCommittee(const std::string& client_ip) {
+        g_serverLogger.info("handleRegisterCommittee: request from " + client_ip);
+        // Проверка авторизации
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) authHeader = it->value();
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.body() = json{ {"error", "Missing or invalid Authorization"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string token = authHeader.substr(7);
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.body() = json{ {"error", "Invalid token"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        // Проверка роли: только worker
+        auto clientOpt = db_->getClientByPhone(*phoneOpt);
+        if (!clientOpt || clientOpt->role != "worker") {
+            response_.result(http::status::forbidden);
+            response_.body() = json{ {"error", "Access denied: worker role required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        // Разбор JSON
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        // Валидация
+        if (!body.contains("phone") || !body["phone"].is_string() ||
+            !body.contains("last_name") || !body["last_name"].is_string() ||
+            !body.contains("first_name") || !body["first_name"].is_string()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Missing required fields"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string phone = body["phone"].get<std::string>();
+        std::string last_name = body["last_name"].get<std::string>();
+        std::string first_name = body["first_name"].get<std::string>();
+        std::string middle_name = body.value("middle_name", std::string{});
+        std::string birth_date = body.value("birth_date", std::string{});
+        std::string passport_type = body.value("passport_type", "rf");
+        std::string passport_series = body.value("passport_series", std::string{});
+        std::string passport_number = body.value("passport_number", std::string{});
+        std::string address = body.value("address", std::string{});
+        // Нормализация телефона
+        std::string digits;
+        for (char c : phone) if (c >= '0' && c <= '9') digits += c;
+        if (digits.length() == 11 && (digits[0] == '7' || digits[0] == '8')) {
+            phone = "+7" + digits.substr(1);
+        }
+        else if (digits.length() == 10) {
+            phone = "+7" + digits;
+        }
+        else {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid phone number"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        // Регистрация
+        auto [ok, clientId] = db_->registerCommittee(phone, last_name, first_name,
+            middle_name, birth_date, passport_type, passport_series, passport_number, address);
+        if (ok) {
+            response_.result(http::status::ok);
+            json resp;
+            resp["success"] = true;
+            resp["client_id"] = clientId;
+            resp["phone"] = phone;
+            response_.body() = resp.dump();
+            g_serverLogger.info("handleRegisterCommittee: SUCCESS, clientId=" +
+                std::to_string(clientId) + ", phone=" + phone);
+        }
+        else {
+            response_.result(http::status::internal_server_error);
+            response_.body() = json{ {"error", "Failed to register committee"} }.dump();
+        }
+        response_.prepare_payload();
     }
 
     void doWrite() {
@@ -1804,6 +2186,41 @@ void runServer(std::shared_ptr<Database> db, std::shared_ptr<AuthService> auth,
     }
 }
 
+// =========================================================================
+// ФОНОВЫЙ ПОТОК: ПРОВЕРКА 15-ДНЕВНОГО SLA
+// Запускается в main() после инициализации всех сервисов.
+// Каждый час проверяет, есть ли приложения с истёкшим valid_until,
+// и помечает непроданные товары как "выбывшие из продажи".
+// =========================================================================
+void startExpiredItemsMonitor(std::shared_ptr<Database> db) {
+    std::thread([db]() {
+        g_serverLogger.info("ExpiredItemsMonitor: background thread started");
+
+        while (true) {
+            // Проверяем каждые 3600 секунд (1 час)
+            std::this_thread::sleep_for(std::chrono::seconds(3600));
+
+            g_serverLogger.info("ExpiredItemsMonitor: periodic check triggered");
+
+            try {
+                int processed = db->processExpiredAppendices();
+                if (processed > 0) {
+                    g_serverLogger.info("ExpiredItemsMonitor: processed " +
+                        std::to_string(processed) + " expired appendices");
+                }
+                else {
+                    g_serverLogger.info("ExpiredItemsMonitor: no expired appendices found");
+                }
+            }
+            catch (const std::exception& e) {
+                g_serverLogger.error("ExpiredItemsMonitor error: " + std::string(e.what()));
+            }
+        }
+        }).detach();
+
+    g_serverLogger.info("ExpiredItemsMonitor: thread launched (interval=3600s)");
+}
+
 int main() {
     try {
         g_serverLogger.info("=== Server starting ===");
@@ -1832,6 +2249,8 @@ int main() {
 
         runServer(db, auth, queue, onec, rate_limiter);
 
+		startExpiredItemsMonitor(db); // Запуск фонового потока мониторинга просроченных приложений
+        
         g_serverLogger.info("=== Server shutdown ===");
         return 0;
     }

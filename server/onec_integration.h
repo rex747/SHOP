@@ -31,31 +31,89 @@ public:
 
     bool syncData() {
         try {
-            // Исправление: вызов метода экземпляра вместо статического вызова
             auto items = db_->getUnsyncedItems();
             if (items.empty()) {
+                g_serverLogger.info("OneCIntegration::syncData: no unsynced items");
                 return true;
             }
 
+            g_serverLogger.info("OneCIntegration::syncData: syncing " +
+                std::to_string(items.size()) + " items to 1C");
+
+            // Формируем JSON-массив для отправки в 1С
+            json syncPayload = json::array();
+            for (const auto& item : items) {
+                json entry;
+                entry["item_id"] = item["id"].get<int>();
+                entry["client_id"] = item["client_id"].get<int>();
+                entry["description"] = item["description"].get<std::string>();
+                entry["estimated_price"] = item["estimated_price"].get<double>();
+                entry["client_phone"] = item["client_phone"].get<std::string>();
+                entry["client_name"] = item["client_name"].get<std::string>();
+                syncPayload.push_back(entry);
+            }
+
+            // Отправка POST-запроса в 1С через libcurl
+            std::string url = std::string(Config::ONEC_URL) + "/items";
+            std::string postData = syncPayload.dump();
+            std::string response;
+
+            CURL* curl = curl_easy_init();
+            if (!curl) {
+                g_serverLogger.error("OneCIntegration::syncData: curl init failed");
+                logSync("1C_ITEMS_SYNC", 0, "FAILED", "curl init failed");
+                return false;
+            }
+
+            struct curl_slist* headers = nullptr;
+            headers = curl_slist_append(headers, "Content-Type: application/json");
+
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_POST, 1L);
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postData.c_str());
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)postData.size());
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback_1c);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+
+            if (strlen(Config::ONEC_USER) > 0 && strlen(Config::ONEC_PASSWORD) > 0) {
+                curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+                std::string auth = std::string(Config::ONEC_USER) + ":" + Config::ONEC_PASSWORD;
+                curl_easy_setopt(curl, CURLOPT_USERPWD, auth.c_str());
+            }
+
+            CURLcode res = curl_easy_perform(curl);
+            long http_code = 0;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+
+            if (res != CURLE_OK || http_code != 200) {
+                std::string errMsg = "HTTP " + std::to_string(http_code) +
+                    ", curl error: " + std::to_string(res);
+                g_serverLogger.error("OneCIntegration::syncData: failed - " + errMsg);
+                logSync("1C_ITEMS_SYNC", 0, "FAILED", errMsg);
+                return false;
+            }
+
+            // Помечаем все отправленные товары как синхронизированные
             int successCount = 0;
             for (const auto& item : items) {
-                
-
-
-                bool mock1cSuccess = true;
-
-                if (mock1cSuccess) {
-                    // Исправление: вызов метода экземпляра
-                    db_->updateItemSyncStatus(item["id"].get<int>(), true);
-                    successCount++;
-                }
+                db_->updateItemSyncStatus(item["id"].get<int>(), true);
+                successCount++;
             }
 
             logSync("1C_ITEMS_SYNC", successCount, "SUCCESS", "");
+            g_serverLogger.info("OneCIntegration::syncData: successfully synced " +
+                std::to_string(successCount) + " items to 1C");
             return true;
         }
         catch (const std::exception& e) {
             logSync("1C_ITEMS_SYNC", 0, "FAILED", e.what());
+            g_serverLogger.error("OneCIntegration::syncData exception: " + std::string(e.what()));
             return false;
         }
     }
