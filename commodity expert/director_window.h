@@ -63,6 +63,7 @@ using json = nlohmann::json;
 #define IDC_DIRECTOR_STATUS_LABEL       7010
 #define IDC_DIRECTOR_SEARCH_EDIT        7011
 #define IDC_DIRECTOR_SEARCH_BTN         7012
+#define IDC_DIRECTOR_EXPIRED_LIST       7013
 
 // Сообщения для асинхронного обновления UI
 #define WM_DIRECTOR_DATA_LOADED         (WM_APP + 10)
@@ -112,6 +113,7 @@ struct DirectorStats {
     json clients;       // Массив комитентов
     json workers;       // Массив товароведов
     json lowQuality;    // Массив не проданных товаров из-за низкого качества
+    json expired;       // Массив товаров, выбывших по 15-дневному сроку
     json summary;       // Общая сводка
     bool loaded;        // Флаг успешной загрузки
 
@@ -131,6 +133,7 @@ private:
     HWND m_hClientsList;            // ListView для комитентов
     HWND m_hWorkersList;            // ListView для товароведов
     HWND m_hLowQualityList;         // ListView для не проданных товаров
+	HWND m_hExpiredList;            // ListView для выбывших товаров
     HWND m_hSummaryLabel;           // Label для общей сводки
     HWND m_hBlockBtn;               // Кнопка "Заблокировать"
     HWND m_hUnblockBtn;             // Кнопка "Разблокировать"
@@ -351,6 +354,9 @@ private:
         tie.pszText = const_cast<LPWSTR>(L"⚠️ Не продано (Низкое качество)");
         TabCtrl_InsertItem(m_hTabControl, 2, &tie);
 
+        tie.pszText = const_cast<LPWSTR>(L"⏰ Выбывшие из продажи (15 дней)");
+        TabCtrl_InsertItem(m_hTabControl, 3, &tie);
+
         // =====================================================================
         // LISTVIEW ДЛЯ КОМИТЕНТОВ (ВКЛАДКА 0)
         // =====================================================================
@@ -365,6 +371,11 @@ private:
         // LISTVIEW ДЛЯ НЕ ПРОДАННЫХ ТОВАРОВ (ВКЛАДКА 2)
         // =====================================================================
         createLowQualityListView();
+
+        // =====================================================================
+        // НОВОЕ: LISTVIEW ДЛЯ ПРОСРОЧЕННЫХ ТОВАРОВ (ВКЛАДКА 3)
+        // =====================================================================
+        createExpiredListView();
 
         // =====================================================================
         // СВОДКА (ВНИЗУ ОКНА)
@@ -554,6 +565,58 @@ private:
     }
 
     // =========================================================================
+    // СОЗДАНИЕ LISTVIEW ДЛЯ ПРОСРОЧЕННЫХ ТОВАРОВ (ВКЛАДКА 3)
+    // Отображает товары, которые не были проданы в течение 15 дней
+    // и автоматически помечены как "выбывшие из продажи".
+    // =========================================================================
+    void createExpiredListView() {
+        g_logger.info(L"DirectorWindow: createExpiredListView started");
+        RECT rc;
+        GetClientRect(m_hTabControl, &rc);
+        int listWidth = rc.right - rc.left - 20;
+        int listHeight = rc.bottom - rc.top - 40;
+        m_hExpiredList = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+            WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+            10, 10, listWidth, listHeight,
+            m_hTabControl, (HMENU)(INT_PTR)IDC_DIRECTOR_EXPIRED_LIST, g_hInstance, nullptr
+        );
+        SendMessageW(m_hExpiredList, WM_SETFONT, (WPARAM)m_hFontNormal, TRUE);
+        ListView_SetExtendedListViewStyle(m_hExpiredList,
+            LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+        LVCOLUMNW col = {};
+        col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+        // Колонки для просроченных товаров:
+        // № товара, Наименование, Цена, Кол-во, Не продано, Комитент,
+        // Приложение, Дата приёмки, Срок истёк, Дата выбытия
+        struct ColumnDef {
+            const wchar_t* text;
+            int width;
+        };
+        ColumnDef columns[] = {
+            { L"№ товара", 80 },
+            { L"Наименование", 200 },
+            { L"Цена (₽)", 90 },
+            { L"Кол-во", 60 },
+            { L"Не продано", 90 },
+            { L"Комитент", 180 },
+            { L"Телефон", 120 },
+            { L"Приложение №", 100 },
+            { L"Дата приёмки", 130 },
+            { L"Срок истёк", 130 },
+            { L"Дата выбытия", 130 }
+        };
+        for (int i = 0; i < _countof(columns); i++) {
+            col.pszText = const_cast<LPWSTR>(columns[i].text);
+            col.cx = columns[i].width;
+            col.iSubItem = i;
+            ListView_InsertColumn(m_hExpiredList, i, &col);
+        }
+        g_logger.info(L"DirectorWindow: expired ListView created with " +
+            std::to_wstring(_countof(columns)) + L" columns");
+    }
+
+    // =========================================================================
     // ПОКАЗАТЬ ВКЛАДКУ
     // =========================================================================
     void showTab(int tabIndex) {
@@ -574,6 +637,9 @@ private:
             break;
         case 2:
             ShowWindow(m_hLowQualityList, SW_SHOW);
+            break;
+        case 3:  
+            ShowWindow(m_hExpiredList, SW_SHOW);
             break;
         }
     }
@@ -613,13 +679,15 @@ private:
                 stats.clients = response->value("clients", json::array());
                 stats.workers = response->value("workers", json::array());
                 stats.lowQuality = response->value("low_quality_items", json::array());
+                stats.expired = response->value("expired_items", json::array());
                 stats.summary = response->value("summary", json::object());
                 stats.loaded = true;
 
                 g_logger.info(L"DirectorWindow: stats loaded successfully - clients=" +
                     std::to_wstring(stats.clients.size()) +
                     L", workers=" + std::to_wstring(stats.workers.size()) +
-                    L", lowQuality=" + std::to_wstring(stats.lowQuality.size()));
+                    L", lowQuality=" + std::to_wstring(stats.lowQuality.size()) +
+                    L", expired=" + std::to_wstring(stats.expired.size()));
             }
             else {
                 // Ошибка загрузки
@@ -854,6 +922,58 @@ private:
             std::to_wstring(ListView_GetItemCount(m_hLowQualityList)));
 
         // =====================================================================
+        // НОВОЕ: ОБНОВЛЯЕМ СПИСОК ПРОСРОЧЕННЫХ ТОВАРОВ (ВКЛАДКА 3)
+        // =====================================================================
+        ListView_DeleteAllItems(m_hExpiredList);
+        for (size_t i = 0; i < m_stats.expired.size(); i++) {
+            const auto& itemData = m_stats.expired[i];
+            LVITEMW item = {};
+            item.mask = LVIF_TEXT;
+            item.iItem = ListView_GetItemCount(m_hExpiredList);
+            item.iSubItem = 0;
+            // Колонка 0: № товара
+            std::wstring itemNumber = std::to_wstring(itemData.value("item_number", 0));
+            item.pszText = const_cast<LPWSTR>(itemNumber.c_str());
+            int index = ListView_InsertItem(m_hExpiredList, &item);
+            // Колонка 1: Наименование
+            std::wstring description = utf8_to_wstring(itemData.value("description", ""));
+            ListView_SetItemText(m_hExpiredList, index, 1, const_cast<LPWSTR>(description.c_str()));
+            // Колонка 2: Цена (₽)
+            wchar_t priceBuf[50];
+            swprintf_s(priceBuf, L"%.2f", itemData.value("estimated_price", 0.0));
+            ListView_SetItemText(m_hExpiredList, index, 2, priceBuf);
+            // Колонка 3: Кол-во (всего в партии)
+            std::wstring quantity = std::to_wstring(itemData.value("quantity", 0));
+            ListView_SetItemText(m_hExpiredList, index, 3, const_cast<LPWSTR>(quantity.c_str()));
+            // Колонка 4: Не продано (остаток на момент выбытия)
+            std::wstring unsoldQty = std::to_wstring(itemData.value("unsold_quantity", 0));
+            ListView_SetItemText(m_hExpiredList, index, 4, const_cast<LPWSTR>(unsoldQty.c_str()));
+            // Колонка 5: Комитент (ФИО)
+            std::wstring clientName = utf8_to_wstring(itemData.value("client_name", ""));
+            ListView_SetItemText(m_hExpiredList, index, 5, const_cast<LPWSTR>(clientName.c_str()));
+            // Колонка 6: Телефон комитента
+            std::wstring clientPhone = utf8_to_wstring(itemData.value("client_phone", ""));
+            ListView_SetItemText(m_hExpiredList, index, 6, const_cast<LPWSTR>(clientPhone.c_str()));
+            // Колонка 7: Номер приложения к договору
+            std::wstring appendixNum = std::to_wstring(itemData.value("appendix_number", 0));
+            ListView_SetItemText(m_hExpiredList, index, 7, const_cast<LPWSTR>(appendixNum.c_str()));
+            // Колонка 8: Дата приёмки товара
+            int64_t createdAt = itemData.value("created_at", 0);
+            std::wstring createdDateStr = formatTimestamp(createdAt);
+            ListView_SetItemText(m_hExpiredList, index, 8, const_cast<LPWSTR>(createdDateStr.c_str()));
+            // Колонка 9: Срок истёк (valid_until приложения)
+            int64_t validUntil = itemData.value("valid_until", 0);
+            std::wstring validUntilStr = formatTimestamp(validUntil);
+            ListView_SetItemText(m_hExpiredList, index, 9, const_cast<LPWSTR>(validUntilStr.c_str()));
+            // Колонка 10: Дата выбытия (expired_at)
+            int64_t expiredAt = itemData.value("expired_at", 0);
+            std::wstring expiredAtStr = formatTimestamp(expiredAt);
+            ListView_SetItemText(m_hExpiredList, index, 10, const_cast<LPWSTR>(expiredAtStr.c_str()));
+        }
+        g_logger.info(L"DirectorWindow: expired list updated, count=" +
+            std::to_wstring(ListView_GetItemCount(m_hExpiredList)));
+
+        // =====================================================================
         // ОБНОВЛЯЕМ СВОДКУ
         // =====================================================================
         if (m_stats.summary.is_object()) {
@@ -864,16 +984,18 @@ private:
             int totalLowQuality = m_stats.summary.value("total_low_quality", 0);
             int totalClients = m_stats.summary.value("total_clients", 0);
             int blockedClients = m_stats.summary.value("blocked_clients_count", 0);
+            int expiredCount = m_stats.summary.value("expired_items_count", 0);
 
-            wchar_t summaryBuf[512];
+            wchar_t summaryBuf[700];
             swprintf_s(summaryBuf,
                 L"📊 ИТОГО: Комитентов: %d | Товаров сдано: %d шт на %.2f ₽ | "
-                L"Продано: %d шт на %.2f ₽ | Брак: %d шт | Заблокировано: %d",
+                L"Продано: %d шт на %.2f ₽ | Брак: %d шт | "
+                L"Выбыло по сроку (15 дней): %d шт | Заблокировано: %d",
                 totalClients, totalItems, totalValue,
-                totalSold, totalSoldValue, totalLowQuality, blockedClients);
+                totalSold, totalSoldValue, totalLowQuality,
+                expiredCount, blockedClients);
 
             SetWindowTextW(m_hSummaryLabel, summaryBuf);
-
             g_logger.info(L"DirectorWindow: summary updated - " + std::wstring(summaryBuf));
         }
 
@@ -1278,6 +1400,7 @@ public:
         , m_hClientsList(nullptr)
         , m_hWorkersList(nullptr)
         , m_hLowQualityList(nullptr)
+        , m_hExpiredList(nullptr)
         , m_hSummaryLabel(nullptr)
         , m_hBlockBtn(nullptr)
         , m_hUnblockBtn(nullptr)
