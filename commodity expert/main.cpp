@@ -20,6 +20,7 @@
 #include "auth_manager.h"
 #include "login_window.h"
 #include "director_window.h"
+#include "queue_display_window.h"
 
 // Глобальные объекты
 HINSTANCE g_hInstance;
@@ -92,9 +93,20 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance,
     g_logger.info(L"WORKER DETECTED: phone=" + userPhone);
     g_logger.info(L"Starting WorkerWindow");
 
-    // Открываем окно товароведа
-    WorkerWindow workerWnd;
-    workerWnd.show();
+    // Запуск окна товароведа в отдельном потоке (для параллельной работы ТВ-монитора)
+    std::thread workerThread([]() {
+        WorkerWindow workerWnd;
+        workerWnd.show();
+        });
+
+    // Запуск ТВ-дисплея очередей в основном потоке
+    QueueDisplayWindow displayWnd;
+    displayWnd.show();
+
+    // Ожидаем завершения окна товароведа
+    if (workerThread.joinable()) {
+        workerThread.join();
+    }
 
     g_logger.info(L"WorkerApp shut down");
     return 0;

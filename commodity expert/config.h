@@ -1,4 +1,4 @@
-// config.h
+﻿// config.h
 #pragma once
 
 #include <string>
@@ -62,4 +62,31 @@ namespace Config {
         std::filesystem::create_directories(getLogPath(), ec);
         std::filesystem::create_directories(getAppDataPath(), ec);
     }
+
+    // ФОРМАТ: { телефон_товароведа, номер_окна }
+    // Телефоны указаны в формате +7XXXXXXXXXX (как возвращает сервер).
+    //
+    // ВАЖНО: Замените телефоны ниже на реальные телефоны ваших 6 товароведов.
+    // =========================================================================
+    struct WorkerWindowMapping {
+        const wchar_t* phone;
+        int windowNumber;
+    };
+
+    // Массив из 6 записей: телефон товароведа → номер окна
+    static constexpr WorkerWindowMapping WORKER_WINDOW_MAP[] = {
+        { L"+79991001010", 1 },   // Товаровед 1 Голикова → Окно 1
+        { L"+79991001011", 2 },   // Товаровед 2 Куликова → Окно 2
+        { L"+78881001010", 3 },   // Товаровед 3 Каталова → Окно 3
+        { L"+79000000004", 4 },   // Товаровед 4 → Окно 4
+        { L"+79000000005", 5 },   // Товаровед 5 → Окно 5
+        { L"+79000000006", 6 },   // Товаровед 6 → Окно 6
+    };
+
+    // Количество записей в маппинге
+    static constexpr int WORKER_WINDOW_MAP_SIZE = 6;
+
+    // Номер окна по умолчанию (если телефон не найден в маппинге)
+    static constexpr int DEFAULT_WINDOW_NUMBER = 1;
+
 }
