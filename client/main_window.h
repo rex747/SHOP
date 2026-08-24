@@ -943,7 +943,7 @@ private:
         std::wstringstream ss;
         ss << L"ВАШ ТАЛОН: " << m_currentTicket.ticketNumber << L"\n";
         ss << L"Позиция в очереди: " << m_currentTicket.position << L"\n";
-        ss << L"Окно: " << m_currentTicket.windowNumber << L"\n";
+        //ss << L"Окно: " << m_currentTicket.windowNumber << L"\n";
         if (m_currentTicket.estimatedWaitTime > 0) {
             ss << L"Время ожидания: ~" << m_currentTicket.estimatedWaitTime << L" мин";
         }
@@ -1332,38 +1332,50 @@ private:
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         int centerX = screenWidth / 2;
         int centerY = screenHeight / 2;
-
         // Стандартный заголовок с эмблемой (единый для всех экранов)
         createStandardHeader();
-
-        HWND hText = CreateWindowExW(0, L"STATIC",
+        // =====================================================================
+        // ИСПРАВЛЕНИЕ ЧИТАЕМОСТИ (шаг 1): количество ожидающих запрашивается
+        // ДО создания текстового блока, чтобы счётчик можно было включить
+        // в ЕДИНЫЙ прямоугольник. Вызов тот же, логика не меняется.
+        // =====================================================================
+        std::wstring authToken = g_authManager.getAuthToken();
+        int queueCount = g_queueManager.getDailyCount(QueueType::PAID, authToken);
+        // =====================================================================
+        // ИСПРАВЛЕНИЕ ЧИТАЕМОСТИ (шаг 2): ВЕСЬ текст (описание услуги +
+        // количество ожидающих) формируется в ОДНОЙ строке и выводится
+        // ОДНИМ контролом в ОДНОМ зелёном прямоугольнике.
+        // Переиспользуется существующая переменная countText — новых
+        // переменных, функций и логики НЕ добавляется.
+        // =====================================================================
+        std::wstring countText = L"Количество ожидающих в очереди: " + std::to_wstring(queueCount);
+        countText =
             L"Вы выбрали ПЛАТНЫЙ ПРИЕМ (200 руб.).\n"
             L"При выборе данной опции, очередь короче, но постановка в данную очередь возможна при оплате 200 руб.\n"
             L"Количество товаров ограничено 20 наименованиями.\n\n"
-            L"Стоимость услуги 200 руб.",
+            L"Стоимость услуги 200 руб.\n\n"
+            + countText;
+        // =====================================================================
+        // ИСПРАВЛЕНИЕ ЧИТАЕМОСТИ (шаг 3): единый блок 800x300 начиная с
+        // centerY-260. Верх (280) ниже заголовка (249), низ (580) выше
+        // кнопок (610). Второй контрол-счётчик БОЛЕЕ НЕ СОЗДАЁТСЯ —
+        // пересечение прямоугольников исключено.
+        // ID остаётся IDC_STATIC_PAID_TEXT — он уже в зелёной ветке
+        // WM_CTLCOLORSTATIC (зелёный фон, белый текст).
+        // =====================================================================
+        HWND hText = CreateWindowExW(0, L"STATIC", countText.c_str(),
             WS_VISIBLE | WS_CHILD | SS_CENTER | SS_NOTIFY,
-            centerX - 400, centerY - 220, 800, 220,
+            centerX - 400, centerY - 260, 800, 300,
             m_hWnd, (HMENU)IDC_STATIC_PAID_TEXT, g_hInstance, nullptr);
         SendMessageW(hText, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
-
-        std::wstring authToken = g_authManager.getAuthToken();
-        int queueCount = g_queueManager.getDailyCount(QueueType::PAID, authToken);
-        std::wstring countText = L"Количество ожидающих в очереди: " + std::to_wstring(queueCount);
-        HWND hQueueCount = CreateWindowExW(0, L"STATIC", countText.c_str(),
-            WS_VISIBLE | WS_CHILD | SS_CENTER,
-            centerX - 300, centerY - 10, 600, 50,
-            m_hWnd, (HMENU)ID_STATIC_PAID_QUEUE_COUNT, g_hInstance, nullptr);
-        SendMessageW(hQueueCount, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
-
+        g_logger.info(L"PaidAcceptance: single text block created (800x300 at centerY-260), queue count merged into text");
         int btnW = 300, btnH = 70, gap = 20;
         int startY = centerY + 70;
-
         HWND btnPrint = CreateWindowExW(0, L"BUTTON", L"Оплатить",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             centerX - btnW / 2, startY, btnW, btnH,
             m_hWnd, (HMENU)ID_BTN_PAID_PRINT, g_hInstance, nullptr);
         m_buttons.push_back(btnPrint);
-
         HWND btnBack = CreateWindowExW(0, L"BUTTON", L"Назад",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             centerX - btnW / 2, startY + btnH + gap, btnW, btnH,
@@ -1419,38 +1431,47 @@ private:
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         int centerX = screenWidth / 2;
         int centerY = screenHeight / 2;
-
         // Стандартный заголовок с эмблемой (единый для всех экранов)
         createStandardHeader();
-
-        HWND hText = CreateWindowExW(0, L"STATIC",
+        // =====================================================================
+        // ИСПРАВЛЕНИЕ ЧИТАЕМОСТИ (шаг 1): количество ожидающих запрашивается
+        // ДО создания текстового блока. Вызов тот же, логика не меняется.
+        // =====================================================================
+        std::wstring authToken = g_authManager.getAuthToken();
+        int queueCount = g_queueManager.getDailyCount(QueueType::EXPENSIVE, authToken);
+        // =====================================================================
+        // ИСПРАВЛЕНИЕ ЧИТАЕМОСТИ (шаг 2): ВЕСЬ текст (описание услуги +
+        // количество ожидающих) — в ОДНОЙ строке, ОДИН контрол, ОДИН
+        // зелёный прямоугольник. Переиспользуется существующая переменная
+        // countText — новых переменных, функций и логики НЕ добавляется.
+        // =====================================================================
+        std::wstring countText = L"Количество ожидающих в очереди: " + std::to_wstring(queueCount);
+        countText =
             L"Вы выбрали ДОРОГОЙ ТОВАР (>5000 руб.).\n"
             L"Если у Вас есть вещи стоимостью более 5000 руб., то смело выбирайте этот вариант.\n"
             L"В течение 10-15 минут Вас примет самый опытный товаровед нашего магазина\n"
-            L"(в данном случае принимаются вещи, оценочная стоимость каждой из которых более 5000 руб.).",
+            L"(в данном случае принимаются вещи, оценочная стоимость каждой из которых более 5000 руб.).\n\n"
+            + countText;
+        // =====================================================================
+        // ИСПРАВЛЕНИЕ ЧИТАЕМОСТИ (шаг 3): единый блок 800x300 начиная с
+        // centerY-260. Второй контрол-счётчик БОЛЕЕ НЕ СОЗДАЁТСЯ —
+        // пересечение прямоугольников исключено.
+        // ID остаётся IDC_STATIC_EXPENSIVE_TEXT — он уже в зелёной ветке
+        // WM_CTLCOLORSTATIC (зелёный фон, белый текст).
+        // =====================================================================
+        HWND hText = CreateWindowExW(0, L"STATIC", countText.c_str(),
             WS_VISIBLE | WS_CHILD | SS_CENTER | SS_NOTIFY,
-            centerX - 400, centerY - 220, 800, 220,
+            centerX - 400, centerY - 260, 800, 300,
             m_hWnd, (HMENU)IDC_STATIC_EXPENSIVE_TEXT, g_hInstance, nullptr);
         SendMessageW(hText, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
-
-        std::wstring authToken = g_authManager.getAuthToken();
-        int queueCount = g_queueManager.getDailyCount(QueueType::EXPENSIVE, authToken);
-        std::wstring countText = L"Количество ожидающих в очереди: " + std::to_wstring(queueCount);
-        HWND hQueueCount = CreateWindowExW(0, L"STATIC", countText.c_str(),
-            WS_VISIBLE | WS_CHILD | SS_CENTER,
-            centerX - 300, centerY - 10, 600, 50,
-            m_hWnd, (HMENU)ID_STATIC_EXPENSIVE_QUEUE_COUNT, g_hInstance, nullptr);
-        SendMessageW(hQueueCount, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
-
+        g_logger.info(L"ExpensiveAcceptance: single text block created (800x300 at centerY-260), queue count merged into text");
         int btnW = 300, btnH = 70, gap = 20;
         int startY = centerY + 70;
-
         HWND btnPrint = CreateWindowExW(0, L"BUTTON", L"Взять талон",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             centerX - btnW / 2, startY, btnW, btnH,
             m_hWnd, (HMENU)ID_BTN_EXPENSIVE_PRINT, g_hInstance, nullptr);
         m_buttons.push_back(btnPrint);
-
         HWND btnBack = CreateWindowExW(0, L"BUTTON", L"Назад",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             centerX - btnW / 2, startY + btnH + gap, btnW, btnH,
