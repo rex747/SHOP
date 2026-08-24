@@ -21,9 +21,53 @@ public:
         return true; // Инициализация выполняется внутри Database::initialize()
     }
 
-    // Получить талон для обычной очереди
+    // ========================================================================
+    // ИСПРАВЛЕННЫЙ МЕТОД: getTicket
+    // ========================================================================
+    //
+    // ВЫЯВЛЕННЫЙ ДЕФЕКТ (подтверждён логами 2026-08-23):
+    //
+    //   Метод сериализовал результат Database::createTicket в JSON БЕЗ
+    //   проверки успешности создания талона. Если createTicket выбрасывал
+    //   исключение (конфликт уникальности номера) и возвращал
+    //   неинициализированную структуру с мусорными значениями,
+    //   данный метод сериализовал этот мусор в JSON и возвращал его
+    //   как валидный талон. Клиент получал:
+    //     {"success":true,"ticket":{"position":-1100584656,
+    //      "wait_time_minutes":105497289322101,"number":"",...}}
+    //   Подтверждение: лог терминала 17:10:48.636.
+    //
+    // ИСПРАВЛЕНИЕ:
+    //   Добавлена ЗАЩИТНАЯ ПРОВЕРКА: если Database::createTicket вернул
+    //   структуру с пустым полем `status`, значит талон НЕ был создан.
+    //   В этом случае метод возвращает JSON с полем "error" вместо
+    //   мусорных данных. Вызывающий код (server.cpp::handleGetTicket)
+    //   обнаруживает это поле и возвращает клиенту ошибку.
+    //
+    //   Если `ticket.status == "waiting"` — талон создан успешно,
+    //   сериализуем в JSON как раньше (формат ответа НЕ МЕНЯЕТСЯ).
+    //
+    //   Бизнес-логика НЕ МЕНЯЕТСЯ: клиент получает либо валидный талон,
+    //   либо ошибку. Ранее клиент получал мусорные данные с `success: true`.
+    //
+    // ========================================================================
     json getTicket(int clientId, const std::string& queueType, int itemsCount) {
         QueueTicket ticket = db_->createTicket(clientId, queueType, itemsCount);
+
+        // ЗАЩИТНАЯ ПРОВЕРКА: пустой `status` означает, что талон не был
+        // создан (исключение в createTicket, все номера заняты, ошибка БД).
+        // Возвращаем ошибку вместо мусорных данных.
+        if (ticket.status.empty()) {
+            g_serverLogger.error("QueueService::getTicket: FAILED to create ticket - "
+                "createTicket returned empty status. "
+                "clientId=" + std::to_string(clientId) +
+                ", queueType=" + queueType +
+                ", itemsCount=" + std::to_string(itemsCount));
+            json errorResponse;
+            errorResponse["error"] = "Failed to create ticket";
+            return errorResponse;
+        }
+
         json j;
         j["id"] = ticket.id;
         j["number"] = ticket.number;
@@ -35,10 +79,13 @@ public:
         j["wait_time_minutes"] = ticket.estimatedWaitTime;
         j["created_at"] = ticket.createdAt;
         j["status"] = ticket.status;
-        g_serverLogger.info("QueueService::getTicket: clientId=" + std::to_string(clientId) +
+        g_serverLogger.info("QueueService::getTicket: SUCCESS - "
+            "clientId=" + std::to_string(clientId) +
             ", queueType=" + queueType +
             ", ticketNumber=" + ticket.number +
-            ", position=" + std::to_string(ticket.position));
+            ", position=" + std::to_string(ticket.position) +
+            ", waitTime=" + std::to_string(ticket.estimatedWaitTime) +
+            ", createdAt=" + std::to_string(ticket.createdAt));
         return j;
     }
 
@@ -116,4 +163,30 @@ public:
     json getQueueStatus(const std::string& queueType) {
         return db_->getQueueStatus(queueType);
     }
+
+    // =========================================================================
+    // МЕТОДЫ ДЛЯ ТВ-ДИСПЛЕЯ ОЧЕРЕДЕЙ (обёртки над Database)
+    // =========================================================================
+
+    /**
+     * @brief Возвращает принятые талоны для очередей из таблицы queue_tickets
+     */
+    std::vector<json> getAcceptedTickets(const std::string& queueType) {
+        return db_->getAcceptedTickets(queueType);
+    }
+
+    /**
+     * @brief Возвращает принятые талоны очереди "Первый раз"
+     */
+    std::vector<json> getAcceptedFirstTimeTickets() {
+        return db_->getAcceptedFirstTimeTickets();
+    }
+
+    /**
+     * @brief Возвращает принятые талоны очереди "Доверие"
+     */
+    std::vector<json> getAcceptedTrustTickets() {
+        return db_->getAcceptedTrustTickets();
+    }
+
 };

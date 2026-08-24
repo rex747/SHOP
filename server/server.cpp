@@ -164,6 +164,37 @@ private:
             else if (target == "/api/v1/queue/serve" && method == http::verb::post) {
                 handleQueueServe(client_ip);
             }
+            // ========================================================================
+            // ДОБАВЛЕННЫЙ РОУТ: /api/v1/queue/trust_acceptance
+            // ========================================================================
+            //
+            // ВЫЯВЛЕННЫЙ ДЕФЕКТ (подтверждён логами 2026-08-23):
+            //
+            //   Клиент (queue_manager.h::getTrustAcceptance) отправляет запрос:
+            //     POST /api/v1/queue/trust_acceptance
+            //   Однако в списке роутов server.cpp этот путь ОТСУТСТВОВАЛ.
+            //   Метод-обработчик handleTrustAcceptance существовал, но не был
+            //   привязан к роуту.
+            //   В результате сервер возвращал стандартный ответ "Not found":
+            //     {"error":"Not found"}
+            //   Подтверждение: лог терминала 17:11:26.293.
+            //   Клиент интерпретировал это как недоступность сервера и
+            //   генерировал локальный талон T001.
+            //   Подтверждение: лог терминала 17:11:26.294:
+            //   "Server unavailable for trust acceptance, generating local ticket"
+            //
+            // ИСПРАВЛЕНИЕ:
+            //   Добавлен роут, привязывающий запрос
+            //   /api/v1/queue/trust_acceptance к существующему обработчику
+            //   handleTrustAcceptance. Метод-обработчик НЕ МЕНЯЕТСЯ.
+            //   Клиентская часть НЕ МЕНЯЕТСЯ.
+            //
+            // ========================================================================
+            // получаем талон для пользователя, который решил оставить товар на доверии
+            // (роут добавлен: ранее отсутствовал, что приводило к ответу "Not found")
+            else if (target == "/api/v1/queue/trust_acceptance" && method == http::verb::post) {
+                handleTrustAcceptance(client_ip);
+            }
             // получаем талон если пользователь решил оставить товар на доверии
             else if (target == "/api/v1/queue/trust/waiting" && method == http::verb::get) {
                 handleTrustWaiting(client_ip);
@@ -239,6 +270,16 @@ private:
             // =========================================================================
             else if (target == "/api/v1/clients/register_committee" && method == http::verb::post) {
                 handleRegisterCommittee(client_ip);
+            }
+            // =========================================================================
+            // НОВЫЙ РОУТ: СОСТОЯНИЕ ВСЕХ ОЧЕРЕДЕЙ ДЛЯ ТВ-ДИСПЛЕЯ
+            // GET /api/v1/queue/display
+            // Возвращает ожидающие + принятые талоны для всех 6 очередей.
+            // Только чтение (SELECT). Не изменяет данные. Не требует авторизации
+            // (ТВ-монитор работает без логина товароведа).
+            // =========================================================================
+            else if (target == "/api/v1/queue/display" && method == http::verb::get) {
+                handleQueueDisplay(client_ip);
             }
             else {
                 g_serverLogger.warning("Routing request: " + std::string(http::to_string(method)) + " " + std::string(target) + " -> Not found");
@@ -728,15 +769,75 @@ private:
             " (" + clientOpt->phone + ", birth_date=" + clientOpt->birth_date + ") from " + client_ip);
     }
 
+    // ========================================================================
+    // ИСПРАВЛЕННЫЙ ОБРАБОТЧИК: handleGetTicket
+    // ========================================================================
+    //
+    // ВЫЯВЛЕННЫЙ ДЕФЕКТ (подтверждён логами 2026-08-23):
+    //
+    //   Обработчик ВСЕГДА возвращал {"success": true, "ticket": {...}},
+    //   даже если QueueService::getTicket вернул мусорные данные
+    //   (из-за неинициализированной структуры в Database::createTicket)
+    //   или ошибку (поле "error" в JSON).
+    //   Клиент получал мусор с `success: true` и не мог отличить
+    //   успешное создание талона от ошибки.
+    //   Подтверждение: лог терминала 17:10:48.636.
+    //
+    // ИСПРАВЛЕНИЕ:
+    //   Добавлена ЗАЩИТНАЯ ПРОВЕРКА: если QueueService::getTicket вернул
+    //   JSON с полем "error", значит талон НЕ был создан.
+    //   В этом случае обработчик возвращает HTTP 500 с ошибкой клиенту.
+    //   Если поле "error" отсутствует — талон создан успешно, возвращаем
+    //   {"success": true, "ticket": {...}} как раньше.
+    //
+    //   Также добавлена ВАЛИДАЦИЯ обязательных полей запроса
+    //   (client_id, queue_type, items_count) для предотвращения
+    //   необработанных исключений при некорректном запросе.
+    //
+    //   Формат успешного ответа НЕ МЕНЯЕТСЯ:
+    //     {"success": true, "ticket": {"id":..., "number":..., ...}}
+    //   Клиентская часть НЕ МЕНЯЕТСЯ.
+    //
+    // ========================================================================
     void handleGetTicket(const std::string& client_ip) {
         json body;
         try {
             body = json::parse(request_.body());
+            g_serverLogger.info("handleGetTicket: parsed request body from " + client_ip);
         }
         catch (const json::parse_error& e) {
+            g_serverLogger.warning("handleGetTicket: JSON parse error from " + client_ip +
+                ": " + std::string(e.what()));
             response_.result(http::status::bad_request);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // ВАЛИДАЦИЯ обязательных полей запроса.
+        // Предотвращает необработанные исключения при некорректном запросе.
+        if (!body.contains("client_id") || !body["client_id"].is_number()) {
+            g_serverLogger.warning("handleGetTicket: missing or invalid client_id from " + client_ip);
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "client_id required and must be a number"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        if (!body.contains("queue_type") || !body["queue_type"].is_string()) {
+            g_serverLogger.warning("handleGetTicket: missing or invalid queue_type from " + client_ip);
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "queue_type required and must be a string"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        if (!body.contains("items_count") || !body["items_count"].is_number()) {
+            g_serverLogger.warning("handleGetTicket: missing or invalid items_count from " + client_ip);
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "items_count required and must be a number"} }.dump();
             response_.prepare_payload();
             return;
         }
@@ -745,7 +846,35 @@ private:
         std::string queueType = body["queue_type"].get<std::string>();
         int itemsCount = body["items_count"].get<int>();
 
+        g_serverLogger.info("handleGetTicket: request from " + client_ip +
+            ", clientId=" + std::to_string(clientId) +
+            ", queueType=" + queueType +
+            ", itemsCount=" + std::to_string(itemsCount));
+
         json ticket = queue_->getTicket(clientId, queueType, itemsCount);
+
+        // ЗАЩИТНАЯ ПРОВЕРКА: если талон содержит поле "error", значит
+        // талон НЕ был создан (конфликт номера, ошибка БД, все номера
+        // заняты). Возвращаем ошибку клиенту вместо мусорных данных.
+        if (ticket.contains("error")) {
+            g_serverLogger.error("handleGetTicket: ticket creation FAILED for clientId=" +
+                std::to_string(clientId) +
+                ", queueType=" + queueType +
+                ", error=" + ticket["error"].dump() +
+                ", client=" + client_ip);
+            response_.result(http::status::internal_server_error);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Failed to create ticket"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        g_serverLogger.info("handleGetTicket: SUCCESS - ticket created for clientId=" +
+            std::to_string(clientId) +
+            ", ticketNumber=" + ticket.value("number", std::string("UNKNOWN")) +
+            ", position=" + std::to_string(ticket.value("position", 0)) +
+            ", client=" + client_ip);
+
         response_.result(http::status::ok);
         response_.set(http::field::content_type, "application/json");
         response_.body() = json{ {"success", true}, {"ticket", ticket} }.dump();
@@ -851,6 +980,7 @@ private:
             response_.prepare_payload();
             return;
         }
+
         std::string ticketNumber = body.value("ticket_number", "");
         if (ticketNumber.empty()) {
             response_.result(http::status::bad_request);
@@ -858,14 +988,27 @@ private:
             response_.prepare_payload();
             return;
         }
-        std::string windowNumber;
+
+        // НОВОЕ: Извлекаем номер окна товароведа
+        std::string windowNumber = body.value("window_number", std::string("1"));
+
+        g_serverLogger.info("handleFirstTimeAccept: ticket=" + ticketNumber +
+            ", window=" + windowNumber + ", from=" + client_ip);
+
         if (queue_->acceptFirstTimeTicket(ticketNumber, windowNumber)) {
             response_.result(http::status::ok);
-            response_.body() = json{ {"success", true}, {"window_number", windowNumber} }.dump();
+            response_.body() = json{
+                {"success", true},
+                {"window_number", windowNumber}
+            }.dump();
+            g_serverLogger.info("handleFirstTimeAccept: accepted " + ticketNumber +
+                " at window " + windowNumber + " from " + client_ip);
         }
         else {
             response_.result(http::status::not_found);
-            response_.body() = json{ {"error", "Ticket not found or already accepted"} }.dump();
+            response_.body() = json{
+                {"error", "Ticket not found or already accepted"}
+            }.dump();
         }
         response_.prepare_payload();
     }
@@ -923,6 +1066,27 @@ private:
         g_serverLogger.info("handleQueueWaiting: returned " + std::to_string(tickets.size()) + " tickets for " + queueType);
     }
 
+    // =========================================================================
+    // ОБНОВЛЁННЫЙ ОБРАБОТЧИК: handleQueueAccept
+    // POST /api/v1/queue/accept
+    // =========================================================================
+    // ДОПОЛНЕНИЕ: Теперь принимает поле "window_number" из тела запроса.
+    // Номер окна товароведа передаётся клиентом и обновляется в БД
+    // при принятии талона. Это позволяет ТВ-монитору отображать
+    // реальный номер окна, к которому приглашён комитент.
+    //
+    // Формат запроса:
+    // {
+    //   "ticket_number": "G001",
+    //   "window_number": "3"       // ← НОВОЕ: номер окна товароведа
+    // }
+    //
+    // Формат ответа:
+    // {
+    //   "success": true,
+    //   "window_number": "3"       // обновлённый номер окна
+    // }
+    // =========================================================================
     void handleQueueAccept(const std::string& client_ip) {
         json body;
         try { body = json::parse(request_.body()); }
@@ -932,6 +1096,7 @@ private:
             response_.prepare_payload();
             return;
         }
+
         std::string ticketNumber = body.value("ticket_number", "");
         if (ticketNumber.empty()) {
             response_.result(http::status::bad_request);
@@ -939,15 +1104,30 @@ private:
             response_.prepare_payload();
             return;
         }
-        std::string windowNumber;
+
+        // =====================================================================
+        // НОВОЕ: Извлекаем номер окна товароведа из запроса
+        // Если не передан — используем "1" (обратная совместимость)
+        // =====================================================================
+        std::string windowNumber = body.value("window_number", std::string("1"));
+
+        g_serverLogger.info("handleQueueAccept: ticket=" + ticketNumber +
+            ", window=" + windowNumber + ", from=" + client_ip);
+
         if (queue_->acceptTicket(ticketNumber, windowNumber)) {
             response_.result(http::status::ok);
-            response_.body() = json{ {"success", true}, {"window_number", windowNumber} }.dump();
-            g_serverLogger.info("handleQueueAccept: accepted " + ticketNumber + " from " + client_ip);
+            response_.body() = json{
+                {"success", true},
+                {"window_number", windowNumber}
+            }.dump();
+            g_serverLogger.info("handleQueueAccept: accepted " + ticketNumber +
+                " at window " + windowNumber + " from " + client_ip);
         }
         else {
             response_.result(http::status::not_found);
-            response_.body() = json{ {"error", "Ticket not found or already accepted"} }.dump();
+            response_.body() = json{
+                {"error", "Ticket not found or already accepted"}
+            }.dump();
             g_serverLogger.warning("handleQueueAccept: failed to accept " + ticketNumber);
         }
         response_.prepare_payload();
@@ -983,9 +1163,44 @@ private:
     }
     //-------------------------------------------------------------------------
 
-	// --- метод для пользователей, которые пришли оставить товар на доверии ---
+// =========================================================================
+// ИСПРАВЛЕННЫЙ ОБРАБОТЧИК: handleTrustAcceptance
+// POST /api/v1/queue/trust_acceptance
+// =========================================================================
+//
+// ПРИЧИНА ИСПРАВЛЕНИЯ (подтверждена логами 2026-08-24):
+//
+//   Обработчик жёстко задавал позицию 0:
+//     resp["position"] = 0; // для доверия позиция всегда 0
+//   Клиент (queue_manager.h::getTrustAcceptance) получал 0 и
+//   нормализовал до 1 по бизнес-правилу. В результате комитент
+//   всегда видел себя первым в очереди.
+//
+//   Подтверждение из логов:
+//     Сервер: createTrustAcceptance: basePosition=7 (позиция вычислена!)
+//     Клиент: Response: {"position":0} → normalized to 1
+//
+// ИСПРАВЛЕНИЕ:
+//   Метод db_->createTrustAcceptance() теперь возвращает
+//   std::optional<std::pair<std::string, int>>:
+//     first  = номер талона
+//     second = позиция в очереди (уже вычисленная в Database)
+//   Обработчик использует ticketResult->second вместо жёсткого 0.
+//
+//   Формат ответа клиенту НЕ МЕНЯЕТСЯ:
+//     {"success":true,"ticket_number":"T007","position":7,
+//      "window_number":"1","created_at":1787580012}
+//   Клиентская часть НЕ МЕНЯЕТСЯ.
+//
+// ПОТОКОБЕЗОПАСНОСТЬ:
+//   Метод вызывается из одного потока обработки HTTP-запроса.
+//   Все запросы к БД выполняются внутри одной транзакции в
+//   createTrustAcceptance. Гонка исключена.
+//
+// =========================================================================
     void handleTrustAcceptance(const std::string& client_ip) {
         g_serverLogger.info("Start method handleTrustAcceptance");
+
         json body;
         try {
             body = json::parse(request_.body());
@@ -1009,18 +1224,27 @@ private:
         }
 
         int clientId = body["client_id"].get<int>();
-        auto ticketNumberOpt = db_->createTrustAcceptance(clientId);
 
-        if (!ticketNumberOpt) {
+        // ИСПРАВЛЕНИЕ: создаём талон и получаем ПАРУ (номер, позиция).
+        // Ранее: auto ticketNumberOpt = db_->createTrustAcceptance(clientId);
+        // возвращал только номер талона (std::optional<std::string>).
+        // Теперь: возвращает std::optional<std::pair<std::string, int>>,
+        // где second = реальная позиция в очереди (COUNT(pending) + 1).
+        auto ticketResult = db_->createTrustAcceptance(clientId);
+
+        if (!ticketResult) {
             response_.result(http::status::internal_server_error);
             response_.body() = json{ {"error", "Failed to create trust acceptance"} }.dump();
             response_.prepare_payload();
-            g_serverLogger.info("ticketNumberOpt is empty");
+            g_serverLogger.info("ticketResult is empty");
             return;
         }
 
-        // Получаем информацию о созданном талоне (окно)
-        auto info = db_->getTrustTicketInfo(*ticketNumberOpt);
+        // ИСПРАВЛЕНИЕ: извлекаем номер талона из пары (first).
+        // Ранее: db_->getTrustTicketInfo(*ticketNumberOpt)
+        // Теперь: db_->getTrustTicketInfo(ticketResult->first)
+        auto info = db_->getTrustTicketInfo(ticketResult->first);
+
         if (!info) {
             response_.result(http::status::internal_server_error);
             response_.body() = json{ {"error", "Failed to retrieve ticket info"} }.dump();
@@ -1030,9 +1254,16 @@ private:
 
         json resp;
         resp["success"] = true;
-        resp["ticket_number"] = *ticketNumberOpt;
+        // ИСПРАВЛЕНИЕ: извлекаем номер талона из пары (first).
+        resp["ticket_number"] = ticketResult->first;
         resp["window_number"] = (*info)["window_number"];
-        resp["position"] = 0; // для доверия позиция всегда 0
+        // =====================================================================
+        // ИСПРАВЛЕНИЕ: используем реальную позицию из пары (second).
+        // Ранее: resp["position"] = 0; // для доверия позиция всегда 0
+        // Теперь: позиция = COUNT(pending) + 1, вычисленная в
+        // database.h::createTrustAcceptance и возвращённая в паре.
+        // =====================================================================
+        resp["position"] = ticketResult->second;
         resp["created_at"] = (*info)["created_at"];
 
         response_.result(http::status::ok);
@@ -1041,7 +1272,9 @@ private:
         response_.prepare_payload();
 
         g_serverLogger.info("Trust acceptance created for client " + std::to_string(clientId) +
-            ", ticket: " + *ticketNumberOpt + " from " + client_ip);
+            ", ticket: " + ticketResult->first +
+            ", position: " + std::to_string(ticketResult->second) +
+            ", from " + client_ip);
     }
 
     void handleTrustWaiting(const std::string& client_ip) {
@@ -1061,6 +1294,7 @@ private:
             response_.prepare_payload();
             return;
         }
+
         std::string ticketNumber = body.value("ticket_number", "");
         if (ticketNumber.empty()) {
             response_.result(http::status::bad_request);
@@ -1068,15 +1302,27 @@ private:
             response_.prepare_payload();
             return;
         }
-        std::string windowNumber;
+
+        // НОВОЕ: Извлекаем номер окна товароведа
+        std::string windowNumber = body.value("window_number", std::string("1"));
+
+        g_serverLogger.info("handleTrustAccept: ticket=" + ticketNumber +
+            ", window=" + windowNumber + ", from=" + client_ip);
+
         if (queue_->acceptTrustTicket(ticketNumber, windowNumber)) {
             response_.result(http::status::ok);
-            response_.body() = json{ {"success", true}, {"window_number", windowNumber} }.dump();
-            g_serverLogger.info("handleTrustAccept: accepted " + ticketNumber + " from " + client_ip);
+            response_.body() = json{
+                {"success", true},
+                {"window_number", windowNumber}
+            }.dump();
+            g_serverLogger.info("handleTrustAccept: accepted " + ticketNumber +
+                " at window " + windowNumber + " from " + client_ip);
         }
         else {
             response_.result(http::status::not_found);
-            response_.body() = json{ {"error", "Ticket not found or already accepted"} }.dump();
+            response_.body() = json{
+                {"error", "Ticket not found or already accepted"}
+            }.dump();
         }
         response_.prepare_payload();
     }
@@ -1455,24 +1701,23 @@ private:
 
     /**
      * @brief Обработчик POST /api/v1/director/block_client
-     * Блокирует или разблокирует клиента по ID
+     * Блокирует или разблокирует клиента по ID с указанием причины
      *
      * Тело запроса:
      * {
      *   "client_id": 123,
-     *   "blocked": true  // true - заблокировать, false - разблокировать
+     *   "blocked": true,
+     *   "block_reason": "Нарушение правил магазина"  // до 1000 символов
      * }
      *
      * ДОСТУП: только для роли 'director' (проверка по телефону +79914869324)
      */
     void handleDirectorBlockClient(const std::string& client_ip) {
         g_serverLogger.info("handleDirectorBlockClient: request from " + client_ip);
-
         // 1. Проверка авторизации
         std::string authHeader;
         auto it = request_.find(http::field::authorization);
         if (it != request_.end()) authHeader = it->value();
-
         if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
             response_.result(http::status::unauthorized);
             response_.set(http::field::content_type, "application/json");
@@ -1481,9 +1726,7 @@ private:
             g_serverLogger.warning("handleDirectorBlockClient: missing auth from " + client_ip);
             return;
         }
-
         std::string token = authHeader.substr(7);
-
         // 2. Проверяем токен
         auto phoneOpt = auth_->verifyJWT(token);
         if (!phoneOpt) {
@@ -1494,7 +1737,6 @@ private:
             g_serverLogger.warning("handleDirectorBlockClient: invalid token from " + client_ip);
             return;
         }
-
         // 3. ПРОВЕРКА РОЛИ ДИРЕКТОРА
         constexpr const char* DIRECTOR_PHONE = "+79914869324";
         if (*phoneOpt != DIRECTOR_PHONE) {
@@ -1506,7 +1748,6 @@ private:
                 " from " + client_ip);
             return;
         }
-
         // 4. Получаем ID директора из БД
         auto directorOpt = db_->getClientByPhone(*phoneOpt);
         if (!directorOpt) {
@@ -1518,7 +1759,6 @@ private:
             return;
         }
         int directorId = directorOpt->id;
-
         // 5. Разбор JSON тела запроса
         json body;
         try {
@@ -1533,7 +1773,6 @@ private:
             g_serverLogger.warning("handleDirectorBlockClient: JSON parse error from " + client_ip);
             return;
         }
-
         // 6. Валидация обязательных полей
         if (!body.contains("client_id") || !body["client_id"].is_number()) {
             response_.result(http::status::bad_request);
@@ -1543,7 +1782,6 @@ private:
             g_serverLogger.warning("handleDirectorBlockClient: missing client_id from " + client_ip);
             return;
         }
-
         if (!body.contains("blocked") || !body["blocked"].is_boolean()) {
             response_.result(http::status::bad_request);
             response_.set(http::field::content_type, "application/json");
@@ -1552,14 +1790,27 @@ private:
             g_serverLogger.warning("handleDirectorBlockClient: missing blocked field from " + client_ip);
             return;
         }
-
         int clientId = body["client_id"].get<int>();
         bool blocked = body["blocked"].get<bool>();
-
+        // =====================================================================
+        // НОВОЕ: Извлечение и валидация причины блокировки
+        // =====================================================================
+        std::string blockReason = body.value("block_reason", std::string(""));
+        // Валидация длины: не более 1000 символов
+        if (blockReason.length() > 1000) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Block reason must not exceed 1000 characters"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleDirectorBlockClient: block_reason too long (" +
+                std::to_string(blockReason.length()) + " chars) from " + client_ip);
+            return;
+        }
         g_serverLogger.info("handleDirectorBlockClient: clientId=" + std::to_string(clientId) +
             ", blocked=" + std::to_string(blocked) +
-            ", directorId=" + std::to_string(directorId));
-
+            ", directorId=" + std::to_string(directorId) +
+            ", blockReason='" + blockReason.substr(0, 100) +
+            (blockReason.length() > 100 ? "..." : "") + "'");
         // 7. Проверяем, что клиент существует
         auto clientOpt = db_->getClientById(clientId);
         if (!clientOpt) {
@@ -1571,7 +1822,6 @@ private:
                 std::to_string(clientId));
             return;
         }
-
         // 8. Проверяем, что не пытаемся заблокировать самого директора или товароведа
         if (clientOpt->role == "director" || clientOpt->role == "worker") {
             response_.result(http::status::forbidden);
@@ -1582,21 +1832,20 @@ private:
                 clientOpt->role + ", id=" + std::to_string(clientId));
             return;
         }
-
-        // 9. Выполняем блокировку/разблокировку
-        if (db_->setClientBlocked(clientId, blocked, directorId)) {
+        // 9. Выполняем блокировку/разблокировку с причиной
+        if (db_->setClientBlocked(clientId, blocked, directorId, blockReason)) {
             response_.result(http::status::ok);
             response_.set(http::field::content_type, "application/json");
             json successResponse;
             successResponse["success"] = true;
             successResponse["client_id"] = clientId;
             successResponse["blocked"] = blocked;
+            successResponse["block_reason"] = blockReason;
             successResponse["message"] = blocked ?
                 "Клиент успешно заблокирован" :
                 "Клиент успешно разблокирован";
             response_.body() = successResponse.dump();
             response_.prepare_payload();
-
             g_serverLogger.info("handleDirectorBlockClient: SUCCESS - client " +
                 std::to_string(clientId) + (blocked ? " BLOCKED" : " UNBLOCKED") +
                 " by director " + std::to_string(directorId) + " from " + client_ip);
@@ -2076,6 +2325,119 @@ private:
             response_.body() = json{ {"error", "Failed to register committee"} }.dump();
         }
         response_.prepare_payload();
+    }
+
+    // =========================================================================
+    // ОБРАБОТЧИК GET /api/v1/queue/display
+    // Возвращает полное состояние всех 6 очередей для ТВ-дисплея:
+    // - Ожидающие талоны (статус 'waiting' / 'pending')
+    // - Принятые талоны (статус 'accepted') с номером окна
+    // Обслуженные талоны (статус 'served') НЕ возвращаются.
+    //
+    // Формат ответа:
+    // {
+    //   "queues": {
+    //     "general":    { "waiting": [...], "accepted": [...] },
+    //     "first_time": { "waiting": [...], "accepted": [...] },
+    //     "extra_20":   { "waiting": [...], "accepted": [...] },
+    //     "trust":      { "waiting": [...], "accepted": [...] },
+    //     "paid":       { "waiting": [...], "accepted": [...] },
+    //     "expensive":  { "waiting": [...], "accepted": [...] }
+    //   },
+    //   "timestamp": 1234567890
+    // }
+    // =========================================================================
+    void handleQueueDisplay(const std::string& client_ip) {
+        g_serverLogger.info("handleQueueDisplay: request from " + client_ip);
+        try {
+            json queues;
+
+            // === Очередь "Общая" (general) ===
+            {
+                json q;
+                q["waiting"] = queue_->getWaitingTickets("general");
+                q["accepted"] = queue_->getAcceptedTickets("general");
+                queues["general"] = q;
+                g_serverLogger.info("handleQueueDisplay: general waiting=" +
+                    std::to_string(q["waiting"].size()) +
+                    ", accepted=" + std::to_string(q["accepted"].size()));
+            }
+
+            // === Очередь "Первый раз" (first_time) ===
+            {
+                json q;
+                q["waiting"] = queue_->getWaitingFirstTimeTickets();
+                q["accepted"] = queue_->getAcceptedFirstTimeTickets();
+                queues["first_time"] = q;
+                g_serverLogger.info("handleQueueDisplay: first_time waiting=" +
+                    std::to_string(q["waiting"].size()) +
+                    ", accepted=" + std::to_string(q["accepted"].size()));
+            }
+
+            // === Очередь "+20 позиций" (extra_20) ===
+            {
+                json q;
+                q["waiting"] = queue_->getWaitingTickets("extra_20");
+                q["accepted"] = queue_->getAcceptedTickets("extra_20");
+                queues["extra_20"] = q;
+                g_serverLogger.info("handleQueueDisplay: extra_20 waiting=" +
+                    std::to_string(q["waiting"].size()) +
+                    ", accepted=" + std::to_string(q["accepted"].size()));
+            }
+
+            // === Очередь "Доверие" (trust) ===
+            {
+                json q;
+                q["waiting"] = queue_->getWaitingTrustTickets();
+                q["accepted"] = queue_->getAcceptedTrustTickets();
+                queues["trust"] = q;
+                g_serverLogger.info("handleQueueDisplay: trust waiting=" +
+                    std::to_string(q["waiting"].size()) +
+                    ", accepted=" + std::to_string(q["accepted"].size()));
+            }
+
+            // === Очередь "Платный приём" (paid) ===
+            {
+                json q;
+                q["waiting"] = queue_->getWaitingTickets("paid");
+                q["accepted"] = queue_->getAcceptedTickets("paid");
+                queues["paid"] = q;
+                g_serverLogger.info("handleQueueDisplay: paid waiting=" +
+                    std::to_string(q["waiting"].size()) +
+                    ", accepted=" + std::to_string(q["accepted"].size()));
+            }
+
+            // === Очередь "Дорогой товар" (expensive) ===
+            {
+                json q;
+                q["waiting"] = queue_->getWaitingTickets("expensive");
+                q["accepted"] = queue_->getAcceptedTickets("expensive");
+                queues["expensive"] = q;
+                g_serverLogger.info("handleQueueDisplay: expensive waiting=" +
+                    std::to_string(q["waiting"].size()) +
+                    ", accepted=" + std::to_string(q["accepted"].size()));
+            }
+
+            // Формируем итоговый ответ
+            json resp;
+            resp["queues"] = queues;
+            resp["timestamp"] = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+
+            response_.result(http::status::ok);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = resp.dump();
+            response_.prepare_payload();
+
+            g_serverLogger.info("handleQueueDisplay: response sent to " + client_ip);
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("handleQueueDisplay error: " + std::string(e.what()));
+            response_.result(http::status::internal_server_error);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Queue display failed"} }.dump();
+            response_.prepare_payload();
+        }
     }
 
     void doWrite() {

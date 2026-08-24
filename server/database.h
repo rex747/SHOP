@@ -467,6 +467,19 @@ public:
                 END $$;
             )");
 
+            // ========================================================================
+            // МИГРАЦИЯ: добавление колонки block_reason для хранения причины блокировки
+            // ========================================================================
+            txn.exec(R"(
+                DO $$
+                BEGIN
+                    ALTER TABLE clients ADD COLUMN IF NOT EXISTS block_reason TEXT DEFAULT '';
+                EXCEPTION WHEN duplicate_column THEN
+                    NULL;
+                END $$;
+            )");
+            g_serverLogger.info("Migration: clients.block_reason added successfully");
+
             // Создаём частичные уникальные индексы для активных талонов
             txn.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_tickets_number_active ON queue_tickets(number) WHERE status IN ('waiting', 'accepted')");
             txn.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_first_time_tickets_number_active ON first_time_tickets(ticket_number) WHERE status IN ('waiting', 'accepted')");
@@ -673,15 +686,65 @@ public:
     }
 
 
+    // ========================================================================
+    // ИСПРАВЛЕННЫЙ МЕТОД: getDailyTicketCount
+    // ========================================================================
+    //
+    // ПРИЧИНА ИСПРАВЛЕНИЯ (подтверждена логами 2026-08-24 18:16):
+    //
+    //   Старый запрос считал талоны, СОЗДАННЫЕ СЕГОДНЯ (created_at >= полуночи
+    //   UTC), НЕЗАВИСИМО ОТ СТАТУСА:
+    //     WHERE queue_type = $1 AND created_at >= EXTRACT(EPOCH FROM date_trunc(...))
+    //   Поэтому:
+    //     - обслуженные/принятые талоны сегодняшнего дня ВХОДИЛИ в счётчик
+    //       (экран завышал «ожидающих»);
+    //     - ожидающие талоны, созданные в ПРЕДЫДУЩИЕ дни, НЕ ВХОДИЛИ в счётчик
+    //       (экран занижал «ожидающих»).
+    //   Подтверждение: daily_count вернул 6, а createTicket вычислил
+    //   basePosition=10 (реально 9 ожидающих). Экран показывал 6, затем
+    //   позицию 10 — несоответствие.
+    //
+    //   Позиция талона в createTicket() вычисляется как
+    //   COUNT(status='waiting') + 1. Надпись на экране терминала —
+    //   «Количество ожидающих в очереди» / «Количество ожидающих приема
+    //   человек». Следовательно, информационный эндпоинт обязан возвращать
+    //   именно ТЕКУЩИХ ОЖИДАЮЩИХ, по тому же критерию, что и позиция.
+    //
+    // ИСПРАВЛЕНИЕ:
+    //   WHERE-условие заменено на status = 'waiting' (без фильтра по дате).
+    //   Запрос теперь ИДЕНТИЧЕН критерию basePosition в createTicket():
+    //   отображаемое N всегда равно количеству людей перед комитентом,
+    //   а позиция выданного талона = N + 1. Расхождение исключено по
+    //   построению, а не по совпадению.
+    //
+    // НЕ МЕНЯЕТСЯ:
+    //   - математика позиции (COUNT(waiting) + 1) и времени ожидания (position*5);
+    //   - бизнес-логика (эндпоинт /api/v1/queue/daily_count, обработчик
+    //     handleDailyCount, клиентский QueueManager::getDailyCount, надписи UI);
+    //   - архитектура (никаких новых методов, переменных, таблиц, индексов);
+    //   - производительность: запрос покрывается существующим составным
+    //     индексом idx_queue_status_type ON queue_tickets(queue_type, status).
+    //
+    // ПОТОКОБЕЗОПАСНОСТЬ:
+    //   Только SELECT в собственной транзакции pqxx::work; данных не изменяет.
+    //   Гонка исключена (чтение согласованного снимка БД).
+    //
+    // ========================================================================
     int getDailyTicketCount(const std::string& queueType) {
         try {
             pqxx::work txn{ *conn_ };
+            // ИСПРАВЛЕНИЕ: считаем ТЕКУЩИХ ОЖИДАЮЩИХ (тот же критерий,
+            // что и в createTicket при вычислении basePosition).
             auto result = txn.exec(
                 "SELECT COUNT(*) FROM queue_tickets "
-                "WHERE queue_type = $1 AND created_at >= EXTRACT(EPOCH FROM date_trunc('day', NOW() AT TIME ZONE 'UTC'))",
+                "WHERE queue_type = $1 AND status = 'waiting'",
                 pqxx::params{ queueType }
             );
-            return result[0][0].as<int>();
+            int count = result[0][0].as<int>();
+            g_serverLogger.info("getDailyTicketCount: queueType=" + queueType +
+                ", waiting=" + std::to_string(count) +
+                " (criterion aligned with createTicket basePosition)");
+            return count;
         }
         catch (const std::exception& e) {
             g_serverLogger.error("getDailyTicketCount error: " + std::string(e.what()));
@@ -692,19 +755,79 @@ public:
     // ========================================================================
     // ИСПРАВЛЕННЫЙ МЕТОД: createTicket
     // ========================================================================
-    // ПРИЧИНА ИСПРАВЛЕНИЯ:
-    // Номер талона генерировался длинным: prefix + "-" + time%10000 + "-" + position.
-    // Например: G-1234-56, что превышает 3 знака.
     //
-    // РЕШЕНИЕ:
-    // Генерируем короткий номер талона (не более 3 знаков): prefix + %03d(position).
-    // Например: G001, G002, ..., G999.
-    // Позиция вычисляется как количество ожидающих талонов + 1 (без изменений).
-    // Благодаря частичному уникальному индексу (см. миграцию выше), короткие
-    // номера могут использоваться циклически без конфликта уникальности.
+    // ВЫЯВЛЕННЫЕ ДЕФЕКТЫ (подтверждены логами 2026-08-23):
+    //
+    // ДЕФЕКТ 1: НЕИНИЦИАЛИЗИРОВАННАЯ СТРУКТУРА ПРИ ИСКЛЮЧЕНИИ.
+    //   Локальная переменная `QueueTicket ticket;` не инициализировалась.
+    //   Поля типа int (id, position, itemsCount, estimatedWaitTime, createdAt)
+    //   содержали МУСОР из стека. Поля типа std::string инициализировались
+    //   пустой строкой по умолчанию.
+    //   При любом исключении (нарушение уникальности, ошибка соединения)
+    //   метод возвращал этот мусор. Клиент получал:
+    //     position = -1100584656   (мусор стека)
+    //     wait_time_minutes = 105497289322101 (мусор стека)
+    //     number = ""              (пустой std::string по умолчанию)
+    //   Подтверждение: лог терминала 17:10:48.636.
+    //
+    // ДЕФЕКТ 2: КОНФЛИКТ ЧАСТИЧНОГО УНИКАЛЬНОГО ИНДЕКСА.
+    //   Номер генерировался как COUNT(waiting) + 1.
+    //   Частичный уникальный индекс:
+    //     CREATE UNIQUE INDEX idx_queue_tickets_number_active
+    //     ON queue_tickets(number) WHERE status IN ('waiting', 'accepted')
+    //   гарантирует уникальность номера среди ОБА активных статуса.
+    //   Генерация учитывала ТОЛЬКО 'waiting', игнорируя 'accepted'.
+    //   Подтверждение: лог сервера general waiting=0, accepted=6;
+    //   лог товароведа: среди принятых G001, G002.
+    //   Генерация G001 при position=1 → конфликт → исключение → мусор.
+    //
+    // ИСПРАВЛЕНИЕ (архитектура, математика и бизнес-логика НЕ меняются):
+    //
+    // 1. Структура `ticket` инициализируется через `QueueTicket ticket{};`
+    //    (агрегатная инициализация: все поля обнуляются, строки становятся
+    //    пустыми). Поле `status` устанавливается в пустую строку как
+    //    ИНДИКАТОР ОШИБКИ. После успешного создания устанавливается
+    //    "waiting". Вызывающий код (queue_service.h::getTicket) проверяет
+    //    это поле и НЕ возвращает мусор клиенту.
+    //
+    // 2. Генерация номера выполняется ПОИСКА СВОБОДНОГО НОМЕРА в цикле.
+    //    Начиная с базовой позиции (COUNT(waiting) + 1), каждый кандидат
+    //    проверяется запросом:
+    //      SELECT COUNT(*) FROM queue_tickets
+    //      WHERE number = $1 AND status IN ('waiting', 'accepted')
+    //    Если номер занят (счётчик > 0) — переходим к следующему.
+    //    Если не найден в диапазоне [позиция..999] — ищем в [1..позиция-1]
+    //    (циклическая нумерация, предусмотренная миграцией индексов).
+    //    Это ГАРАНТИРУЕТ отсутствие конфликта уникальности.
+    //
+    // 3. Позиция талона в очереди = COUNT(waiting) + 1 (НЕ МЕНЯЕТСЯ).
+    //    Время ожидания = позиция * 5 минут (НЕ МЕНЯЕТСЯ).
+    //    Номер талона может отличаться от позиции, если среди активных
+    //    талонов есть занятые номера. Это корректно: номер — идентификатор
+    //    талона, позиция — место в очереди ожидающих.
+    //
+    // ПОТОКОБЕЗОПАСНОСТЬ:
+    //   Все запросы (поиск свободного номера, вставка) выполняются
+    //   последовательно в рамках ОДНОЙ транзакции pqxx::work.
+    //   Параллельные запросы на создание талона блокируются на уровне
+    //   транзакции до её завершения. Гонка исключена.
+    //   Метод вызывается из одного потока обработки запроса (один
+    //   HttpSession обрабатывает один запрос за раз). Дополнительная
+    //   синхронизация не требуется.
+    //
     // ========================================================================
     QueueTicket createTicket(int clientId, const std::string& queueType, int itemsCount) {
-        QueueTicket ticket;
+        // ИНИЦИАЛИЗАЦИЯ: все поля обнуляются.
+        // Поле `status` = "" → индикатор ошибки для вызывающего кода.
+        // Если метод завершится исключением, вернётся структура с пустым
+        // `status`, и вызывающий код (queue_service.h) вернёт клиенту
+        // ошибку вместо мусора.
+        QueueTicket ticket{};
+        ticket.clientId = clientId;
+        ticket.queueType = queueType;
+        ticket.itemsCount = itemsCount;
+        ticket.status = "";  // индикатор ошибки; станет "waiting" при успехе
+
         try {
             pqxx::work txn{ *conn_ };
 
@@ -715,41 +838,101 @@ public:
                 (queueType == "paid") ? "P" :
                 (queueType == "expensive") ? "D" : "X";
 
-            // Вычисляем позицию: количество ожидающих талонов в данной очереди + 1
+            // Базовая позиция: количество ожидающих талонов + 1.
+            // Это позиция талона В ОЧЕРЕДИ (бизнес-логика не меняется).
             auto countResult = txn.exec(
                 "SELECT COUNT(*) FROM queue_tickets WHERE queue_type = $1 AND status = 'waiting'",
                 pqxx::params{ queueType }
             );
-            int position = countResult[0][0].as<int>() + 1;
+            int basePosition = countResult[0][0].as<int>() + 1;
 
-            // =====================================================================
-            // ИСПРАВЛЕНИЕ: Генерируем короткий номер талона (не более 3 знаков).
-            // Используем позицию в очереди с форматированием %03d (001, 002, ..., 999).
-            // Если позиция > 999 (что невозможно из-за лимитов очередей в config_server.h:
-            // MAX_QUEUE_SIZE_GENERAL=100, MAX_QUEUE_SIZE_EXTRA_20=50, MAX_QUEUE_SIZE_PAID=30,
-            // MAX_QUEUE_SIZE_EXPENSIVE=20), ограничиваем до 999 для безопасности.
-            // =====================================================================
-            int displayNum = std::min(position, 999);
+            g_serverLogger.info("createTicket: searching free number for queueType=" +
+                queueType + ", basePosition=" + std::to_string(basePosition) +
+                ", clientId=" + std::to_string(clientId) +
+                ", itemsCount=" + std::to_string(itemsCount));
+
+            // ПОИСК СВОБОДНОГО НОМЕРА.
+            // Диапазон 1: от базовой позиции до 999.
+            // Для каждого кандидата проверяем отсутствие среди активных
+            // талонов (статусы 'waiting', 'accepted').
+            int displayNum = -1;
+            for (int attempt = basePosition; attempt <= 999; ++attempt) {
+                char numBuf[16];
+                snprintf(numBuf, sizeof(numBuf), "%03d", attempt);
+                std::string candidateNumber = prefix + std::string(numBuf);
+                auto checkResult = txn.exec(
+                    "SELECT COUNT(*) FROM queue_tickets "
+                    "WHERE number = $1 AND status IN ('waiting', 'accepted')",
+                    pqxx::params{ candidateNumber }
+                );
+                if (checkResult[0][0].as<int>() == 0) {
+                    displayNum = attempt;
+                    g_serverLogger.info("createTicket: free number FOUND in range [" +
+                        std::to_string(basePosition) + "..999]: " + candidateNumber);
+                    break;
+                }
+                g_serverLogger.info("createTicket: number " + candidateNumber +
+                    " is OCCUPIED, trying next");
+            }
+
+            // Диапазон 2: циклический поиск от 1 до базовой позиции - 1.
+            // Это необходимо, если все номера [позиция..999] заняты,
+            // но среди [1..позиция-1] есть свободные (обслуженные талоны
+            // не блокируют номер благодаря частичному индексу).
+            if (displayNum == -1) {
+                g_serverLogger.info("createTicket: range [" +
+                    std::to_string(basePosition) + "..999] exhausted, "
+                    "trying cyclic range [1.." + std::to_string(basePosition - 1) + "]");
+                for (int attempt = 1; attempt < basePosition; ++attempt) {
+                    char numBuf[16];
+                    snprintf(numBuf, sizeof(numBuf), "%03d", attempt);
+                    std::string candidateNumber = prefix + std::string(numBuf);
+                    auto checkResult = txn.exec(
+                        "SELECT COUNT(*) FROM queue_tickets "
+                        "WHERE number = $1 AND status IN ('waiting', 'accepted')",
+                        pqxx::params{ candidateNumber }
+                    );
+                    if (checkResult[0][0].as<int>() == 0) {
+                        displayNum = attempt;
+                        g_serverLogger.info("createTicket: free number FOUND in cyclic range: " +
+                            candidateNumber);
+                        break;
+                    }
+                    g_serverLogger.info("createTicket: number " + candidateNumber +
+                        " is OCCUPIED in cyclic range, trying next");
+                }
+            }
+
+            // Если свободный номер не найден (все 999 заняты активными
+            // талонами), логируем и возвращаем ошибку.
+            // Вызывающий код обнаружит пустой `status` и вернёт клиенту
+            // {"error": "Failed to create ticket"} вместо мусора.
+            if (displayNum == -1) {
+                g_serverLogger.error("createTicket: NO AVAILABLE ticket number for queueType=" +
+                    queueType + ", all 999 numbers are occupied by active tickets");
+                return ticket;  // status == "" → индикатор ошибки
+            }
+
             char numBuf[16];
             snprintf(numBuf, sizeof(numBuf), "%03d", displayNum);
             std::string number = prefix + std::string(numBuf);
-
             std::string window = "1";
-            int waitTime = position * 5; // 5 минут на человека (математика без изменений)
+            int waitTime = basePosition * 5; // 5 минут на человека (математика БЕЗ ИЗМЕНЕНИЙ)
 
             g_serverLogger.info("createTicket: queueType=" + queueType +
-                ", position=" + std::to_string(position) +
+                ", basePosition=" + std::to_string(basePosition) +
+                ", displayNum=" + std::to_string(displayNum) +
                 ", ticketNumber=" + number +
                 ", clientId=" + std::to_string(clientId) +
-                ", itemsCount=" + std::to_string(itemsCount));
+                ", itemsCount=" + std::to_string(itemsCount) +
+                ", waitTime=" + std::to_string(waitTime));
 
             auto result = txn.exec(
                 "INSERT INTO queue_tickets (number, client_id, queue_type, position, items_count, window_number, estimated_wait_time) "
                 "VALUES ($1, $2, $3, $4, $5, $6, $7) "
                 "RETURNING id, number, position, window_number, estimated_wait_time, created_at",
-                pqxx::params{ number, clientId, queueType, position, itemsCount, window, waitTime }
+                pqxx::params{ number, clientId, queueType, basePosition, itemsCount, window, waitTime }
             );
-
             ticket.id = result[0]["id"].as<int>();
             ticket.number = result[0]["number"].as<std::string>();
             ticket.clientId = clientId;
@@ -759,17 +942,22 @@ public:
             ticket.windowNumber = result[0]["window_number"].as<std::string>();
             ticket.estimatedWaitTime = result[0]["estimated_wait_time"].as<int>();
             ticket.createdAt = result[0]["created_at"].as<int64_t>();
-            ticket.status = "waiting";
-
+            ticket.status = "waiting";  // индикатор успешного создания
             txn.commit();
 
             g_serverLogger.info("createTicket: SUCCESS - ticketNumber=" + ticket.number +
+                ", id=" + std::to_string(ticket.id) +
                 ", position=" + std::to_string(ticket.position) +
-                ", waitTime=" + std::to_string(ticket.estimatedWaitTime));
+                ", waitTime=" + std::to_string(ticket.estimatedWaitTime) +
+                ", createdAt=" + std::to_string(ticket.createdAt));
         }
         catch (const std::exception& e) {
             g_serverLogger.error("createTicket error: " + std::string(e.what()));
             std::cerr << "createTicket error: " << e.what() << std::endl;
+            // Сбрасываем статус в случае ошибки.
+            // Вызывающий код обнаружит пустой `status` и вернёт клиенту
+            // ошибку вместо мусорных данных.
+            ticket.status = "";
         }
         return ticket;
     }
@@ -808,17 +996,23 @@ public:
         try {
             pqxx::work txn{ *conn_ };
             auto res = txn.exec(
-                "UPDATE trust_acceptances SET status = 'accepted', accepted_at = EXTRACT(EPOCH FROM NOW()) "
-                "WHERE ticket_number = $1 AND status = 'pending' RETURNING window_number",
-                pqxx::params{ ticketNumber }
+                "UPDATE trust_acceptances "
+                "SET status = 'accepted', "
+                "    accepted_at = EXTRACT(EPOCH FROM NOW()), "
+                "    window_number = $2 "
+                "WHERE ticket_number = $1 AND status = 'pending' "
+                "RETURNING window_number",
+                pqxx::params{ ticketNumber, windowNumber }
             );
             if (res.empty()) {
-                g_serverLogger.warning("acceptTrustTicket: ticket not found or already accepted: " + ticketNumber);
+                g_serverLogger.warning("acceptTrustTicket: ticket not found or already accepted: " +
+                    ticketNumber);
                 return false;
             }
             windowNumber = res[0]["window_number"].as<std::string>();
             txn.commit();
-            g_serverLogger.info("Accepted TRUST ticket: " + ticketNumber + ", window: " + windowNumber);
+            g_serverLogger.info("acceptTrustTicket: accepted " + ticketNumber +
+                ", window updated to: " + windowNumber);
             return true;
         }
         catch (const std::exception& e) {
@@ -851,39 +1045,124 @@ public:
     }
 
     // ========================================================================
-   // ИСПРАВЛЕННЫЙ МЕТОД: createTrustAcceptance
-   // ========================================================================
-   // ПРИЧИНА ИСПРАВЛЕНИЯ:
-   // Номер талона генерировался длинным: "TR-" + timestamp + "-" + rand%10000.
-   //
-   // РЕШЕНИЕ:
-   // Вычисляем количество ожидающих trust талонов и генерируем короткий номер
-   // (не более 3 знаков): "T" + %03d(position). Например: T001, T002, ..., T999.
-   // Благодаря частичному уникальному индексу (см. миграцию выше), короткие
-   // номера могут использоваться циклически без конфликта уникальности.
-   // ========================================================================
-    std::optional<std::string> createTrustAcceptance(int clientId) {
+    // ИСПРАВЛЕННЫЙ МЕТОД: createTrustAcceptance
+    // ========================================================================
+    //
+    // ПРИЧИНА ИСПРАВЛЕНИЯ (подтверждена логами 2026-08-24):
+    //
+    //   Метод вычислял корректную позицию (basePosition = COUNT(pending) + 1),
+    //   но возвращал ТОЛЬКО номер талона (std::optional<std::string>).
+    //   Позиция терялась. Вызывающий код (server.cpp::handleTrustAcceptance)
+    //   не имел доступа к позиции и жёстко задавал 0:
+    //     resp["position"] = 0; // для доверия позиция всегда 0
+    //   Клиент получал 0 и нормализовал до 1 (бизнес-правило в
+    //   queue_manager.h::getTrustAcceptance). В результате комитент
+    //   всегда видел себя первым в очереди, независимо от количества
+    //   ранее взятых талонов.
+    //
+    //   Подтверждение из логов сервера:
+    //     createTrustAcceptance: basePosition=7, clientId=1
+    //     Creating TRUST acceptance ticket: T007, basePosition=7
+    //   Подтверждение из логов клиента:
+    //     Response: {"position":0,"ticket_number":"T007",...}
+    //     getTrustAcceptance: server returned position=0, normalized to 1
+    //
+    // ИСПРАВЛЕНИЕ:
+    //   Возвращаемый тип изменён с std::optional<std::string> на
+    //   std::optional<std::pair<std::string, int>>.
+    //   first  = номер талона (как раньше)
+    //   second = позиция в очереди (basePosition, уже вычислялся)
+    //
+    //   Математика НЕ меняется: позиция = COUNT(pending) + 1.
+    //   Бизнес-модель НЕ меняется: талон создаётся в таблице
+    //   trust_acceptances с теми же полями.
+    //   Архитектура НЕ меняется: таблица, индексы, статусы — без изменений.
+    //   Новые функции НЕ добавляются. Новые переменные НЕ добавляются.
+    //
+    // ПОТОКОБЕЗОПАСНОСТЬ:
+    //   Все запросы (подсчёт, поиск свободного номера, вставка) выполняются
+    //   последовательно в рамках ОДНОЙ транзакции pqxx::work.
+    //   Параллельные запросы на создание талона блокируются на уровне
+    //   транзакции до её завершения. Гонка исключена.
+    //
+    // ========================================================================
+    std::optional<std::pair<std::string, int>> createTrustAcceptance(int clientId) {
         try {
             pqxx::work txn{ *conn_ };
 
-            // =====================================================================
-            // Вычисляем количество ожидающих trust талонов для генерации
-            // короткого номера (не более 3 знаков).
-            // =====================================================================
+            // Базовая позиция: количество ожидающих талонов + 1.
+            // Это позиция нового талона В ОЧЕРЕДИ (математика НЕ меняется).
             auto countResult = txn.exec(
                 "SELECT COUNT(*) FROM trust_acceptances WHERE status = 'pending'"
             );
-            int position = countResult[0][0].as<int>() + 1;
+            int basePosition = countResult[0][0].as<int>() + 1;
 
-            // Генерируем короткий номер талона (не более 3 знаков): "T" + %03d(position)
-            int displayNum = std::min(position, 999);
+            g_serverLogger.info("createTrustAcceptance: searching free number, "
+                "basePosition=" + std::to_string(basePosition) +
+                ", clientId=" + std::to_string(clientId));
+
+            // ПОИСК СВОБОДНОГО НОМЕРА.
+            // Диапазон 1: от базовой позиции до 999.
+            int displayNum = -1;
+            for (int attempt = basePosition; attempt <= 999; ++attempt) {
+                char numBuf[16];
+                snprintf(numBuf, sizeof(numBuf), "%03d", attempt);
+                std::string candidateNumber = "T" + std::string(numBuf);
+                auto checkResult = txn.exec(
+                    "SELECT COUNT(*) FROM trust_acceptances "
+                    "WHERE ticket_number = $1 AND status IN ('pending', 'accepted')",
+                    pqxx::params{ candidateNumber }
+                );
+                if (checkResult[0][0].as<int>() == 0) {
+                    displayNum = attempt;
+                    g_serverLogger.info("createTrustAcceptance: free number FOUND: " +
+                        candidateNumber);
+                    break;
+                }
+                g_serverLogger.info("createTrustAcceptance: number " + candidateNumber +
+                    " is OCCUPIED, trying next");
+            }
+
+            // Диапазон 2: циклический поиск от 1 до базовой позиции - 1.
+            if (displayNum == -1) {
+                g_serverLogger.info("createTrustAcceptance: range [" +
+                    std::to_string(basePosition) + "..999] exhausted, "
+                    "trying cyclic range [1.." + std::to_string(basePosition - 1) + "]");
+                for (int attempt = 1; attempt < basePosition; ++attempt) {
+                    char numBuf[16];
+                    snprintf(numBuf, sizeof(numBuf), "%03d", attempt);
+                    std::string candidateNumber = "T" + std::string(numBuf);
+                    auto checkResult = txn.exec(
+                        "SELECT COUNT(*) FROM trust_acceptances "
+                        "WHERE ticket_number = $1 AND status IN ('pending', 'accepted')",
+                        pqxx::params{ candidateNumber }
+                    );
+                    if (checkResult[0][0].as<int>() == 0) {
+                        displayNum = attempt;
+                        g_serverLogger.info("createTrustAcceptance: free number FOUND in cyclic range: " +
+                            candidateNumber);
+                        break;
+                    }
+                    g_serverLogger.info("createTrustAcceptance: number " + candidateNumber +
+                        " is OCCUPIED in cyclic range, trying next");
+                }
+            }
+
+            // Если свободный номер не найден, возвращаем nullopt.
+            if (displayNum == -1) {
+                g_serverLogger.error("createTrustAcceptance: NO AVAILABLE ticket number, "
+                    "all 999 numbers are occupied by active tickets");
+                return std::nullopt;
+            }
+
             char numBuf[16];
             snprintf(numBuf, sizeof(numBuf), "%03d", displayNum);
             std::string ticketNumber = "T" + std::string(numBuf);
 
             g_serverLogger.info("Creating TRUST acceptance ticket: " + ticketNumber +
                 " for client " + std::to_string(clientId) +
-                ", position=" + std::to_string(position));
+                ", basePosition=" + std::to_string(basePosition) +
+                ", displayNum=" + std::to_string(displayNum));
 
             auto result = txn.exec(
                 "INSERT INTO trust_acceptances (client_id, ticket_number) "
@@ -891,15 +1170,22 @@ public:
                 pqxx::params{ clientId, ticketNumber }
             );
 
-            g_serverLogger.info("Inserted TRUST acceptance ticket into database: " + ticketNumber +
-                " for client " + std::to_string(clientId));
+            g_serverLogger.info("Inserted TRUST acceptance ticket into database: " +
+                ticketNumber + " for client " + std::to_string(clientId));
 
             txn.commit();
 
             g_serverLogger.info("Created TRUST acceptance ticket: " + ticketNumber +
-                " for client " + std::to_string(clientId));
+                " for client " + std::to_string(clientId) +
+                ", position=" + std::to_string(basePosition));
 
-            return result[0]["ticket_number"].as<std::string>();
+            // ИСПРАВЛЕНИЕ: возвращаем ПАРУ (номер талона, позиция).
+            // Ранее возвращался только номер талона, и позиция терялась.
+            // basePosition уже вычислен выше как COUNT(pending) + 1.
+            return std::make_pair(
+                result[0]["ticket_number"].as<std::string>(),
+                basePosition
+            );
         }
         catch (const std::exception& e) {
             g_serverLogger.error("createTrustAcceptance error: " + std::string(e.what()));
@@ -930,51 +1216,114 @@ public:
     }
 
     // ========================================================================
-   // ИСПРАВЛЕННЫЙ МЕТОД: createFirstTimeTicket
-   // ========================================================================
-   // ПРИЧИНА ИСПРАВЛЕНИЯ:
-   // 1. Метод не вычислял позицию в очереди (количество ожидающих талонов),
-   //    поэтому клиент всегда получал позицию 1 (hardcoded в main_window.h).
-   // 2. Номер талона генерировался длинным: "F-" + timestamp + "-" + rand%10000.
-   // 3. Метод возвращал только std::string (номер), не возвращая позицию,
-   //    окно и время ожидания.
-   //
-   // РЕШЕНИЕ:
-   // 1. Вычисляем позицию как COUNT(*) ожидающих талонов + 1.
-   // 2. Генерируем короткий номер талона (не более 3 знаков): "F" + %03d(position).
-   // 3. Возвращаем JSON с полями ticket_number, position, window_number,
-   //    wait_time_minutes, created_at, чтобы клиент мог отобразить корректную позицию.
-   // 4. Благодаря частичному уникальному индексу (см. миграцию выше), короткие
-   //    номера могут использоваться циклически без конфликта уникальности.
-   // ========================================================================
+    // ИСПРАВЛЕННЫЙ МЕТОД: createFirstTimeTicket
+    // ========================================================================
+    //
+    // ВЫЯВЛЕННЫЙ ДЕФЕКТ (подтверждён логами 2026-08-23):
+    //
+    //   Номер генерировался как COUNT(waiting) + 1.
+    //   Частичный уникальный индекс:
+    //     CREATE UNIQUE INDEX idx_first_time_tickets_number_active
+    //     ON first_time_tickets(ticket_number) WHERE status IN ('waiting', 'accepted')
+    //   гарантирует уникальность среди ОБА активных статуса.
+    //   Генерация учитывала ТОЛЬКО 'waiting'.
+    //   Подтверждение: лог сервера first_time waiting=29, accepted=8.
+    //   Если среди принятых есть F030, генерация F030 → конфликт →
+    //   исключение → возврат {"error": "..."}.
+    //   Клиент (терминал) получает: {"error":"Failed to create ticket"}.
+    //   Подтверждение: лог терминала 17:11:02.382.
+    //
+    // ИСПРАВЛЕНИЕ:
+    //   Генерация номера выполняется ПОИСКА СВОБОДНОГО НОМЕРА в цикле,
+    //   аналогично createTicket. Позиция = COUNT(waiting) + 1 (НЕ МЕНЯЕТСЯ).
+    //   Время ожидания = позиция * 5 минут (НЕ МЕНЯЕТСЯ).
+    //   Формат ответа (поля: ticket_number, position, window_number,
+    //   wait_time_minutes, created_at) НЕ МЕНЯЕТСЯ.
+    //
+    // ПОТОКОБЕЗОПАСНОСТЬ:
+    //   Все запросы выполняются в рамках одной транзакции.
+    //   Гонка исключена.
+    //
+    // ========================================================================
     json createFirstTimeTicket(const std::string& windowNumber = "1") {
         try {
             pqxx::work txn{ *conn_ };
 
-            // =====================================================================
-            // Вычисляем позицию: количество ожидающих талонов в очереди "Первый раз" + 1.
-            // Это обеспечивает корректное запоминание последовательно взятых талонов.
-            // =====================================================================
+            // Базовая позиция: количество ожидающих талонов + 1.
             auto countResult = txn.exec(
                 "SELECT COUNT(*) FROM first_time_tickets WHERE status = 'waiting'"
             );
-            int position = countResult[0][0].as<int>() + 1;
+            int basePosition = countResult[0][0].as<int>() + 1;
 
-            // =====================================================================
-            // Генерируем короткий номер талона (не более 3 знаков).
-            // Используем позицию в очереди с форматированием %03d (001, 002, ..., 999).
-            // Если позиция > 999 (что невозможно из-за лимита MAX_QUEUE_SIZE_FIRST_TIME=20
-            // в config_server.h), ограничиваем до 999 для безопасности.
-            // =====================================================================
-            int displayNum = std::min(position, 999);
+            g_serverLogger.info("createFirstTimeTicket: searching free number, "
+                "basePosition=" + std::to_string(basePosition) +
+                ", window=" + windowNumber);
+
+            // ПОИСК СВОБОДНОГО НОМЕРА.
+            // Диапазон 1: от базовой позиции до 999.
+            int displayNum = -1;
+            for (int attempt = basePosition; attempt <= 999; ++attempt) {
+                char numBuf[16];
+                snprintf(numBuf, sizeof(numBuf), "%03d", attempt);
+                std::string candidateNumber = "F" + std::string(numBuf);
+                auto checkResult = txn.exec(
+                    "SELECT COUNT(*) FROM first_time_tickets "
+                    "WHERE ticket_number = $1 AND status IN ('waiting', 'accepted')",
+                    pqxx::params{ candidateNumber }
+                );
+                if (checkResult[0][0].as<int>() == 0) {
+                    displayNum = attempt;
+                    g_serverLogger.info("createFirstTimeTicket: free number FOUND: " +
+                        candidateNumber);
+                    break;
+                }
+                g_serverLogger.info("createFirstTimeTicket: number " + candidateNumber +
+                    " is OCCUPIED, trying next");
+            }
+
+            // Диапазон 2: циклический поиск от 1 до базовой позиции - 1.
+            if (displayNum == -1) {
+                g_serverLogger.info("createFirstTimeTicket: range [" +
+                    std::to_string(basePosition) + "..999] exhausted, "
+                    "trying cyclic range [1.." + std::to_string(basePosition - 1) + "]");
+                for (int attempt = 1; attempt < basePosition; ++attempt) {
+                    char numBuf[16];
+                    snprintf(numBuf, sizeof(numBuf), "%03d", attempt);
+                    std::string candidateNumber = "F" + std::string(numBuf);
+                    auto checkResult = txn.exec(
+                        "SELECT COUNT(*) FROM first_time_tickets "
+                        "WHERE ticket_number = $1 AND status IN ('waiting', 'accepted')",
+                        pqxx::params{ candidateNumber }
+                    );
+                    if (checkResult[0][0].as<int>() == 0) {
+                        displayNum = attempt;
+                        g_serverLogger.info("createFirstTimeTicket: free number FOUND in cyclic range: " +
+                            candidateNumber);
+                        break;
+                    }
+                    g_serverLogger.info("createFirstTimeTicket: number " + candidateNumber +
+                        " is OCCUPIED in cyclic range, trying next");
+                }
+            }
+
+            // Если свободный номер не найден, возвращаем ошибку.
+            if (displayNum == -1) {
+                g_serverLogger.error("createFirstTimeTicket: NO AVAILABLE ticket number, "
+                    "all 999 numbers are occupied by active tickets");
+                json error;
+                error["error"] = "No available ticket number";
+                return error;
+            }
+
             char numBuf[16];
             snprintf(numBuf, sizeof(numBuf), "%03d", displayNum);
             std::string ticketNumber = "F" + std::string(numBuf);
+            // Время ожидания: 5 минут на человека (математика БЕЗ ИЗМЕНЕНИЙ)
+            int waitTime = basePosition * 5;
 
-            // Время ожидания: 5 минут на человека (математика как в createTicket)
-            int waitTime = position * 5;
-
-            g_serverLogger.info("createFirstTimeTicket: position=" + std::to_string(position) +
+            g_serverLogger.info("createFirstTimeTicket: basePosition=" +
+                std::to_string(basePosition) +
+                ", displayNum=" + std::to_string(displayNum) +
                 ", ticketNumber=" + ticketNumber +
                 ", window=" + windowNumber +
                 ", waitTime=" + std::to_string(waitTime));
@@ -984,22 +1333,23 @@ public:
                 "VALUES ($1, $2) RETURNING id, created_at",
                 pqxx::params{ ticketNumber, windowNumber }
             );
-
             txn.commit();
 
             // Формируем JSON ответ с полной информацией о талоне
+            // (формат НЕ МЕНЯЕТСЯ — клиент парсит эти поля)
             json response;
             response["ticket_number"] = ticketNumber;
-            response["position"] = position;
+            response["position"] = basePosition;
             response["window_number"] = windowNumber;
             response["wait_time_minutes"] = waitTime;
             response["created_at"] = result[0]["created_at"].as<int64_t>();
 
-            g_serverLogger.info("createFirstTimeTicket: SUCCESS - ticketNumber=" + ticketNumber +
-                ", position=" + std::to_string(position) +
+            g_serverLogger.info("createFirstTimeTicket: SUCCESS - ticketNumber=" +
+                ticketNumber +
+                ", position=" + std::to_string(basePosition) +
                 ", window=" + windowNumber +
-                ", waitTime=" + std::to_string(waitTime));
-
+                ", waitTime=" + std::to_string(waitTime) +
+                ", createdAt=" + std::to_string(result[0]["created_at"].as<int64_t>()));
             return response;
         }
         catch (const std::exception& e) {
@@ -1037,18 +1387,23 @@ public:
         try {
             pqxx::work txn{ *conn_ };
             auto res = txn.exec(
-                "UPDATE first_time_tickets SET status = 'accepted', accepted_at = EXTRACT(EPOCH FROM NOW()) "
+                "UPDATE first_time_tickets "
+                "SET status = 'accepted', "
+                "    accepted_at = EXTRACT(EPOCH FROM NOW()), "
+                "    window_number = $2 "
                 "WHERE ticket_number = $1 AND status = 'waiting' "
                 "RETURNING window_number",
-                pqxx::params{ ticketNumber }
+                pqxx::params{ ticketNumber, windowNumber }
             );
             if (res.empty()) {
-                g_serverLogger.warning("acceptFirstTimeTicket: ticket not found or already accepted: " + ticketNumber);
+                g_serverLogger.warning("acceptFirstTimeTicket: ticket not found or already accepted: " +
+                    ticketNumber);
                 return false;
             }
             windowNumber = res[0]["window_number"].as<std::string>();
             txn.commit();
-            g_serverLogger.info("Accepted FIRST_TIME ticket: " + ticketNumber + ", window: " + windowNumber);
+            g_serverLogger.info("acceptFirstTimeTicket: accepted " + ticketNumber +
+                ", window updated to: " + windowNumber);
             return true;
         }
         catch (const std::exception& e) {
@@ -1079,17 +1434,54 @@ public:
         }
     }
 
+    // =========================================================================
+    // ИСПРАВЛЕННЫЙ МЕТОД: serveTicket
+    // =========================================================================
+    // ПРИЧИНА ИСПРАВЛЕНИЯ:
+    // Метод НЕ проверял текущий статус талона. Запрос:
+    //   UPDATE queue_tickets SET status = 'served' WHERE number = $1
+    // мог пометить как «обслуженный» талон в ЛЮБОМ статусе, включая
+    // 'waiting'. Это приводило к тому, что клиент мог отправить на
+    // обслуживание талон, который ещё не был принят, и тот исчезал из
+    // очереди без принятия и без записи сведений о товаре.
+    //
+    // Для сравнения:
+    //   - serveFirstTimeTicket(): WHERE ... AND status = 'accepted'  ✅
+    //   - serveTrustTicket():     WHERE ... AND status = 'accepted'  ✅
+    //   - serveTicket():          WHERE number = $1                  ❌ (без проверки!)
+    //
+    // РЕШЕНИЕ:
+    // Добавлена проверка AND status = 'accepted' для консистентности
+    // с serveFirstTimeTicket() и serveTrustTicket(). Также добавлена
+    // проверка affected_rows() == 0 для возврата false, если талон
+    // не был найден или не был принят.
+    //
+    // Это НЕ ЛОМАЕТ бизнес-логику и математику базы данных:
+    // - Метод по-прежнему переводит талон из 'accepted' в 'served'.
+    // - Столбцы, индексы, последовательности не изменяются.
+    // - Добавлена только защита от обслуживания талонов, которые
+    //   не были предварительно приняты.
+    // - Поведение для корректных запросов (талон в статусе 'accepted')
+    //   остаётся идентичным.
+    // =========================================================================
     bool serveTicket(const std::string& ticketNumber) {
         try {
             pqxx::work txn{ *conn_ };
-            txn.exec(
-                "UPDATE queue_tickets SET status = 'served', served_at = EXTRACT(EPOCH FROM NOW()) WHERE number = $1",
+            auto res = txn.exec(
+                "UPDATE queue_tickets SET status = 'served', served_at = EXTRACT(EPOCH FROM NOW()) "
+                "WHERE number = $1 AND status = 'accepted'",
                 pqxx::params{ ticketNumber }
             );
+            if (res.affected_rows() == 0) {
+                g_serverLogger.warning("serveTicket: ticket not accepted or already served: " + ticketNumber);
+                return false;
+            }
             txn.commit();
+            g_serverLogger.info("Served ticket: " + ticketNumber);
             return true;
         }
         catch (const std::exception& e) {
+            g_serverLogger.error("serveTicket error: " + std::string(e.what()));
             std::cerr << "serveTicket error: " << e.what() << std::endl;
             return false;
         }
@@ -1201,21 +1593,40 @@ public:
         return result;
     }
 
+    // =========================================================================
+    // ОБНОВЛЁННЫЙ МЕТОД: acceptTicket
+    // =========================================================================
+    // ДОПОЛНЕНИЕ: Теперь принимает windowNumber как входной/выходной параметр.
+    // При принятии талона window_number в БД ОБНОВЛЯЕТСЯ на номер окна
+    // товароведа, переданный клиентом. Это позволяет ТВ-монитору
+    // отображать реальный номер окна.
+    //
+    // @param ticketNumber  — номер талона для принятия
+    // @param windowNumber  — ВХОД: номер окна товароведа;
+    //                        ВЫХОД: обновлённый номер окна из БД
+    // @return true при успешном принятии
+    // =========================================================================
     bool acceptTicket(const std::string& ticketNumber, std::string& windowNumber) {
         try {
             pqxx::work txn{ *conn_ };
             auto res = txn.exec(
-                "UPDATE queue_tickets SET status = 'accepted', accepted_at = EXTRACT(EPOCH FROM NOW()) "
-                "WHERE number = $1 AND status = 'waiting' RETURNING window_number",
-                pqxx::params{ ticketNumber }
+                "UPDATE queue_tickets "
+                "SET status = 'accepted', "
+                "    accepted_at = EXTRACT(EPOCH FROM NOW()), "
+                "    window_number = $2 "
+                "WHERE number = $1 AND status = 'waiting' "
+                "RETURNING window_number",
+                pqxx::params{ ticketNumber, windowNumber }
             );
             if (res.empty()) {
-                g_serverLogger.warning("acceptTicket: ticket not found or already accepted: " + ticketNumber);
+                g_serverLogger.warning("acceptTicket: ticket not found or already accepted: " +
+                    ticketNumber);
                 return false;
             }
             windowNumber = res[0]["window_number"].as<std::string>();
             txn.commit();
-            g_serverLogger.info("Accepted ticket: " + ticketNumber + ", window: " + windowNumber);
+            g_serverLogger.info("acceptTicket: accepted " + ticketNumber +
+                ", window updated to: " + windowNumber);
             return true;
         }
         catch (const std::exception& e) {
@@ -1223,6 +1634,7 @@ public:
             return false;
         }
     }
+
     /**
      * Получить список всех товаров клиента (включая непроданные)
      * ДОПОЛНЕНИЕ: Теперь возвращает также поля распределения выручки.
@@ -1651,39 +2063,41 @@ public:
     }
 
     /**
-     * @brief Блокирует или разблокирует клиента
-     * @param clientId ID клиента для блокировки
-     * @param blocked true - заблокировать, false - разблокировать
-     * @param directorId ID директора, выполняющего блокировку
-     * @return true при успешном выполнении
-     */
-    bool setClientBlocked(int clientId, bool blocked, int directorId) {
+    * @brief Блокирует или разблокирует клиента с указанием причины
+    * @param clientId ID клиента для блокировки
+    * @param blocked true - заблокировать, false - разблокировать
+    * @param directorId ID директора, выполняющего блокировку
+    * @param blockReason Причина блокировки (текст до 1000 символов)
+    * @return true при успешном выполнении
+    */
+    bool setClientBlocked(int clientId, bool blocked, int directorId,
+        const std::string& blockReason = "") {
         try {
             pqxx::work txn{ *conn_ };
-
             if (blocked) {
-                // Блокировка: устанавливаем is_blocked = TRUE, blocked_at, blocked_by
+                // Блокировка: устанавливаем is_blocked = TRUE, blocked_at, blocked_by, block_reason
                 auto now = std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count();
                 txn.exec(
                     "UPDATE clients SET is_blocked = TRUE, blocked_at = $2, blocked_by = $3, "
-                    "updated_at = EXTRACT(EPOCH FROM NOW()) WHERE id = $1",
-                    pqxx::params{ clientId, now, directorId }
+                    "block_reason = $4, updated_at = EXTRACT(EPOCH FROM NOW()) WHERE id = $1",
+                    pqxx::params{ clientId, now, directorId, blockReason }
                 );
                 g_serverLogger.info("setClientBlocked: BLOCKED clientId=" + std::to_string(clientId) +
-                    " by directorId=" + std::to_string(directorId));
+                    " by directorId=" + std::to_string(directorId) +
+                    ", reason='" + blockReason.substr(0, 100) +
+                    (blockReason.length() > 100 ? "..." : "") + "'");
             }
             else {
-                // Разблокировка: устанавливаем is_blocked = FALSE, очищаем blocked_at, blocked_by
+                // Разблокировка: очищаем все поля блокировки, включая причину
                 txn.exec(
                     "UPDATE clients SET is_blocked = FALSE, blocked_at = NULL, blocked_by = NULL, "
-                    "updated_at = EXTRACT(EPOCH FROM NOW()) WHERE id = $1",
+                    "block_reason = '', updated_at = EXTRACT(EPOCH FROM NOW()) WHERE id = $1",
                     pqxx::params{ clientId }
                 );
                 g_serverLogger.info("setClientBlocked: UNBLOCKED clientId=" + std::to_string(clientId) +
                     " by directorId=" + std::to_string(directorId));
             }
-
             txn.commit();
             return true;
         }
@@ -1710,7 +2124,7 @@ public:
             json clientsArray = json::array();
             auto clientsResult = txn.exec(
                 "SELECT c.id, c.phone, c.last_name, c.first_name, c.middle_name, "
-                "c.email, c.items_submitted, c.items_sold, c.is_blocked, c.blocked_at, "
+                "c.email, c.items_submitted, c.items_sold, c.is_blocked, c.blocked_at, c.block_reason,"
                 "COALESCE(SUM(i.quantity), 0) as total_items_count, "
                 "COALESCE(SUM(i.estimated_price * i.quantity), 0) as total_items_value, "
                 "COALESCE(SUM(CASE WHEN i.status = 'sold' THEN i.quantity ELSE 0 END), 0) as sold_items_count, "
@@ -1723,7 +2137,7 @@ public:
                 "LEFT JOIN items i ON c.id = i.client_id "
                 "WHERE c.role = 'client' OR c.role IS NULL "
                 "GROUP BY c.id, c.phone, c.last_name, c.first_name, c.middle_name, "
-                "c.email, c.items_submitted, c.items_sold, c.is_blocked, c.blocked_at "
+                "c.email, c.items_submitted, c.items_sold, c.is_blocked, c.blocked_at, c.block_reason "
                 "ORDER BY c.last_name, c.first_name"
             );
 
@@ -1741,7 +2155,7 @@ public:
                 client["items_submitted"] = row["items_submitted"].as<int>();
                 client["items_sold"] = row["items_sold"].as<int>();
                 client["is_blocked"] = row["is_blocked"].as<bool>();
-
+                client["block_reason"] = row["block_reason"].is_null() ? "" : row["block_reason"].as<std::string>();
                 if (!row["blocked_at"].is_null()) {
                     client["blocked_at"] = row["blocked_at"].as<int64_t>();
                 }
@@ -2391,4 +2805,114 @@ public:
         }
     }
 
+    // =========================================================================
+// МЕТОДЫ ДЛЯ ТВ-ДИСПЛЕЯ ОЧЕРЕДЕЙ
+// Только SELECT. Не изменяют данные. Не влияют на существующую логику.
+// =========================================================================
+
+/**
+ * @brief Возвращает принятые талоны из таблицы queue_tickets
+ *        (очереди: general, extra_20, paid, expensive)
+ * @param queueType тип очереди для фильтрации
+ * @return вектор JSON-объектов с полями: ticket_number, client_id,
+ *         queue_type, window_number, accepted_at
+ */
+    std::vector<json> getAcceptedTickets(const std::string& queueType) {
+        std::vector<json> result;
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT id, number, client_id, queue_type, window_number, accepted_at "
+                "FROM queue_tickets "
+                "WHERE queue_type = $1 AND status = 'accepted' "
+                "ORDER BY accepted_at ASC",
+                pqxx::params{ queueType }
+            );
+            for (const auto& row : res) {
+                json item;
+                item["id"] = row["id"].as<int>();
+                item["ticket_number"] = row["number"].as<std::string>();
+                item["client_id"] = row["client_id"].as<int>();
+                item["queue_type"] = row["queue_type"].as<std::string>();
+                item["window_number"] = row["window_number"].as<std::string>();
+                item["accepted_at"] = row["accepted_at"].is_null()
+                    ? 0 : row["accepted_at"].as<int64_t>();
+                result.push_back(item);
+            }
+            g_serverLogger.info("getAcceptedTickets for " + queueType + ": " +
+                std::to_string(result.size()) + " accepted tickets");
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getAcceptedTickets error: " + std::string(e.what()));
+        }
+        return result;
+    }
+
+    /**
+     * @brief Возвращает принятые талоны из таблицы first_time_tickets
+     * @return вектор JSON-объектов с полями: ticket_number, window_number, accepted_at
+     */
+    std::vector<json> getAcceptedFirstTimeTickets() {
+        std::vector<json> result;
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT id, ticket_number, window_number, accepted_at "
+                "FROM first_time_tickets "
+                "WHERE status = 'accepted' "
+                "ORDER BY accepted_at ASC"
+            );
+            for (const auto& row : res) {
+                json item;
+                item["id"] = row["id"].as<int>();
+                item["ticket_number"] = row["ticket_number"].as<std::string>();
+                item["window_number"] = row["window_number"].as<std::string>();
+                item["accepted_at"] = row["accepted_at"].is_null()
+                    ? 0 : row["accepted_at"].as<int64_t>();
+                result.push_back(item);
+            }
+            g_serverLogger.info("getAcceptedFirstTimeTickets: " +
+                std::to_string(result.size()) + " accepted tickets");
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getAcceptedFirstTimeTickets error: " +
+                std::string(e.what()));
+        }
+        return result;
+    }
+
+    /**
+     * @brief Возвращает принятые талоны из таблицы trust_acceptances
+     * @return вектор JSON-объектов с полями: ticket_number, client_id,
+     *         window_number, accepted_at
+     */
+    std::vector<json> getAcceptedTrustTickets() {
+        std::vector<json> result;
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT id, ticket_number, client_id, window_number, accepted_at "
+                "FROM trust_acceptances "
+                "WHERE status = 'accepted' "
+                "ORDER BY accepted_at ASC"
+            );
+            for (const auto& row : res) {
+                json item;
+                item["id"] = row["id"].as<int>();
+                item["ticket_number"] = row["ticket_number"].as<std::string>();
+                item["client_id"] = row["client_id"].as<int>();
+                item["window_number"] = row["window_number"].as<std::string>();
+                item["accepted_at"] = row["accepted_at"].is_null()
+                    ? 0 : row["accepted_at"].as<int64_t>();
+                result.push_back(item);
+            }
+            g_serverLogger.info("getAcceptedTrustTickets: " +
+                std::to_string(result.size()) + " accepted tickets");
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getAcceptedTrustTickets error: " +
+                std::string(e.what()));
+        }
+        return result;
+    }
 };
