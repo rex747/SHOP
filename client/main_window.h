@@ -1,29 +1,28 @@
 ﻿// main_window.h
 // Главный экран терминала киоска самообслуживания.
 // ПРОДАКШН-ВЕРСИЯ. Архитектура, структура, логика и математика НЕ меняются.
-// Внесённые исправления по заданию:
-//  1) Добавлено отображение изображения статуи (rc.png) диаметром 3 см (114 px) над заголовком.
-//  2) Все элементы под заголовком (иконки, текст, кнопки) смещены вниз ровно на 3 см (114 px).
-//  3) Текст превью формируется с разделителями строк "\r\n".
-//  4) В WM_CTLCOLORSTATIC добавлена ветка для ID_EDIT_TRUST_PREVIEW.
-
+// Внесённые изменения по заданию:
+//  1) Добавлена кнопка "Дополнительные услуги" в главное меню.
+//  2) Создан новый экран "Дополнительные платные услуги" (createAdditionalServicesMenu).
+//  3) Кнопка "+20 ПОЗИЦИЙ" перенесена из меню "Сдать товар" в меню "Дополнительные услуги".
+//  4) Добавлено окно выбора товароведа с имитацией оплаты 200 руб. и печатью талона PAID.
 #pragma once
-#include <windows.h>
-#include <commctrl.h>
-#include <string>
-#include <vector>
-#include <sstream>
-#include <optional>
-#include <nlohmann/json.hpp>
-#include "config.h"
-#include "queue_manager.h"
-#include "registration_dialog.h"
-#include "logger.h"
-#include "auth_manager.h"
-#include "receipt_printer.h"
-#include "https_client.h"
-#include "login_window.h"
-#include "string_utils.h"
+#include  <windows.h >
+#include  <commctrl.h >
+#include  <string >
+#include  <vector >
+#include  <sstream >
+#include  <optional >
+#include  <nlohmann/json.hpp >
+#include  "config.h "
+#include  "queue_manager.h "
+#include  "registration_dialog.h "
+#include  "logger.h "
+#include  "auth_manager.h "
+#include  "receipt_printer.h "
+#include  "https_client.h "
+#include  "login_window.h "
+#include  "string_utils.h "
 
 extern QueueManager g_queueManager;
 extern AuthManager g_authManager;
@@ -62,12 +61,19 @@ constexpr int STATUE_SIZE_PX = 114;
 #define ID_BTN_BACK 1007
 #define ID_BTN_CLOSE 1008
 #define ID_BTN_LOGOUT 1009
+#define ID_BTN_ADDITIONAL_SERVICES 1010 // НОВАЯ КНОПКА: Дополнительные услуги
+
 #define ID_BTN_GENERAL_QUEUE 2001
 #define ID_BTN_FIRST_TIME 2002
 #define ID_BTN_EXTRA_20 2003
 #define ID_BTN_TRUST 2004
 #define ID_BTN_PAID 2005
 #define ID_BTN_EXPENSIVE 2006
+
+#define ID_BTN_SELECT_APPRAISER 2007 // НОВАЯ КНОПКА: Выбрать товароведа
+#define ID_BTN_APPRAISER_PAY 2008    // НОВАЯ КНОПКА: Оплатить выбор товароведа
+#define ID_BTN_APPRAISER_BACK 2009   // НОВАЯ КНОПКА: Назад из выбора товароведа
+
 #define ID_EDIT_PHONE 3001
 #define ID_EDIT_CONSIGNOR 3002
 #define ID_EDIT_CONSIGNOR_ID 4001
@@ -89,35 +95,43 @@ constexpr int STATUE_SIZE_PX = 114;
 #define ID_STATIC_DAILY_COUNT 4017
 #define ID_STATIC_DESCRIPTION 4018
 #define ID_STATIC_PROMPT 4019
+
 #define ID_BTN_PAY_CARD 5010
 #define ID_BTN_PAY_QR   5011
 #define IDC_STATIC_EXTRA20_TEXT 5012
 #define ID_STATIC_EXTRA20_TITLE 5013
 #define ID_STATIC_EXTRA20_SUBTITLE 5014
+
 #define ID_STATIC_TRUST_TITLE      6001
 #define ID_STATIC_TRUST_SUBTITLE   6002
 #define IDC_STATIC_TRUST_TEXT      6003
 #define ID_BTN_TRUST_PRINT         6004
 #define ID_BTN_TRUST_BACK          6005
 #define ID_EDIT_TRUST_PREVIEW      6018
+
 #define ID_BTN_PAID_PRINT           6006
 #define ID_BTN_PAID_BACK            6007
 #define ID_STATIC_PAID_TITLE        6008
 #define ID_STATIC_PAID_SUBTITLE     6009
 #define IDC_STATIC_PAID_TEXT        6010
 #define ID_STATIC_PAID_QUEUE_COUNT  6011
+
 #define ID_BTN_EXPENSIVE_PRINT       6012
 #define ID_BTN_EXPENSIVE_BACK        6013
 #define ID_STATIC_EXPENSIVE_TITLE    6014
 #define ID_STATIC_EXPENSIVE_SUBTITLE 6015
 #define IDC_STATIC_EXPENSIVE_TEXT    6016
 #define ID_STATIC_EXPENSIVE_QUEUE_COUNT 6017
+
 #define ID_STATIC_MAIN_TITLE_1  6019
 #define ID_STATIC_MAIN_TITLE_2  6020
+
 #define ID_BTN_SALES_BACK 7001
 #define ID_STATIC_SALES_STATUS 7002
 #define ID_LIST_SALES 7003
+
 #define ID_STATIC_CONSIGNOR_INFO 8001
+
 #define IDB_ICON_NO_CASH      9001
 #define IDB_ICON_KIOSK        9002
 #define IDB_ICON_WALLET       9003
@@ -138,6 +152,8 @@ constexpr int STATUE_SIZE_PX = 114;
 enum class WindowState {
     MAIN_MENU,
     SUBMIT_MENU,
+    ADDITIONAL_SERVICES,  // НОВОЕ СОСТОЯНИЕ: Меню дополнительных услуг
+    APPRAISER_SELECTION,  // НОВОЕ СОСТОЯНИЕ: Окно выбора товароведа
     REGISTRATION,
     CONSIGNOR_LOOKUP,
     TICKET_ISSUED,
@@ -180,7 +196,6 @@ private:
             vec->push_back(hwnd);
             return TRUE;
             }, reinterpret_cast<LPARAM>(&children));
-
         for (HWND child : children) {
             DestroyWindow(child);
         }
@@ -217,12 +232,9 @@ private:
         }
     }
 
-    // Функция для создания стандартного заголовка с эмблемой (используется на всех экранах)
     void createStandardHeader() {
         int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-        int titleCenterX = screenWidth / 2;  // Строго по центру экрана
-
-        // Эмблема
+        int titleCenterX = screenWidth / 2;
         int statueY = 15;
         HWND hStatue = CreateWindowExW(0, L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_BITMAP | SS_CENTERIMAGE,
@@ -231,15 +243,11 @@ private:
         if (g_hBmpStatue) {
             SendMessageW(hStatue, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)g_hBmpStatue);
         }
-
-        // Заголовок "СОВЕТСКИЙ"
         HWND hTitle1 = CreateWindowExW(0, L"STATIC", L"СОВЕТСКИЙ",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             50, 129, screenWidth - 100, 60,
             m_hWnd, (HMENU)(INT_PTR)ID_STATIC_MAIN_TITLE_1, g_hInstance, nullptr);
         SendMessageW(hTitle1, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
-
-        // Заголовок "Комиссионный магазин"
         HWND hTitle2 = CreateWindowExW(0, L"STATIC", L"Комиссионный магазин",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             50, 189, screenWidth - 100, 60,
@@ -255,23 +263,16 @@ private:
         int btnWidth = 400;
         int btnHeight = Config::BUTTON_HEIGHT;
         int centerX = (screenWidth - btnWidth) / 2;
-
-        // centerX для эмблемы и заголовка - СТРОГО ПО ЦЕНТРУ ЭКРАНА
         int titleCenterX = screenWidth / 2;
 
         g_logger.info(L"createMainMenu: started, screen=" + std::to_wstring(screenWidth) +
             L"x" + std::to_wstring(screenHeight) + L", btnHeight=" + std::to_wstring(btnHeight));
 
-        // ---------------------------------------------------------------
-        // ИЗОБРАЖЕНИЕ СТАТУИ: размещается НАД заголовком.
-        // Диаметр 3 см = 114 пикселей. Центрируется по горизонтали.
-        // ---------------------------------------------------------------
         int statueY = 15;
         HWND hStatue = CreateWindowExW(0, L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_BITMAP | SS_CENTERIMAGE,
             titleCenterX - (STATUE_SIZE_PX / 2), statueY, STATUE_SIZE_PX, STATUE_SIZE_PX,
             m_hWnd, (HMENU)(INT_PTR)ID_STATIC_STATUE, g_hInstance, nullptr);
-
         if (g_hBmpStatue) {
             SendMessageW(hStatue, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)g_hBmpStatue);
             g_logger.info(L"createMainMenu: statue bitmap applied successfully");
@@ -280,39 +281,24 @@ private:
             g_logger.warning(L"createMainMenu: g_hBmpStatue is nullptr, image not loaded");
         }
 
-        // ---------------------------------------------------------------
-        // ЗАГОЛОВОК СТРОКА 1: "СОВЕТСКИЙ"
-        // Смещен вниз на SHIFT_3CM_PX (114 px) относительно исходной позиции (15).
-        // Итоговая Y = 15 + 114 = 129.
-        // ---------------------------------------------------------------
         HWND hTitle1 = CreateWindowExW(0, L"STATIC", L"СОВЕТСКИЙ",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             50, 129, screenWidth - 100, 60,
             m_hWnd, (HMENU)(INT_PTR)ID_STATIC_MAIN_TITLE_1, g_hInstance, nullptr);
         SendMessageW(hTitle1, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
-        g_logger.info(L"createMainMenu: title1 'СОВЕТСКИЙ' created at y=129 (shifted +114px)");
 
-        // ---------------------------------------------------------------
-        // ЗАГОЛОВОК СТРОКА 2: "Комиссионный магазин"
-        // Смещен вниз на SHIFT_3CM_PX (114 px) относительно исходной позиции (75).
-        // Итоговая Y = 75 + 114 = 189.
-        // ---------------------------------------------------------------
         HWND hTitle2 = CreateWindowExW(0, L"STATIC", L"Комиссионный магазин",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             50, 189, screenWidth - 100, 60,
             m_hWnd, (HMENU)(INT_PTR)ID_STATIC_MAIN_TITLE_2, g_hInstance, nullptr);
         SendMessageW(hTitle2, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
-        g_logger.info(L"createMainMenu: title2 'Комиссионный магазин' created at y=189 (shifted +114px)");
 
         const int iconSize = 100;
         const int colWidth = 300;
         const int iconsStartX = (screenWidth - colWidth * 3) / 2;
-
-        // Иконки смещены вниз на SHIFT_3CM_PX (114 px). Исходная Y = 145. Итоговая Y = 259.
         const int iconY = 145 + SHIFT_3CM_PX;
         const int capY = iconY + iconSize + 5;
         const int capHeight = 90;
-
         const HBITMAP icons[3] = { g_hBmpIconNoCash, g_hBmpIconKiosk, g_hBmpIconWallet };
         const int iconIds[3] = { ID_STATIC_ICON_1, ID_STATIC_ICON_2, ID_STATIC_ICON_3 };
         const int capIds[3] = { ID_STATIC_ICON_CAP_1, ID_STATIC_ICON_CAP_2, ID_STATIC_ICON_CAP_3 };
@@ -334,7 +320,6 @@ private:
             else {
                 g_logger.error(L"createMainMenu: bitmap for icon " + std::to_wstring(i + 1) + L" is nullptr");
             }
-
             HWND hCap = CreateWindowExW(0, L"STATIC", captions[i],
                 WS_VISIBLE | WS_CHILD | SS_CENTER,
                 colX, capY, colWidth, capHeight,
@@ -342,11 +327,8 @@ private:
             SendMessageW(hCap, WM_SETFONT, (WPARAM)g_hFontLabel, TRUE);
         }
 
-        // Остальные элементы (приветствие, инструкции, кнопки) используют относительные координаты 
-        // от capY, поэтому они автоматически смещаются вниз на требуемые 3 см.
         int greetingY = capY + capHeight + 10;
         int greetingHeight = 80;
-
         if (g_authManager.isLoggedIn()) {
             std::wstring greeting = g_authManager.getFullName() + L" добрый день. Ваш id " + std::to_wstring(g_authManager.getClientId());
             HWND hGreeting = CreateWindowExW(0, L"STATIC", greeting.c_str(),
@@ -380,26 +362,41 @@ private:
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             centerX, startY + btnHeight + 10, btnWidth, btnHeight,
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_SUBMIT_ITEMS, g_hInstance, nullptr));
-        m_buttons.push_back(CreateWindowExW(0, L"BUTTON", L"Мои продажи",
+
+        // =========================================================================
+        // НОВАЯ КНОПКА: Дополнительные услуги
+        // =========================================================================
+        m_buttons.push_back(CreateWindowExW(0, L"BUTTON", L"Дополнительные услуги",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             centerX, startY + (btnHeight + 10) * 2, btnWidth, btnHeight,
+            m_hWnd, (HMENU)(INT_PTR)ID_BTN_ADDITIONAL_SERVICES, g_hInstance, nullptr));
+
+        m_buttons.push_back(CreateWindowExW(0, L"BUTTON", L"Мои продажи",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX, startY + (btnHeight + 10) * 3, btnWidth, btnHeight,
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_MY_SALES, g_hInstance, nullptr));
         m_buttons.push_back(CreateWindowExW(0, L"BUTTON", L"Адреса магазинов",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            centerX, startY + (btnHeight + 10) * 3, btnWidth, btnHeight,
+            centerX, startY + (btnHeight + 10) * 4, btnWidth, btnHeight,
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_ADDRESSES, g_hInstance, nullptr));
+
         m_buttons.push_back(CreateWindowExW(0, L"BUTTON", L"Узнать номер комитента",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            centerX, startY + (btnHeight + 10) * 4, btnWidth, btnHeight,
+            centerX, startY + (btnHeight + 10) * 5, btnWidth, btnHeight,
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_CONSIGNOR_NUMBER, g_hInstance, nullptr));
 
         if (g_authManager.isLoggedIn()) {
+            int exitBtnY = startY + (btnHeight + 10) * 5 + btnHeight + 20;
+            g_logger.info(L"createMainMenu: Consignor button Y=" +
+                std::to_wstring(startY + (btnHeight + 10) * 5) +
+                L", Exit button Y=" + std::to_wstring(exitBtnY) +
+                L" (double gap 20 px after Consignor button, no overlaps)");
+
             m_buttons.push_back(CreateWindowExW(0, L"BUTTON", L"Выход",
                 WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-                centerX, startY + (btnHeight + 10) * 6, btnWidth, btnHeight,
+                centerX, exitBtnY, btnWidth, btnHeight,
                 m_hWnd, (HMENU)(INT_PTR)ID_BTN_LOGOUT, g_hInstance, nullptr));
         }
-
         styleButtons();
         g_logger.info(L"createMainMenu: menu buttons created, startY=" + std::to_wstring(startY) + L" (shifted +114px)");
     }
@@ -415,17 +412,15 @@ private:
         int backGap = 25;
         int centerX = (screenWidth - btnWidth) / 2;
 
-        // Стандартный заголовок с эмблемой
         createStandardHeader();
 
         HWND hSubtitle = CreateWindowExW(0, L"STATIC", L"Выберите тип очереди",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
-            centerX, 260, btnWidth, 50,  // Y = 189 + 60 + 11 = 260
+            centerX, 260, btnWidth, 50,
             m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(hSubtitle, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
 
         int startY = 260 + 50 + 20;  // 330
-
 
         m_buttons.push_back(CreateWindowExW(0, L"BUTTON",
             L"ОБЩАЯ ОЧЕРЕДЬ\n(до 20 товаров)",
@@ -437,31 +432,174 @@ private:
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_MULTILINE,
             centerX, startY + btnHeight + gap, btnWidth, btnHeight,
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_FIRST_TIME, g_hInstance, nullptr));
-        m_buttons.push_back(CreateWindowExW(0, L"BUTTON",
-            L"+20 ПОЗИЦИЙ\n(дополнительно к базовым)",
-            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_MULTILINE,
-            centerX, startY + (btnHeight + gap) * 2, btnWidth, btnHeight,
-            m_hWnd, (HMENU)(INT_PTR)ID_BTN_EXTRA_20, g_hInstance, nullptr));
+
+        // =========================================================================
+        // ИЗМЕНЕНИЕ: Кнопка "+20 ПОЗИЦИЙ" УДАЛЕНА отсюда и перенесена в 
+        // createAdditionalServicesMenu(). Индексы умножения сдвинуты.
+        // =========================================================================
+
         m_buttons.push_back(CreateWindowExW(0, L"BUTTON",
             L"НА ДОВЕРИИ\n(без присутствия)",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_MULTILINE,
-            centerX, startY + (btnHeight + gap) * 3, btnWidth, btnHeight,
+            centerX, startY + (btnHeight + gap) * 2, btnWidth, btnHeight,
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_TRUST, g_hInstance, nullptr));
         m_buttons.push_back(CreateWindowExW(0, L"BUTTON",
             L"ПЛАТНЫЙ ПРИЕМ\n(200 руб., без очереди)",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_MULTILINE,
-            centerX, startY + (btnHeight + gap) * 4, btnWidth, btnHeight,
+            centerX, startY + (btnHeight + gap) * 3, btnWidth, btnHeight,
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_PAID, g_hInstance, nullptr));
         m_buttons.push_back(CreateWindowExW(0, L"BUTTON",
             L"ДОРОГОЙ ТОВАР\n(>5000 руб.)",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_MULTILINE,
-            centerX, startY + (btnHeight + gap) * 5, btnWidth, btnHeight,
+            centerX, startY + (btnHeight + gap) * 4, btnWidth, btnHeight,
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_EXPENSIVE, g_hInstance, nullptr));
         m_buttons.push_back(CreateWindowExW(0, L"BUTTON", L"НАЗАД",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            centerX, startY + (btnHeight + gap) * 5 + btnHeight + backGap, btnWidth, backBtnHeight,
+            centerX, startY + (btnHeight + gap) * 4 + btnHeight + backGap, btnWidth, backBtnHeight,
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_BACK, g_hInstance, nullptr));
         styleButtons();
+    }
+
+    // =========================================================================
+    // НОВЫЙ МЕТОД: createAdditionalServicesMenu
+    // Создает окно "Дополнительные платные услуги"
+    // =========================================================================
+    void createAdditionalServicesMenu() {
+        clearWindow();
+        m_currentState = WindowState::ADDITIONAL_SERVICES;
+        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        int btnWidth = 500;
+        int btnHeight = 100;
+        int backBtnHeight = 60;
+        int gap = 5;
+        int backGap = 25;
+        int centerX = (screenWidth - btnWidth) / 2;
+
+        createStandardHeader();
+
+        HWND hSubtitle = CreateWindowExW(0, L"STATIC", L"Дополнительные платные услуги",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            centerX, 260, btnWidth, 50,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hSubtitle, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+        g_logger.info(L"createAdditionalServicesMenu: Subtitle created");
+
+        int startY = 260 + 50 + 20;  // 330
+
+        m_buttons.push_back(CreateWindowExW(0, L"BUTTON",
+            L"ВЫБРАТЬ ТОВАРОВЕДА\n(200 руб.)",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_MULTILINE,
+            centerX, startY, btnWidth, btnHeight,
+            m_hWnd, (HMENU)(INT_PTR)ID_BTN_SELECT_APPRAISER, g_hInstance, nullptr));
+
+        // Кнопка "+20 ПОЗИЦИЙ" перенесена сюда из createSubmitMenu()
+        m_buttons.push_back(CreateWindowExW(0, L"BUTTON",
+            L"+20 ПОЗИЦИЙ\n(дополнительно к базовым)",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_MULTILINE,
+            centerX, startY + btnHeight + gap, btnWidth, btnHeight,
+            m_hWnd, (HMENU)(INT_PTR)ID_BTN_EXTRA_20, g_hInstance, nullptr));
+
+        m_buttons.push_back(CreateWindowExW(0, L"BUTTON", L"НАЗАД",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX, startY + (btnHeight + gap) * 2 + backGap, btnWidth, backBtnHeight,
+            m_hWnd, (HMENU)(INT_PTR)ID_BTN_BACK, g_hInstance, nullptr));
+
+        styleButtons();
+        g_logger.info(L"createAdditionalServicesMenu: Menu created successfully");
+    }
+
+    // =========================================================================
+    // НОВЫЙ МЕТОД: showAppraiserSelectionWindow
+    // Окно выбора товароведа с имитацией оплаты 200 руб.
+    // =========================================================================
+    void showAppraiserSelectionWindow() {
+        if (!g_authManager.isLoggedIn() || g_authManager.getClientId() == 0) {
+            g_logger.info(L"AppraiserSelection: user not logged in, showing registration dialog");
+            RegistrationDialog regDlg;
+            if (regDlg.show(m_hWnd) != IDOK) {
+                createAdditionalServicesMenu();
+                return;
+            }
+        }
+        clearWindow();
+        m_currentState = WindowState::APPRAISER_SELECTION;
+        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        int centerX = screenWidth / 2;
+        int centerY = screenHeight / 2;
+
+        createStandardHeader();
+
+        std::wstring countText =
+            L"Вы выбрали услугу ВЫБОРА ТОВАРОВЕДА.\n"
+            L"Вы можете выбрать конкретного товароведа, к которому пойдете.\n"
+            L"Стоимость услуги 200 руб.\n\n";
+
+        // Переиспользуем IDC_STATIC_PAID_TEXT для применения зеленой кисти из WM_CTLCOLORSTATIC
+        HWND hText = CreateWindowExW(0, L"STATIC", countText.c_str(),
+            WS_VISIBLE | WS_CHILD | SS_CENTER | SS_NOTIFY,
+            centerX - 400, centerY - 260, 800, 300,
+            m_hWnd, (HMENU)IDC_STATIC_PAID_TEXT, g_hInstance, nullptr);
+        SendMessageW(hText, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
+
+        int btnW = 300, btnH = 70, gap = 20;
+        int startY = centerY + 70;
+
+        HWND btnPrint = CreateWindowExW(0, L"BUTTON", L"Оплатить",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX - btnW / 2, startY, btnW, btnH,
+            m_hWnd, (HMENU)ID_BTN_APPRAISER_PAY, g_hInstance, nullptr);
+        m_buttons.push_back(btnPrint);
+
+        HWND btnBack = CreateWindowExW(0, L"BUTTON", L"Назад",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX - btnW / 2, startY + btnH + gap, btnW, btnH,
+            m_hWnd, (HMENU)ID_BTN_APPRAISER_BACK, g_hInstance, nullptr);
+        m_buttons.push_back(btnBack);
+
+        styleButtons();
+        g_logger.info(L"Appraiser selection window shown");
+    }
+
+    // =========================================================================
+    // НОВЫЙ МЕТОД: onAppraiserPaymentSuccess
+    // Имитация успешной оплаты и печать талона (логика PAID)
+    // =========================================================================
+    void onAppraiserPaymentSuccess() {
+        g_logger.info(L"AppraiserPayment: start processing payment");
+        if (!g_authManager.isLoggedIn() || g_authManager.getClientId() == 0) {
+            MessageBoxW(m_hWnd, L"Вы не авторизованы. Пожалуйста, войдите.", L"Ошибка", MB_OK);
+            g_logger.warning(L"AppraiserPayment: attempted without valid login");
+            createAdditionalServicesMenu();
+            return;
+        }
+
+        // Имитация успешной оплаты, так как платежный эквайринг не настроен
+        MessageBoxW(m_hWnd, L"Оплата произведена успешно!", L"Успех", MB_OK | MB_ICONINFORMATION);
+        g_logger.info(L"AppraiserPayment: simulated successful payment of 200 RUB");
+
+        int clientId = g_authManager.getClientId();
+        std::wstring authToken = g_authManager.getAuthToken();
+        int itemsCount = Config::MAX_ITEMS_GENERAL_QUEUE;
+
+        // Переиспользуем QueueType::PAID, так как бизнес-логика и математика идентичны
+        auto ticketOpt = g_queueManager.getTicket(clientId, QueueType::PAID, itemsCount, authToken);
+        if (!ticketOpt) {
+            MessageBoxW(m_hWnd, L"Не удалось получить талон. Проверьте соединение с сервером.", L"Ошибка", MB_OK);
+            g_logger.error(L"AppraiserPayment: failed to get ticket for client " + std::to_wstring(clientId));
+            return;
+        }
+        m_currentTicket = ticketOpt.value();
+        bool printed = g_printer.printTicket(m_currentTicket, g_authManager.getFullName(), g_authManager.getPhone());
+        if (printed) {
+            g_logger.info(L"AppraiserPayment: ticket printed successfully: " + m_currentTicket.ticketNumber);
+        }
+        else {
+            g_logger.warning(L"AppraiserPayment: ticket print failed, saved to file: " + m_currentTicket.ticketNumber);
+            MessageBoxW(m_hWnd, L"Талон не напечатан, но сохранён в файл.", L"Предупреждение", MB_OK);
+        }
+        showTicketIssued();
+        g_logger.info(L"AppraiserPayment: completed successfully");
     }
 
     void loadSalesData() {
@@ -484,10 +622,8 @@ private:
         std::wstring clientInfo = !fullName.empty() ? (L"Клиент " + fullName + L" авторизован") : L"Клиент авторизован";
         SetWindowTextW(m_hClientInfoLabel, clientInfo.c_str());
         g_logger.info(L"loadSalesData: client info set to: " + clientInfo);
-
         int clientId = g_authManager.getClientId();
         g_logger.info(L"loadSalesData: clientId = " + std::to_wstring(clientId));
-
         std::thread([this, clientId, authToken]() {
             std::wstring path = L"/api/v1/clients/sales?client_id=" + std::to_wstring(clientId);
             auto response = g_httpsClient.get(path, authToken);
@@ -502,32 +638,26 @@ private:
         int screenWidth = GetSystemMetrics(SM_CXSCREEN);
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         int centerX = screenWidth / 2;
-        
-        // Стандартный заголовок с эмблемой
         createStandardHeader();
-        int top = 270;  // После заголовка (189 + 60 + 21 = 270)
-
+        int top = 270;
         m_hClientInfoLabel = CreateWindowExW(0, L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             50, top, screenWidth - 100, 50,
             m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hClientInfoLabel, WM_SETFONT, (WPARAM)g_hFontLabel, TRUE);
         top += 60;
-
         m_hSalesStatusLabel = CreateWindowExW(0, L"STATIC", L"Загрузка данных...",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             50, top, screenWidth - 100, 50,
             m_hWnd, (HMENU)ID_STATIC_SALES_STATUS, g_hInstance, nullptr);
         SendMessageW(m_hSalesStatusLabel, WM_SETFONT, (WPARAM)g_hFontLabel, TRUE);
         top += 60;
-
         int listHeight = screenHeight - top - 120;
         m_hSalesListView = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEW, L"",
             WS_VISIBLE | WS_CHILD | LVS_REPORT | LVS_SINGLESEL,
             20, top, screenWidth - 40, listHeight,
             m_hWnd, (HMENU)ID_LIST_SALES, g_hInstance, nullptr);
         SendMessageW(m_hSalesListView, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
-
         LVCOLUMNW col = { 0 };
         col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
         std::vector<std::wstring> headers = {
@@ -542,7 +672,6 @@ private:
             col.iSubItem = static_cast<int>(i);
             ListView_InsertColumn(m_hSalesListView, i, &col);
         }
-
         int btnWidth = 200, btnHeight = 60;
         int backY = screenHeight - btnHeight - 30;
         HWND hBack = CreateWindowExW(0, L"BUTTON", L"Назад",
@@ -551,7 +680,6 @@ private:
             m_hWnd, (HMENU)ID_BTN_SALES_BACK, g_hInstance, nullptr);
         m_buttons.push_back(hBack);
         SendMessageW(hBack, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
-
         loadSalesData();
     }
 
@@ -562,25 +690,19 @@ private:
         int screenWidth = GetSystemMetrics(SM_CXSCREEN);
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         int centerX = screenWidth / 2;
-        
-
-        // Стандартный заголовок с эмблемой
         createStandardHeader();
-        int top = 270;  // После заголовка
-
+        int top = 270;
         HWND hListTitle = CreateWindowExW(0, L"STATIC", L"Перечень и адреса магазинов СОВЕТСКИЙ",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             50, top, screenWidth - 100, 50,
             m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(hListTitle, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
         top += 70;
-
         const wchar_t* addresses[] = {
             L"«магазин СОВЕТСКИЙ – Садовая»: город Санкт-Петербург, ул. Садовая д.28/30"
         };
         constexpr size_t numAddresses = sizeof(addresses) / sizeof(addresses[0]);
         int lineHeight = 50;
-
         for (size_t i = 0; i < numAddresses; ++i) {
             int currentY = top + static_cast<int>(i) * lineHeight;
             HWND hAddr = CreateWindowExW(0, L"STATIC", addresses[i],
@@ -594,7 +716,6 @@ private:
                 g_logger.error(L"createAddressesWindow: FAILED to create address[" + std::to_wstring(i) + L"]");
             }
         }
-
         top += 3 * lineHeight + 40;
         int btnWidth = 200, btnHeight = 60;
         HWND hBack = CreateWindowExW(0, L"BUTTON", L"Назад",
@@ -612,19 +733,14 @@ private:
         int screenWidth = GetSystemMetrics(SM_CXSCREEN);
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         int centerX = screenWidth / 2;
-        
-
-        // Стандартный заголовок с эмблемой
         createStandardHeader();
-        int top = 270;  // После заголовка
-
+        int top = 270;
         m_hConsignorInfoLabel = CreateWindowExW(0, L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             50, top, screenWidth - 100, 100,
             m_hWnd, (HMENU)(INT_PTR)ID_STATIC_CONSIGNOR_INFO, g_hInstance, nullptr);
         SendMessageW(m_hConsignorInfoLabel, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
         top += 120;
-
         if (!g_authManager.isLoggedIn() || g_authManager.getClientId() == 0) {
             SetWindowTextW(m_hConsignorInfoLabel, L"Пользователь не авторизован");
             int btnWidth = 200, btnHeight = 60;
@@ -636,7 +752,6 @@ private:
             SendMessageW(hBack, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
             return;
         }
-
         SetWindowTextW(m_hConsignorInfoLabel, L"Загрузка данных...");
         int btnWidth = 200, btnHeight = 60;
         int backY = screenHeight - btnHeight - 30;
@@ -646,7 +761,6 @@ private:
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_BACK, g_hInstance, nullptr);
         m_buttons.push_back(hBack);
         SendMessageW(hBack, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
-
         loadConsignorData();
     }
 
@@ -664,7 +778,6 @@ private:
             return;
         }
         PostMessageW(m_hWnd, WM_CONSIGNOR_LOADING_START, 0, 0);
-
         std::thread([this, authToken]() {
             try {
                 std::wstring path = L"/api/v1/clients/me";
@@ -746,7 +859,6 @@ private:
             columns.push_back(utf8_to_wstring(item.value("sale_date", "")));
             columns.push_back(utf8_to_wstring(item.value("status", "")));
             columns.push_back(utf8_to_wstring(item.value("note", "")));
-
             for (size_t i = 0; i < columns.size(); ++i) {
                 lvi.iSubItem = static_cast<int>(i);
                 lvi.pszText = const_cast<LPWSTR>(columns[i].c_str());
@@ -773,12 +885,8 @@ private:
         int screenWidth = GetSystemMetrics(SM_CXSCREEN);
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         int centerX = screenWidth / 2;
-        
-
-        // Стандартный заголовок с эмблемой (единый для всех экранов)
         createStandardHeader();
-		int top = 260;  // После заголовка  
-
+        int top = 260;
         const wchar_t* descText = L"Вы выбрали ОБЩУЮ ОЧЕРЕДЬ. Вы получаете талончик электронной очереди и ожидаете своего времени приема.\n"
             L"Количество товаров ограничено 20 наименованиями. При большой загруженности, время ожидания может достигать 4 часов и более.";
         m_hStaticDescription = CreateWindowExW(0, L"STATIC", descText,
@@ -787,7 +895,6 @@ private:
             m_hWnd, (HMENU)(INT_PTR)ID_STATIC_DESCRIPTION, g_hInstance, nullptr);
         SendMessageW(m_hStaticDescription, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
         top += 110;
-
         std::wstring dailyCountText = L"Количество ожидающих приема человек: ";
         std::wstring authToken = g_authManager.getAuthToken();
         int dailyCount = g_queueManager.getDailyCount(QueueType::GENERAL, authToken);
@@ -798,7 +905,6 @@ private:
             m_hWnd, (HMENU)(INT_PTR)ID_STATIC_DAILY_COUNT, g_hInstance, nullptr);
         SendMessageW(m_hStaticDailyCount, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
         top += 50;
-
         const wchar_t* promptText = L"Введите номер комитента и нажмите кнопку Далее.\nЕсли номер ввели неверно, нажмите кнопку Сбросить.";
         m_hStaticPrompt = CreateWindowExW(0, L"STATIC", promptText,
             WS_VISIBLE | WS_CHILD | SS_CENTER,
@@ -806,7 +912,6 @@ private:
             m_hWnd, (HMENU)(INT_PTR)ID_STATIC_PROMPT, g_hInstance, nullptr);
         SendMessageW(m_hStaticPrompt, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
         top += 70;
-
         int editWidth = 300;
         int editHeight = 50;
         int editX = centerX - editWidth / 2;
@@ -817,13 +922,11 @@ private:
         SendMessageW(m_hEditConsignorId, WM_SETFONT, (WPARAM)g_hFontEdit, TRUE);
         SendMessageW(m_hEditConsignorId, EM_SETLIMITTEXT, (WPARAM)10, 0);
         top += editHeight + 10;
-
         int digitBtnSize = 50;
         int digitGap = 8;
         int digitRowWidth = digitBtnSize * 5 + digitGap * 4;
         int digitStartX = centerX - digitRowWidth / 2;
         int row1Y = top;
-
         for (int i = 1; i <= 5; ++i) {
             int x = digitStartX + (i - 1) * (digitBtnSize + digitGap);
             HWND btn = CreateWindowExW(0, L"BUTTON", std::to_wstring(i).c_str(),
@@ -852,7 +955,6 @@ private:
         m_digitButtons.push_back(btn0);
         m_buttons.push_back(btn0);
         top += digitBtnSize + 15;
-
         int clearWidth = 120;
         m_hBtnClear = CreateWindowExW(0, L"BUTTON", L"Сбросить",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
@@ -860,7 +962,6 @@ private:
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_CLEAR, g_hInstance, nullptr);
         m_buttons.push_back(m_hBtnClear);
         top += 50;
-
         int nextWidth = 200;
         m_hBtnNext = CreateWindowExW(0, L"BUTTON", L"Далее",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
@@ -868,7 +969,6 @@ private:
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_NEXT, g_hInstance, nullptr);
         m_buttons.push_back(m_hBtnNext);
         top += 70;
-
         m_hStaticNameDisplay = CreateWindowExW(0, L"STATIC", L"",
             WS_CHILD | SS_CENTER,
             50, top, screenWidth - 100, 50,
@@ -876,14 +976,12 @@ private:
         SendMessageW(m_hStaticNameDisplay, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
         ShowWindow(m_hStaticNameDisplay, SW_HIDE);
         top += 60;
-
         m_hBtnResetId = CreateWindowExW(0, L"BUTTON", L"Сбросить",
             WS_CHILD | BS_PUSHBUTTON,
             screenWidth - 150, top - 60, 100, 40,
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_RESET_ID, g_hInstance, nullptr);
         m_buttons.push_back(m_hBtnResetId);
         ShowWindow(m_hBtnResetId, SW_HIDE);
-
         int printWidth = 300;
         m_hBtnPrintTicket = CreateWindowExW(0, L"BUTTON", L"Печать талона",
             WS_CHILD | BS_PUSHBUTTON,
@@ -892,14 +990,12 @@ private:
         m_buttons.push_back(m_hBtnPrintTicket);
         ShowWindow(m_hBtnPrintTicket, SW_HIDE);
         top += 100;
-
         int backWidth = 200;
         HWND hBack = CreateWindowExW(0, L"BUTTON", L"Назад",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             centerX - backWidth / 2, top + 20, backWidth, 60,
             m_hWnd, (HMENU)(INT_PTR)ID_BTN_BACK, g_hInstance, nullptr);
         m_buttons.push_back(hBack);
-
         styleButtons();
         SetFocus(m_hEditConsignorId);
         g_logger.info(L"General queue input page created, daily count = " + std::to_wstring(dailyCount));
@@ -943,7 +1039,6 @@ private:
         std::wstringstream ss;
         ss << L"ВАШ ТАЛОН: " << m_currentTicket.ticketNumber << L"\n";
         ss << L"Позиция в очереди: " << m_currentTicket.position << L"\n";
-        //ss << L"Окно: " << m_currentTicket.windowNumber << L"\n";
         if (m_currentTicket.estimatedWaitTime > 0) {
             ss << L"Время ожидания: ~" << m_currentTicket.estimatedWaitTime << L" мин";
         }
@@ -1037,64 +1132,31 @@ private:
         showTicketIssued();
     }
 
-    // ========================================================================
-   // ИСПРАВЛЕННЫЙ МЕТОД: handleFirstTime
-   // ========================================================================
-   // ПРИЧИНА ИСПРАВЛЕНИЯ:
-   // 1. Метод жёстко задавал ticket.position = 1, поэтому клиент всегда
-   //    отображал позицию 1, независимо от количества талонов в очереди.
-   // 2. Метод не использовал информацию о позиции, возвращаемую сервером.
-   // 3. Метод не парсил окно и время ожидания из ответа сервера.
-   //
-   // РЕШЕНИЕ:
-   // 1. Парсим позицию из ответа сервера (поле "position").
-   // 2. Парсим окно и время ожидания из ответа сервера.
-   // 3. Если сервер не вернул позицию (старая версия сервера), используем 1
-   //    как fallback для обратной совместимости.
-   // 4. Логика печати и отображения талона остаётся без изменений.
-   // ========================================================================
     void handleFirstTime() {
         g_logger.info(L"handleFirstTime: started");
-
         nlohmann::json request;
         request["window"] = "1";
-
         auto response = g_httpsClient.post(L"/api/v1/queue/first_time/create", request, L"");
         if (!response || !response->contains("ticket_number")) {
             MessageBoxW(m_hWnd, L"Не удалось получить талон. Проверьте соединение с сервером.", L"Ошибка", MB_OK);
             g_logger.error(L"FirstTime: failed to create ticket (no response or missing ticket_number)");
             return;
         }
-
         std::string ticketNumberUtf8 = (*response)["ticket_number"].get<std::string>();
         std::wstring ticketNumber = utf8_to_wstring(ticketNumberUtf8);
-
         QueueTicket ticket;
         ticket.ticketNumber = ticketNumber;
         ticket.type = QueueType::FIRST_TIME;
-
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ: Парсим позицию из ответа сервера.
-        // Если сервер не вернул позицию (старая версия сервера), используем 1
-        // как fallback для обратной совместимости.
-        // =====================================================================
         ticket.position = response->value("position", 1);
         ticket.itemsCount = 1;
-
-        // Парсим окно из ответа сервера (fallback: "1")
         std::string windowUtf8 = response->value("window_number", "1");
         ticket.windowNumber = utf8_to_wstring(windowUtf8);
-
-        // Парсим время ожидания из ответа сервера (fallback: 0)
         ticket.estimatedWaitTime = response->value("wait_time_minutes", 0);
-
         ticket.createdAt = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
-
         g_logger.info(L"FirstTime: ticket composed: " + ticketNumber +
             L", position=" + std::to_wstring(ticket.position) +
             L", window=" + ticket.windowNumber +
             L", waitTime=" + std::to_wstring(ticket.estimatedWaitTime));
-
         bool printed = g_printer.printTicket(ticket, L"Новый клиент", L"");
         if (printed) {
             g_logger.info(L"FirstTime ticket printed: " + ticketNumber);
@@ -1103,10 +1165,8 @@ private:
             g_logger.warning(L"FirstTime ticket print failed, saved to file: " + ticketNumber);
             MessageBoxW(m_hWnd, L"Талон сохранён в файл (печать не удалась).", L"Предупреждение", MB_OK);
         }
-
         m_currentTicket = ticket;
         showTicketIssued();
-
         g_logger.info(L"handleFirstTime: completed successfully");
     }
 
@@ -1117,38 +1177,30 @@ private:
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         int centerX = screenWidth / 2;
         int centerY = screenHeight / 2;
-
-        // Стандартный заголовок с эмблемой (единый для всех экранов)
         createStandardHeader();
-
         HWND hSubtitle = CreateWindowExW(0, L"STATIC", L"СДАЧА +20 товаров",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
-            50, 260, screenWidth - 100, 60,  // Y = 260 (после стандартного заголовка)
+            50, 260, screenWidth - 100, 60,
             m_hWnd, (HMENU)ID_STATIC_EXTRA20_SUBTITLE, g_hInstance, nullptr);
         SendMessageW(hSubtitle, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
-
         HWND hText = CreateWindowExW(0, L"STATIC",
             L"Вы выбрали услугу +20 товаров к базовым.\n200 руб. за 20 дополнительных товаров.",
             WS_VISIBLE | WS_CHILD | SS_CENTER | SS_NOTIFY,
             centerX - 350, centerY - 160, 700, 120,
             m_hWnd, (HMENU)IDC_STATIC_EXTRA20_TEXT, g_hInstance, nullptr);
         SendMessageW(hText, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
-
         int btnW = 300, btnH = 60, gap = 20;
         int startY = centerY + 20;
-
         HWND btnCard = CreateWindowExW(0, L"BUTTON", L"Оплата банковской картой",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             centerX - btnW / 2, startY, btnW, btnH,
             m_hWnd, (HMENU)ID_BTN_PAY_CARD, g_hInstance, nullptr);
         m_buttons.push_back(btnCard);
-
         HWND btnQR = CreateWindowExW(0, L"BUTTON", L"Оплата по QR-коду",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             centerX - btnW / 2, startY + btnH + gap, btnW, btnH,
             m_hWnd, (HMENU)ID_BTN_PAY_QR, g_hInstance, nullptr);
         m_buttons.push_back(btnQR);
-
         HWND btnBack = CreateWindowExW(0, L"BUTTON", L"Назад",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             centerX - btnW / 2, startY + 2 * (btnH + gap), btnW, btnH,
@@ -1163,7 +1215,6 @@ private:
         std::wstring authToken = g_authManager.getAuthToken();
         int clientId = g_authManager.getClientId();
         bool isLogged = g_authManager.isLoggedIn();
-
         if (!isLogged || clientId == 0) {
             g_logger.info(L"[onExtra20PaymentSuccess] No valid login. Showing registration dialog...");
             RegistrationDialog regDlg;
@@ -1179,7 +1230,6 @@ private:
             g_logger.error(L"[onExtra20PaymentSuccess] clientId is still 0");
             return;
         }
-
         auto ticketOpt = g_queueManager.getTicket(clientId, QueueType::EXTRA_20, 20, authToken);
         if (!ticketOpt) {
             MessageBoxW(m_hWnd, L"Не удалось получить талон. Проверьте соединение с сервером.", L"Ошибка", MB_OK);
@@ -1206,10 +1256,7 @@ private:
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         int centerX = screenWidth / 2;
         int centerY = screenHeight / 2;
-
-        // Стандартный заголовок с эмблемой (единый для всех экранов)
         createStandardHeader();
-
         HWND hText = CreateWindowExW(0, L"STATIC",
             L"Вы выбрали НА ДОВЕРИИ.\n"
             L"Вы без очереди оставляете товар и сведения о себе.\n"
@@ -1220,12 +1267,10 @@ private:
             centerX - 400, centerY - 260, 800, 180,
             m_hWnd, (HMENU)IDC_STATIC_TRUST_TEXT, g_hInstance, nullptr);
         SendMessageW(hText, WM_SETFONT, (WPARAM)g_hFontButton, TRUE);
-
         const bool logged = g_authManager.isLoggedIn() && g_authManager.getClientId() != 0;
         const std::wstring idStr = logged ? std::to_wstring(g_authManager.getClientId()) : std::wstring(L"(id пользователя)");
         const std::wstring nameStr = logged ? g_authManager.getFullName() : std::wstring(L"(Ф.И.О. пользователя)");
         const std::wstring phoneStr = logged ? g_authManager.getPhone() : std::wstring(L"(номер телефона пользователя)");
-
         std::wstringstream ps;
         ps << L"КОМИССИОННЫЙ МАГАЗИН\r\n";
         ps << L"СОВЕТСКИЙ\r\n\r\n";
@@ -1252,16 +1297,13 @@ private:
         ps << L"Дата выдачи ______________________________\r\n";
         ps << L"Дата рождения ____________________________\r\n";
         ps << L"Проживаю ________________________________\r\n";
-
         const std::wstring previewText = ps.str();
-
         int btnW = 300, btnH = 70, gap = 20;
         int btnBackY = screenHeight - 10 - btnH;
         int btnPrintY = btnBackY - gap - btnH;
         int previewY = centerY - 60;
         int previewH = btnPrintY - 10 - previewY;
         if (previewH < 120) previewH = 120;
-
         HWND hPreview = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", previewText.c_str(),
             WS_VISIBLE | WS_CHILD | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
             centerX - 400, previewY, 800, previewH,
@@ -1269,13 +1311,11 @@ private:
         SendMessageW(hPreview, WM_SETFONT, (WPARAM)g_hFontLabel, TRUE);
         SendMessageW(hPreview, EM_SETSEL, 0, 0);
         SendMessageW(hPreview, EM_SCROLLCARET, 0, 0);
-
         HWND btnPrint = CreateWindowExW(0, L"BUTTON", L"Печать талона",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             centerX - btnW / 2, btnPrintY, btnW, btnH,
             m_hWnd, (HMENU)ID_BTN_TRUST_PRINT, g_hInstance, nullptr);
         m_buttons.push_back(btnPrint);
-
         HWND btnBack = CreateWindowExW(0, L"BUTTON", L"Назад",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             centerX - btnW / 2, btnBackY, btnW, btnH,
@@ -1296,7 +1336,6 @@ private:
         std::wstring authToken = g_authManager.getAuthToken();
         std::wstring clientName = g_authManager.getFullName();
         std::wstring clientPhone = g_authManager.getPhone();
-
         auto ticketOpt = g_queueManager.getTrustAcceptance(clientId, authToken);
         if (!ticketOpt) {
             g_logger.error(L"onTrustAcceptancePrint: failed to get trust acceptance ticket from QueueManager");
@@ -1304,7 +1343,6 @@ private:
             return;
         }
         m_currentTicket = ticketOpt.value();
-
         bool printed = g_printer.printTicketWithExtraMessage(m_currentTicket, clientId, clientName, clientPhone);
         if (printed) {
             g_logger.info(L"onTrustAcceptancePrint: ticket printed successfully. TicketNumber: " + m_currentTicket.ticketNumber);
@@ -1332,22 +1370,9 @@ private:
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         int centerX = screenWidth / 2;
         int centerY = screenHeight / 2;
-        // Стандартный заголовок с эмблемой (единый для всех экранов)
         createStandardHeader();
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ ЧИТАЕМОСТИ (шаг 1): количество ожидающих запрашивается
-        // ДО создания текстового блока, чтобы счётчик можно было включить
-        // в ЕДИНЫЙ прямоугольник. Вызов тот же, логика не меняется.
-        // =====================================================================
         std::wstring authToken = g_authManager.getAuthToken();
         int queueCount = g_queueManager.getDailyCount(QueueType::PAID, authToken);
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ ЧИТАЕМОСТИ (шаг 2): ВЕСЬ текст (описание услуги +
-        // количество ожидающих) формируется в ОДНОЙ строке и выводится
-        // ОДНИМ контролом в ОДНОМ зелёном прямоугольнике.
-        // Переиспользуется существующая переменная countText — новых
-        // переменных, функций и логики НЕ добавляется.
-        // =====================================================================
         std::wstring countText = L"Количество ожидающих в очереди: " + std::to_wstring(queueCount);
         countText =
             L"Вы выбрали ПЛАТНЫЙ ПРИЕМ (200 руб.).\n"
@@ -1355,14 +1380,6 @@ private:
             L"Количество товаров ограничено 20 наименованиями.\n\n"
             L"Стоимость услуги 200 руб.\n\n"
             + countText;
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ ЧИТАЕМОСТИ (шаг 3): единый блок 800x300 начиная с
-        // centerY-260. Верх (280) ниже заголовка (249), низ (580) выше
-        // кнопок (610). Второй контрол-счётчик БОЛЕЕ НЕ СОЗДАЁТСЯ —
-        // пересечение прямоугольников исключено.
-        // ID остаётся IDC_STATIC_PAID_TEXT — он уже в зелёной ветке
-        // WM_CTLCOLORSTATIC (зелёный фон, белый текст).
-        // =====================================================================
         HWND hText = CreateWindowExW(0, L"STATIC", countText.c_str(),
             WS_VISIBLE | WS_CHILD | SS_CENTER | SS_NOTIFY,
             centerX - 400, centerY - 260, 800, 300,
@@ -1396,7 +1413,6 @@ private:
         int clientId = g_authManager.getClientId();
         std::wstring authToken = g_authManager.getAuthToken();
         int itemsCount = Config::MAX_ITEMS_GENERAL_QUEUE;
-
         auto ticketOpt = g_queueManager.getTicket(clientId, QueueType::PAID, itemsCount, authToken);
         if (!ticketOpt) {
             MessageBoxW(m_hWnd, L"Не удалось получить талон. Проверьте соединение с сервером.", L"Ошибка", MB_OK);
@@ -1431,20 +1447,9 @@ private:
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         int centerX = screenWidth / 2;
         int centerY = screenHeight / 2;
-        // Стандартный заголовок с эмблемой (единый для всех экранов)
         createStandardHeader();
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ ЧИТАЕМОСТИ (шаг 1): количество ожидающих запрашивается
-        // ДО создания текстового блока. Вызов тот же, логика не меняется.
-        // =====================================================================
         std::wstring authToken = g_authManager.getAuthToken();
         int queueCount = g_queueManager.getDailyCount(QueueType::EXPENSIVE, authToken);
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ ЧИТАЕМОСТИ (шаг 2): ВЕСЬ текст (описание услуги +
-        // количество ожидающих) — в ОДНОЙ строке, ОДИН контрол, ОДИН
-        // зелёный прямоугольник. Переиспользуется существующая переменная
-        // countText — новых переменных, функций и логики НЕ добавляется.
-        // =====================================================================
         std::wstring countText = L"Количество ожидающих в очереди: " + std::to_wstring(queueCount);
         countText =
             L"Вы выбрали ДОРОГОЙ ТОВАР (>5000 руб.).\n"
@@ -1452,13 +1457,6 @@ private:
             L"В течение 10-15 минут Вас примет самый опытный товаровед нашего магазина\n"
             L"(в данном случае принимаются вещи, оценочная стоимость каждой из которых более 5000 руб.).\n\n"
             + countText;
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ ЧИТАЕМОСТИ (шаг 3): единый блок 800x300 начиная с
-        // centerY-260. Второй контрол-счётчик БОЛЕЕ НЕ СОЗДАЁТСЯ —
-        // пересечение прямоугольников исключено.
-        // ID остаётся IDC_STATIC_EXPENSIVE_TEXT — он уже в зелёной ветке
-        // WM_CTLCOLORSTATIC (зелёный фон, белый текст).
-        // =====================================================================
         HWND hText = CreateWindowExW(0, L"STATIC", countText.c_str(),
             WS_VISIBLE | WS_CHILD | SS_CENTER | SS_NOTIFY,
             centerX - 400, centerY - 260, 800, 300,
@@ -1492,7 +1490,6 @@ private:
         int clientId = g_authManager.getClientId();
         std::wstring authToken = g_authManager.getAuthToken();
         int itemsCount = 1;
-
         auto ticketOpt = g_queueManager.getTicket(clientId, QueueType::EXPENSIVE, itemsCount, authToken);
         if (!ticketOpt) {
             MessageBoxW(m_hWnd, L"Не удалось получить талон. Проверьте соединение с сервером.", L"Ошибка", MB_OK);
@@ -1514,7 +1511,6 @@ private:
 
 public:
     HWND m_hWnd;
-
     MainWindow() : m_currentState(WindowState::MAIN_MENU),
         m_currentTicketLabel(nullptr),
         m_hEditConsignorId(nullptr),
@@ -1621,6 +1617,14 @@ public:
         case ID_BTN_SUBMIT_ITEMS:
             createSubmitMenu();
             break;
+
+            // =========================================================================
+            // ОБРАБОТКА НОВОЙ КНОПКИ: Дополнительные услуги
+            // =========================================================================
+        case ID_BTN_ADDITIONAL_SERVICES:
+            createAdditionalServicesMenu();
+            break;
+
         case ID_BTN_GENERAL_QUEUE:
             createGeneralQueueInput();
             break;
@@ -1657,19 +1661,35 @@ public:
         case ID_BTN_EXPENSIVE_BACK:
             createSubmitMenu();
             break;
+
+            // =========================================================================
+            // ОБРАБОТКА НОВЫХ КНОПОК: Выбор товароведа
+            // =========================================================================
+        case ID_BTN_SELECT_APPRAISER:
+            showAppraiserSelectionWindow();
+            break;
+        case ID_BTN_APPRAISER_PAY:
+            onAppraiserPaymentSuccess();
+            break;
+        case ID_BTN_APPRAISER_BACK:
+            createAdditionalServicesMenu();
+            break;
+
         case ID_BTN_PAY_CARD:
         case ID_BTN_PAY_QR:
             onExtra20PaymentSuccess();
             break;
         case ID_BTN_BACK:
-            if (m_currentState == WindowState::SUBMIT_MENU || m_currentState == WindowState::TICKET_ISSUED) {
+            if (m_currentState == WindowState::SUBMIT_MENU ||
+                m_currentState == WindowState::TICKET_ISSUED ||
+                m_currentState == WindowState::ADDITIONAL_SERVICES) { // Добавлен возврат из меню доп. услуг
                 createMainMenu();
             }
             else if (m_currentState == WindowState::GENERAL_QUEUE_INPUT) {
                 createSubmitMenu();
             }
             else if (m_currentState == WindowState::EXTRA_20_PAYMENT) {
-                createSubmitMenu();
+                createAdditionalServicesMenu(); // Возврат в меню доп. услуг, так как +20 позиций теперь там
             }
             else if (m_currentState == WindowState::ADDRESSES) {
                 createMainMenu();
@@ -1737,8 +1757,7 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         g_hBrushBtn = CreateSolidBrush(Config::ACCENT_COLOR);
         g_hBrushGreen = CreateSolidBrush(Config::PRIMARY_COLOR);
         g_hBrushBackBtn = CreateSolidBrush(Config::BACK_BUTTON_COLOR);
-        g_hBrushWindow = CreateSolidBrush(RGB(255, 255, 0)); //жЕЛТЫЙ ФОН
-
+        g_hBrushWindow = CreateSolidBrush(RGB(255, 255, 0)); // Желтый фон
         g_hFontTitle = CreateFontW(48, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
@@ -1751,29 +1770,22 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         g_hFontLabel = CreateFontW(24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
-		
-        // Загрузка иконок из ресурсов
+
         g_hBmpIconNoCash = (HBITMAP)LoadImageW(g_hInstance, MAKEINTRESOURCEW(IDB_ICON_NO_CASH),
             IMAGE_BITMAP, 100, 100, LR_CREATEDIBSECTION);
         if (!g_hBmpIconNoCash)
             g_logger.error(L"WM_CREATE: LoadImage(IDB_ICON_NO_CASH) failed, err=" + std::to_wstring(GetLastError()));
-
         g_hBmpIconKiosk = (HBITMAP)LoadImageW(g_hInstance, MAKEINTRESOURCEW(IDB_ICON_KIOSK),
             IMAGE_BITMAP, 100, 100, LR_CREATEDIBSECTION);
         if (!g_hBmpIconKiosk)
             g_logger.error(L"WM_CREATE: LoadImage(IDB_ICON_KIOSK) failed, err=" + std::to_wstring(GetLastError()));
-
         g_hBmpIconWallet = (HBITMAP)LoadImageW(g_hInstance, MAKEINTRESOURCEW(IDB_ICON_WALLET),
             IMAGE_BITMAP, 100, 100, LR_CREATEDIBSECTION);
         if (!g_hBmpIconWallet)
             g_logger.error(L"WM_CREATE: LoadImage(IDB_ICON_WALLET) failed, err=" + std::to_wstring(GetLastError()));
 
-        // ИЗМЕНЕНО: Загрузка эмблемы из ресурсов тем же методом, что и три иконки
-        // Было: LoadImageW(g_hInstance, L"rc.png", IMAGE_BITMAP, STATUE_SIZE_PX, STATUE_SIZE_PX, LR_LOADFROMFILE | LR_CREATEDIBSECTION)
-        // Стало: Загрузка из ресурса IDB_STATUE через MAKEINTRESOURCEW
         g_hBmpStatue = (HBITMAP)LoadImageW(g_hInstance, MAKEINTRESOURCEW(IDB_STATUE),
             IMAGE_BITMAP, STATUE_SIZE_PX, STATUE_SIZE_PX, LR_CREATEDIBSECTION);
-
         if (!g_hBmpStatue) {
             g_logger.error(L"WM_CREATE: LoadImage(IDB_STATUE) failed, err=" +
                 std::to_wstring(GetLastError()) +
@@ -1783,10 +1795,8 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             g_logger.info(L"WM_CREATE: IDB_STATUE resource loaded successfully (" +
                 std::to_wstring(STATUE_SIZE_PX) + L"x" + std::to_wstring(STATUE_SIZE_PX) + L")");
         }
-
         g_mainWindow.m_hWnd = hWnd;
         return 0;
-
     case WM_MOUSEMOVE:
     {
         if (!IsWindow(g_hCloseBtn)) break;
@@ -1794,36 +1804,46 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         int y = HIWORD(lParam);
         int screenWidth = GetSystemMetrics(SM_CXSCREEN);
         bool inZone = (x >= screenWidth - 100 && y <= 100);
-        ShowWindow(g_hCloseBtn, inZone ? SW_SHOW : SW_HIDE);
+
+        // Получаем текущее состояние видимости крестика
+        bool isVisible = (GetWindowLongPtrW(g_hCloseBtn, GWL_STYLE) & WS_VISIBLE) != 0;
+
+        // Изменяем видимость ТОЛЬКО если состояние действительно изменилось.
+        // Это предотвращает спам сообщений WM_PAINT, который вызывал исчезновение
+        // кнопки "Выход" и артефакты Z-Order при движении мыши.
+        if (inZone && !isVisible) {
+            ShowWindow(g_hCloseBtn, SW_SHOW);
+        }
+        else if (!inZone && isVisible) {
+            ShowWindow(g_hCloseBtn, SW_HIDE);
+        }
     }
     break;
-
     case WM_CTLCOLORBTN:
     {
         HDC hdc = (HDC)wParam;
         HWND hBtn = (HWND)lParam;
         SetTextColor(hdc, RGB(255, 255, 255));
         DWORD btnId = GetDlgCtrlID(hBtn);
-        if (btnId == ID_BTN_BACK || btnId == ID_BTN_CLOSE || btnId == ID_BTN_RESET_ID || btnId == ID_BTN_LOGOUT) {
+        if (btnId == ID_BTN_BACK || btnId == ID_BTN_CLOSE || btnId == ID_BTN_RESET_ID ||
+            btnId == ID_BTN_LOGOUT || btnId == ID_BTN_APPRAISER_BACK) { // ID_BTN_APPRAISER_BACK добавлен как красная кнопка
             SetBkColor(hdc, Config::BACK_BUTTON_COLOR);
             return (LRESULT)g_hBrushBackBtn;
         }
         if (btnId == ID_BTN_PAY_CARD || btnId == ID_BTN_PAY_QR ||
             btnId == ID_BTN_NEXT || btnId == ID_BTN_PRINT_TICKET ||
-            btnId == ID_BTN_TRUST_PRINT) {
+            btnId == ID_BTN_TRUST_PRINT || btnId == ID_BTN_APPRAISER_PAY) { // ID_BTN_APPRAISER_PAY добавлен как зеленая кнопка
             SetBkColor(hdc, Config::PRIMARY_COLOR);
             return (LRESULT)g_hBrushGreen;
         }
         SetBkColor(hdc, Config::ACCENT_COLOR);
         return (LRESULT)g_hBrushBtn;
     }
-
     case WM_CTLCOLORSTATIC:
     {
         HDC hdc = (HDC)wParam;
         HWND hStatic = (HWND)lParam;
         DWORD id = GetDlgCtrlID(hStatic);
-
         if (id == ID_STATIC_MAIN_TITLE_1 || id == ID_STATIC_MAIN_TITLE_2) {
             SetTextColor(hdc, Config::TITLE_CHERRY_COLOR);
             SetBkMode(hdc, TRANSPARENT);
@@ -1851,7 +1871,6 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         SetBkMode(hdc, TRANSPARENT);
         return (LRESULT)GetStockObject(NULL_BRUSH);
     }
-
     case WM_COMMAND:
         g_mainWindow.handleMessage(msg, wParam, lParam);
         return 0;
@@ -1864,7 +1883,6 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     case WM_CONSIGNOR_DATA_READY:
         g_mainWindow.handleMessage(msg, wParam, lParam);
         return 0;
-
     case WM_DESTROY:
         DeleteObject(g_hBrushBtn);
         DeleteObject(g_hBrushGreen);
@@ -1877,8 +1895,7 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (g_hBmpIconNoCash) { DeleteObject(g_hBmpIconNoCash); g_hBmpIconNoCash = nullptr; }
         if (g_hBmpIconKiosk) { DeleteObject(g_hBmpIconKiosk); g_hBmpIconKiosk = nullptr; }
         if (g_hBmpIconWallet) { DeleteObject(g_hBmpIconWallet); g_hBmpIconWallet = nullptr; }
-        if (g_hBmpStatue) { DeleteObject(g_hBmpStatue); g_hBmpStatue = nullptr; } // Очистка ресурса статуи
-
+        if (g_hBmpStatue) { DeleteObject(g_hBmpStatue); g_hBmpStatue = nullptr; }
         g_logger.info(L"WM_DESTROY: GDI objects (brushes/fonts/icon bitmaps) released");
         g_hCloseBtn = nullptr;
         PostQuitMessage(0);

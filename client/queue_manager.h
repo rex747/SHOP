@@ -125,6 +125,28 @@ public:
         return 0;
     }
 
+	// Получить количество человек ожидающих в конкретной очереди на данный момент
+    int getCurrentCount(QueueType type, const std::wstring& authToken) {
+        std::wstring typeStr = getQueueTypeName(type);
+
+        std::wstring path = L"/api/v1/queue/waiting?type=" + typeStr;
+        auto response = g_httpsClient.get(path, authToken);
+
+        // Проверяем наличие массива tickets и вычисляем его размер
+        if (response && response->contains("tickets") && (*response)["tickets"].is_array()) {
+            int count = static_cast<int>((*response)["tickets"].size());
+            g_logger.info(L"Waiting count for " + typeStr + L": " + std::to_wstring(count));
+            return count;
+        }
+        else {
+			g_logger.warning(L"Response for waiting count does not contain 'tickets' array or is not an array.");
+        }
+
+        g_logger.warning(L"Failed to get waiting count for " + typeStr);
+        return 0;
+    
+    }
+
     std::optional<QueueTicket> getTicket(int clientId, QueueType type,
         int itemsCount, const std::wstring& authToken) {
         std::lock_guard<std::mutex> lock(m_mutex);
