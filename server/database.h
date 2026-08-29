@@ -158,6 +158,24 @@ public:
                     NULL;
                 END $$;
             )");
+            // ========================================================================
+            // МИГРАЦИЯ: колонка totp_secret_encrypted в существующей таблице clients
+            // ========================================================================
+            // ПРИЧИНА (логи 2026-08-28): продакшн-БД создана старой схемой БЕЗ колонки
+            // totp_secret_encrypted. CREATE TABLE IF NOT EXISTS не изменяет
+            // существующую таблицу, поэтому UPDATE в setTOTPSecret и SELECT в
+            // getTOTPSecret бросали "column ... does not exist" →
+            // "Failed to store generated password" и "no stored password hash".
+            // ADD COLUMN IF NOT EXISTS безопасен: на новых БД — no-op, данные не трогает.
+            txn.exec(R"(
+                DO $$
+                BEGIN
+                    ALTER TABLE clients ADD COLUMN IF NOT EXISTS totp_secret_encrypted TEXT;
+                EXCEPTION WHEN duplicate_column THEN
+                    NULL;
+                END $$;
+            )");
+            g_serverLogger.info("Migration: clients.totp_secret_encrypted column ensured");
 
             // ========================================================================
             // Миграции — добавляем отсутствующие колонки БЕЗОПАСНО

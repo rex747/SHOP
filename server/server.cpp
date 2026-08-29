@@ -356,8 +356,8 @@ private:
         g_serverLogger.info("Client registration attempt for: " + phone + " from " + client_ip);
 
         // === Передаем параметр role в метод БД ===
+     // === Передаем параметр role в метод БД (БЕЗ ИЗМЕНЕНИЙ) ===
         auto [ok, already_exists] = db_->registerClient(phone, last_name, first_name, middle_name, email, items_submitted, items_sold, role);
-
         if (!ok) {
             response_.result(http::status::internal_server_error);
             response_.set(http::field::content_type, "application/json");
@@ -367,11 +367,53 @@ private:
             return;
         }
 
-        // Генерация токенов для любого успешного случая (новый или существующий)
+        // =========================================================================
+        // НОВОЕ: ГЕНЕРАЦИЯ И СОХРАНЕНИЕ ПАРОЛЯ ДЛЯ ТОВАРОВЕДА/ДИРЕКТОРА.
+        // Для роли "client" пароль НЕ генерируется (клиенты входят по телефону).
+        //
+        // СХЕМА:
+        //   1. Генерируем случайный пароль через auth_->generateRandomPassword().
+        //   2. Хешируем пароль через auth_->hashString() (SHA-256).
+        //   3. Сохраняем ХЕШ через db_->setTOTPSecret(), который УЖЕ шифрует
+        //      значение через CryptoUtils::encryptAES256CBC и пишет в
+        //      totp_secret_encrypted. Структура БД НЕ меняется.
+        //   4. Возвращаем ПЛАИНТЕКС-пароль администратору в ответе, чтобы он
+        //      мог передать его товароведу. Пароль показывается один раз.
+        //
+        // Потокобезопасность: регистрация выполняется в рамках одного запроса,
+        // setTOTPSecret использует отдельную транзакцию. При ошибке сохранения
+        // пароля возвращаем ошибку, чтобы администратор повторил регистрацию.
+        // =========================================================================
+        std::string generatedPassword;
+        if (role == "worker" || role == "director") {
+            try {
+                generatedPassword = auth_->generateRandomPassword();
+                std::string passwordHash = auth_->hashString(generatedPassword);
+                if (!db_->setTOTPSecret(phone, passwordHash)) {
+                    response_.result(http::status::internal_server_error);
+                    response_.set(http::field::content_type, "application/json");
+                    response_.body() = json{ {"error", "Failed to store generated password"} }.dump();
+                    response_.prepare_payload();
+                    g_serverLogger.error("Client registration failed: password storage error for " + phone);
+                    return;
+                }
+                g_serverLogger.info("Generated password for role=" + role + " phone=" + phone +
+                    " (password returned to admin, hash stored in totp_secret_encrypted)");
+            }
+            catch (const std::exception& e) {
+                response_.result(http::status::internal_server_error);
+                response_.set(http::field::content_type, "application/json");
+                response_.body() = json{ {"error", std::string("Password generation failed: ") + e.what()} }.dump();
+                response_.prepare_payload();
+                g_serverLogger.error("Password generation exception for " + phone + ": " + e.what());
+                return;
+            }
+        }
+
+        // Генерация токенов для любого успешного случая (новый или существующий) — НЕ МЕНЯЕТСЯ
         auto tokens = auth_->generateTokens(phone);
         auto now = std::chrono::system_clock::now();
         int64_t expiresAt = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count() + Config::JWT_ACCESS_EXPIRY_SECONDS;
-
         json resp;
         resp["success"] = ok;
         resp["phone"] = phone;
@@ -381,11 +423,18 @@ private:
         resp["refresh_token"] = tokens.second;
         resp["expires_at"] = expiresAt;
 
+        // НОВОЕ: возвращаем сгенерированный пароль администратору.
+        // Поле присутствует ТОЛЬКО для ролей worker/director и только при
+        // успешной генерации. Для роли "client" поле отсутствует.
+        if (!generatedPassword.empty()) {
+            resp["password"] = generatedPassword;
+        }
+
         g_serverLogger.info("Client registration attempt for: " + phone +
             " | Success: " + std::to_string(ok) +
             " | Already exists: " + std::to_string(already_exists) +
-            " | Role saved: " + role);
-
+            " | Role saved: " + role +
+            " | Password generated: " + std::string(generatedPassword.empty() ? "no" : "yes"));
         response_.result(http::status::ok);
         response_.set(http::field::content_type, "application/json");
         response_.body() = resp.dump();
@@ -395,6 +444,8 @@ private:
         
     // -------------------------------------------------------------------------
     // POST /api/v1/clients/by_phone (post-метод)
+    // ДОПОЛНЕНО: поддержка индивидуальных паролей для ролей worker/director.
+    // Для роли client поведение НЕ МЕНЯЕТСЯ (вход по телефону без пароля).
     // -------------------------------------------------------------------------
     void handleClientByPhone(const std::string& client_ip) {
         json body;
@@ -409,7 +460,6 @@ private:
             response_.prepare_payload();
             return;
         }
-
         if (!body.contains("phone") || !body["phone"].is_string()) {
             response_.result(http::status::bad_request);
             response_.set(http::field::content_type, "application/json");
@@ -418,9 +468,15 @@ private:
             g_serverLogger.warning("Missing phone in /clients/by_phone from " + client_ip);
             return;
         }
-
         std::string phone = body["phone"].get<std::string>();
-        g_serverLogger.info("Checking client by phone: " + phone + " from " + client_ip);
+
+        // НОВОЕ: извлекаем пароль, если он передан клиентом.
+        // Для роли client пароль может отсутствовать — это штатная ситуация.
+        // Для ролей worker/director пароль ОБЯЗАТЕЛЕН.
+        std::string password = body.value("password", std::string(""));
+
+        g_serverLogger.info("Checking client by phone: " + phone + " from " + client_ip +
+            " (password provided: " + std::string(password.empty() ? "no" : "yes") + ")");
 
         auto clientOpt = db_->getClientByPhone(phone);
         if (!clientOpt) {
@@ -433,8 +489,7 @@ private:
         }
 
         // =====================================================================
-        // ПРОВЕРКА БЛОКИРОВКИ КЛИЕНТА
-        // Если клиент заблокирован директором, возвращаем ошибку с сообщением
+        // ПРОВЕРКА БЛОКИРОВКИ КЛИЕНТА (ЛОГИКА НЕ МЕНЯЕТСЯ)
         // =====================================================================
         if (db_->isClientBlockedByPhone(phone)) {
             response_.result(http::status::forbidden);
@@ -448,8 +503,54 @@ private:
             return;
         }
 
-        // === проверка роли клиент или товаровед ===
-        if (clientOpt->role != "worker" && clientOpt->role != "client") {
+        // =========================================================================
+        // НОВОЕ: ПРОВЕРКА ПАРОЛЯ ДЛЯ РОЛЕЙ worker И director.
+        // Для роли client этот блок пропускается (сохраняется прежний вход).
+        //
+        // ВАЛИДАЦИЯ ПОРЯДКА: сначала проверяем наличие пароля, затем его
+        // корректность. Это исключает попытку входа товароведа/директора
+        // без пароля и даёт клиенту однозначные коды ошибок:
+        //   - "password_required": пароль не передан;
+        //   - "invalid_password":   пароль неверен (клиент → RESULT_INVALID_PASSWORD).
+        //
+        // Потокобезопасность: verifyPassword выполняет только чтение из БД
+        // через потокобезопасный getTOTPSecret. Состояние сессии не меняет.
+        // =========================================================================
+        if (clientOpt->role == "worker" || clientOpt->role == "director") {
+            if (password.empty()) {
+                response_.result(http::status::unauthorized);
+                response_.set(http::field::content_type, "application/json");
+                response_.body() = json{
+                    {"error", "Password required for staff login"},
+                    {"password_required", true}
+                }.dump();
+                response_.prepare_payload();
+                g_serverLogger.warning("Staff login without password: role=" + clientOpt->role +
+                    " phone=" + phone + " from " + client_ip);
+                return;
+            }
+            if (!auth_->verifyPassword(phone, password)) {
+                response_.result(http::status::unauthorized);
+                response_.set(http::field::content_type, "application/json");
+                response_.body() = json{
+                    {"error", "Invalid password"},
+                    {"invalid_password", true}
+                }.dump();
+                response_.prepare_payload();
+                g_serverLogger.warning("INVALID PASSWORD for role=" + clientOpt->role +
+                    " phone=" + phone + " from " + client_ip);
+                return;
+            }
+            g_serverLogger.info("Password verified OK for role=" + clientOpt->role + " phone=" + phone);
+        }
+
+        // =========================================================================
+        // ИЗМЕНЕНО: проверка роли дополнена ролью "director".
+        // Ранее допускались только "worker" и "client". Теперь директор также
+        // проходит через этот эндпоинт, но его доступ к директорским эндпоинтам
+        // контролируется отдельно по роли (см. примечание ниже).
+        // =========================================================================
+        if (clientOpt->role != "worker" && clientOpt->role != "client" && clientOpt->role != "director") {
             response_.result(http::status::forbidden);
             response_.body() = json{ {"error", "Access denied: not a worker"} }.dump();
             response_.prepare_payload();
@@ -457,31 +558,31 @@ private:
             return;
         }
 
-        // Генерируем токены
+        // Генерируем токены (теперь с ролью в payload JWT) — НЕ МЕНЯЕТСЯ
         auto tokens = auth_->generateTokens(phone);
-
         json resp;
         resp["id"] = clientOpt->id;
         resp["name"] = clientOpt->name;
         resp["phone"] = clientOpt->phone;
+        // НОВОЕ: возвращаем роль клиенту. Клиент сохраняет её в AuthManager
+        // и использует в main.cpp / director_window.h вместо хардкода телефона.
+        resp["role"] = clientOpt->role;
         resp["access_token"] = tokens.first;
         resp["refresh_token"] = tokens.second;
-        g_serverLogger.info("access_token: "+ tokens.first);
+        g_serverLogger.info("access_token: " + tokens.first);
         g_serverLogger.info("refresh_token:" + tokens.second);
 
-        // Срок действия (как в generateTokens) – 3600 секунд для access
         auto now = std::chrono::system_clock::now();
         int64_t expiresAt = std::chrono::duration_cast<std::chrono::seconds>(
             now.time_since_epoch()).count() + Config::JWT_ACCESS_EXPIRY_SECONDS;
         resp["expires_at"] = expiresAt;
-
         response_.result(http::status::ok);
         response_.set(http::field::content_type, "application/json");
         response_.body() = resp.dump();
-
         response_.prepare_payload();
         g_serverLogger.info("User" + clientOpt->role + "data returned for phone: " + phone + " (id = " + std::to_string(clientOpt->id) + ")");
     }
+
     //--------------------------------------------------------------------------
     // Обработчик получения данных из 1С о продажах пользователя
     //--------------------------------------------------------------------------
@@ -1661,20 +1762,18 @@ private:
             return;
         }
 
-        // 3. ПРОВЕРКА РОЛИ ДИРЕКТОРА
-        // Директор магазина определяется по телефону +79914869324
-        // Это захардкоженная проверка согласно требованиям задания
-        constexpr const char* DIRECTOR_PHONE = "+79914869324";
-        if (*phoneOpt != DIRECTOR_PHONE) {
+        // 3. ПРОВЕРКА РОЛИ ДИРЕКТОРА ЧЕРЕЗ БД (вместо хардкода телефона)
+        // Запрашиваем запись клиента по телефону из JWT и проверяем поле role.
+        auto directorOpt = db_->getClientByPhone(*phoneOpt);
+        if (!directorOpt || directorOpt->role != "director") {
             response_.result(http::status::forbidden);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Access denied: director role required"} }.dump();
             response_.prepare_payload();
             g_serverLogger.warning("handleDirectorStats: access denied for phone=" + *phoneOpt +
-                " from " + client_ip + " (director phone required: " + DIRECTOR_PHONE + ")");
+                " from " + client_ip + " (role is not director)");
             return;
         }
-
         g_serverLogger.info("handleDirectorStats: director authenticated, phone=" + *phoneOpt);
 
         // 4. Получаем статистику из БД
@@ -1737,29 +1836,22 @@ private:
             g_serverLogger.warning("handleDirectorBlockClient: invalid token from " + client_ip);
             return;
         }
-        // 3. ПРОВЕРКА РОЛИ ДИРЕКТОРА
-        constexpr const char* DIRECTOR_PHONE = "+79914869324";
-        if (*phoneOpt != DIRECTOR_PHONE) {
+        // 3. ПРОВЕРКА РОЛИ ДИРЕКТОРА ЧЕРЕЗ БД + получение данных директора
+        // Один запрос к БД решает обе задачи: проверку роли и получение directorId.
+        // Это исключает двойной запрос, который был бы при раздельных шагах 3 и 4.
+        auto directorOpt = db_->getClientByPhone(*phoneOpt);
+        if (!directorOpt || directorOpt->role != "director") {
             response_.result(http::status::forbidden);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Access denied: director role required"} }.dump();
             response_.prepare_payload();
             g_serverLogger.warning("handleDirectorBlockClient: access denied for phone=" + *phoneOpt +
-                " from " + client_ip);
-            return;
-        }
-        // 4. Получаем ID директора из БД
-        auto directorOpt = db_->getClientByPhone(*phoneOpt);
-        if (!directorOpt) {
-            response_.result(http::status::internal_server_error);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", "Director not found in database"} }.dump();
-            response_.prepare_payload();
-            g_serverLogger.error("handleDirectorBlockClient: director not found in DB, phone=" + *phoneOpt);
+                " from " + client_ip + " (role is not director)");
             return;
         }
         int directorId = directorOpt->id;
-        // 5. Разбор JSON тела запроса
+
+        // 4. Разбор JSON тела запроса
         json body;
         try {
             body = json::parse(request_.body());
@@ -1773,7 +1865,7 @@ private:
             g_serverLogger.warning("handleDirectorBlockClient: JSON parse error from " + client_ip);
             return;
         }
-        // 6. Валидация обязательных полей
+        // 5. Валидация обязательных полей
         if (!body.contains("client_id") || !body["client_id"].is_number()) {
             response_.result(http::status::bad_request);
             response_.set(http::field::content_type, "application/json");
@@ -1899,15 +1991,15 @@ private:
             return;
         }
 
-        // 3. ПРОВЕРКА РОЛИ ДИРЕКТОРА
-        constexpr const char* DIRECTOR_PHONE = "+79914869324";
-        if (*phoneOpt != DIRECTOR_PHONE) {
+        // 3. ПРОВЕРКА РОЛИ ДИРЕКТОРА ЧЕРЕЗ БД (вместо хардкода телефона)
+        auto directorOpt = db_->getClientByPhone(*phoneOpt);
+        if (!directorOpt || directorOpt->role != "director") {
             response_.result(http::status::forbidden);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Access denied: director role required"} }.dump();
             response_.prepare_payload();
             g_serverLogger.warning("handleDirectorGetClients: access denied for phone=" + *phoneOpt +
-                " from " + client_ip);
+                " from " + client_ip + " (role is not director)");
             return;
         }
 
@@ -2208,17 +2300,17 @@ private:
             return;
         }
 
-        // Проверка роли директора
-        constexpr const char* DIRECTOR_PHONE = "+79914869324";
-        if (*phoneOpt != DIRECTOR_PHONE) {
+        // Проверка роли директора через БД (вместо хардкода телефона)
+        auto directorOpt = db_->getClientByPhone(*phoneOpt);
+        if (!directorOpt || directorOpt->role != "director") {
             response_.result(http::status::forbidden);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Access denied: director role required"} }.dump();
             response_.prepare_payload();
-            g_serverLogger.warning("handleDirectorExpiredItems: access denied for phone=" + *phoneOpt);
+            g_serverLogger.warning("handleDirectorExpiredItems: access denied for phone=" + *phoneOpt +
+                " from " + client_ip + " (role is not director)");
             return;
         }
-
         // Получение просроченных товаров
         json expiredItems = db_->getExpiredItems();
 

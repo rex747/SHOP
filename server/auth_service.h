@@ -125,22 +125,20 @@ private:
         return oss.str();
     }
 
-    std::string generateJWT(const std::string& phone, int expirySeconds) {
+    std::string generateJWT(const std::string& phone, const std::string& role, int expirySeconds) {
         json header = { {"typ", "JWT"}, {"alg", "HS256"} };
         int64_t now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-        json payload = { {"phone", phone}, {"iat", now}, {"exp", now + expirySeconds} };
-
+        // ДОБАВЛЕНО поле "role" в payload JWT. Это позволяет серверным
+        // эндпоинтам и клиенту определять роль из токена без запроса к БД.
+        json payload = { {"phone", phone}, {"role", role}, {"iat", now}, {"exp", now + expirySeconds} };
         std::string headerB64 = base64UrlEncode(reinterpret_cast<const unsigned char*>(header.dump().c_str()), header.dump().size());
         std::string payloadB64 = base64UrlEncode(reinterpret_cast<const unsigned char*>(payload.dump().c_str()), payload.dump().size());
         std::string message = headerB64 + "." + payloadB64;
-
         unsigned char hmacResult[EVP_MAX_MD_SIZE];
         unsigned int hmacLen;
-
         std::string jwt_secret = Config::JWT_SECRET;
         HMAC(EVP_sha256(), jwt_secret.data(), static_cast<int>(jwt_secret.size()),
             reinterpret_cast<const unsigned char*>(message.data()), message.size(), hmacResult, &hmacLen);
-
         std::string signature = base64UrlEncode(hmacResult, hmacLen);
         return message + "." + signature;
     }
@@ -155,16 +153,7 @@ private:
         }
         return ss.str();
     }
-    std::string hashString(const std::string& str) {
-        unsigned char hash[EVP_MAX_MD_SIZE];
-        unsigned int hashLen;
-        EVP_Digest(str.c_str(), static_cast<int>(str.size()), hash, &hashLen, EVP_sha256(), nullptr);
-        std::stringstream ss;
-        for (unsigned int i = 0; i < hashLen; i++) {
-            ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-        }
-        return ss.str();
-    }
+    
 
     // Вспомогательная функция: удаляет нулевые байты из строки
     static std::string sanitizeString(const std::string& input) {
@@ -212,6 +201,18 @@ public:
         return db_->initialize();
     }
 
+    std::string hashString(const std::string& str) {
+        unsigned char hash[EVP_MAX_MD_SIZE];
+        unsigned int hashLen;
+        EVP_Digest(str.c_str(), static_cast<int>(str.size()), hash, &hashLen, EVP_sha256(), nullptr);
+        std::stringstream ss;
+        for (unsigned int i = 0; i < hashLen; i++) {
+            ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+        }
+        return ss.str();
+    }
+
+
     std::string generateTOTPSecret() {
         unsigned char bytes[20];
         RAND_bytes(bytes, sizeof(bytes));
@@ -255,12 +256,55 @@ public:
         return false;
     }
 
+    // =========================================================================
+    // НОВЫЙ МЕТОД: ПРОВЕРКА ПАРОЛЯ ТОВАРОВЕДА/ДИРЕКТОРА.
+    //
+    // СХЕМА ХРАНЕНИЯ (не ломает БД, использует существующее поле
+    // totp_secret_encrypted и существующие методы setTOTPSecret/getTOTPSecret):
+    //   1. При регистрации: пароль хешируется (SHA-256 через hashString),
+    //      затем ХЕШ шифруется через CryptoUtils::encryptAES256CBC и
+    //      сохраняется в totp_secret_encrypted методом db_->setTOTPSecret.
+    //   2. При входе: db_->getTOTPSecret УЖЕ расшифровывает значение
+    //      (возвращает хеш). Мы хешируем введённый пароль и сравниваем.
+    //
+    // Потокобезопасность: метод выполняет только чтение через существующий
+    // потокобезопасный Database::getTOTPSecret. Состояние класса не меняет.
+    // =========================================================================
+    bool verifyPassword(const std::string& phone, const std::string& password) {
+        auto storedHashOpt = db_->getTOTPSecret(phone);
+        if (!storedHashOpt) {
+            g_serverLogger.warning("verifyPassword: no stored password hash for phone=" + phone);
+            return false;
+        }
+        std::string inputHash = hashString(password);
+        bool match = (inputHash == *storedHashOpt);
+        g_serverLogger.info("verifyPassword: phone=" + phone + ", match=" + (match ? "true" : "false"));
+        return match;
+    }
+
     std::pair<std::string, std::string> generateTokens(const std::string& phone) {
-        std::string accessToken = generateJWT(phone, Config::JWT_ACCESS_EXPIRY_SECONDS);
-        std::string refreshToken = generateJWT(phone, Config::JWT_REFRESH_EXPIRY_SECONDS);
+        // Определяем роль клиента для встраивания в JWT.
+        // Если клиент не найден (не должно происходить при штатном потоке),
+        // используем роль по умолчанию "client".
+        std::string role = "client";
+        std::optional<Client> clientOpt;
         try {
-            auto clientOpt = db_->getClientByPhone(phone);
+            clientOpt = db_->getClientByPhone(phone);
             if (clientOpt) {
+                role = clientOpt->role;
+            }
+        }
+        catch (const std::exception& e) {
+            std::cerr << "generateTokens getClientByPhone error: " << e.what() << std::endl;
+        }
+
+        // Генерируем токены С РОЛЬЮ в payload (новое).
+        std::string accessToken = generateJWT(phone, role, Config::JWT_ACCESS_EXPIRY_SECONDS);
+        std::string refreshToken = generateJWT(phone, role, Config::JWT_REFRESH_EXPIRY_SECONDS);
+
+        // Сохранение хешей токенов в БД — ЛОГИКА НЕ МЕНЯЕТСЯ.
+        if (clientOpt) {
+            try {
                 int64_t now = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
                 db_->saveAuthTokens(
                     clientOpt->id,
@@ -269,13 +313,13 @@ public:
                     now + Config::JWT_REFRESH_EXPIRY_SECONDS
                 );
             }
-        }
-        catch (const std::exception& e) {
-            std::cerr << "generateTokens DB error: " << e.what() << std::endl;
+            catch (const std::exception& e) {
+                std::cerr << "generateTokens DB error: " << e.what() << std::endl;
+            }
         }
         return { accessToken, refreshToken };
     }
-       
+
     std::optional<std::string> verifyJWT(const std::string& token) {
         // Разбиваем на части
         size_t first_dot = token.find('.');
@@ -313,5 +357,31 @@ public:
         // Извлекаем phone
         if (!payload.contains("phone") || !payload["phone"].is_string()) return std::nullopt;
         return payload["phone"].get<std::string>();
+    }
+
+    // =========================================================================
+    // НОВЫЙ МЕТОД: ГЕНЕРАЦИЯ СЛУЧАЙНОГО ПАРОЛЯ ДЛЯ ТОВАРОВЕДА/ДИРЕКТОРА.
+    // Использует криптографически стойкий RAND_bytes (OpenSSL), который
+    // уже применяется в generateTOTPSecret. Потокобезопасен: RAND_bytes
+    // является потокобезопасным в OpenSSL 1.1+.
+    //
+    // Формат: 10 символов из алфавита без неоднозначных символов
+    // (исключены 0, O, 1, l, I для удобства ручного ввода).
+    // =========================================================================
+    std::string generateRandomPassword(int length = 10) {
+        static const char charset[] =
+            "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+        std::vector<unsigned char> bytes(length);
+        if (RAND_bytes(bytes.data(), length) != 1) {
+            // Fallback не требуется: при ошибке RAND_bytes бросаем исключение,
+            // вызывающий код обработает его как ошибку регистрации.
+            throw std::runtime_error("RAND_bytes failed during password generation");
+        }
+        std::string password;
+        password.reserve(length);
+        for (int i = 0; i < length; i++) {
+            password += charset[bytes[i] % (sizeof(charset) - 1)];
+        }
+        return password;
     }
 };
