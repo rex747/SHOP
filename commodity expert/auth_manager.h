@@ -47,6 +47,7 @@ private:
     // структура авторизации
     std::optional<AuthToken> m_token;
     std::string m_phone;  // храним в UTF-8
+    std::string m_role;   // роль пользователя в формате "client"/"worker"/"director"
     bool m_isLoggedIn = false;
     int m_clientId = 0;
     std::wstring m_fullName;
@@ -167,6 +168,7 @@ public:
     void logout() {
         m_token.reset();
         m_phone.clear();
+		m_role.clear(); 
         m_isLoggedIn = false;
         m_clientId = 0;
         m_fullName.clear();
@@ -191,6 +193,15 @@ public:
     bool isLoggedIn() const { return m_isLoggedIn; }
     int getClientId() const { return m_clientId; }
     std::wstring getFullName() const { return m_fullName; }
+
+    // ---- доступ к роли пользователя (для main.cpp и director_window.h) ----
+    void setRole(const std::string& role) {
+        m_role = role;
+        g_logger.info(L"AuthManager::setRole: role=" + utf8_to_wstring(role));
+    }
+    std::wstring getRole() const {
+        return utf8_to_wstring(m_role);
+    }
 
     // ---- МЕТОДЫ ДЛЯ ОТСЛЕЖИВАНИЯ ПОПЫТКИ ВХОДА ----
     void setLoginAttempted(bool attempted, const std::string& phone = "") {

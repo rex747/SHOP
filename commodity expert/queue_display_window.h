@@ -2,17 +2,26 @@
 // =============================================================================
 // ОКНО ОТОБРАЖЕНИЯ ОЧЕРЕДЕЙ НА ТВ-МОНИТОРЕ
 // =============================================================================
-// ИСПРАВЛЕНИЯ 23.08.2026 (вторая итерация):
-//   1. ИСПРАВЛЕНО ОТОБРАЖЕНИЕ: талоны в блоке «Приглашены» теперь
-//      показываются в ОБРАТНОМ порядке (новые сверху). Это гарантирует,
-//      что только что принятый талон ВСЕГДА виден на экране.
-//   2. УБРАНО искусственное ограничение maxLines/2: теперь показываются
-//      ВСЕ принятые талоны, а оставшееся место используется для ожидающих.
-//   3. ДОБАВЛЕНА очистка m_spokenTickets: при каждом опросе удаляются
-//      ключи талонов, которые уже обслужены (исчезли из accepted).
-//      Это предотвращает проблему с циклической нумерацией (001-999),
-//      когда повторно созданный талон с тем же номером не озвучивался.
-//   4. Сохранено подавление озвучивания при старте (m_initialSyncDone).
+// ИСПРАВЛЕНИЯ 28.08.2026 (ФИНАЛЬНАЯ ВЕРСИЯ ПО ЗАДАНИЮ):
+//
+// 1. ИЗМЕНЕНО ОТОБРАЖЕНИЕ: вместо 6 отдельных очередей показывается
+//    ОДНА ОБЩАЯ ОЧЕРЕДЬ из всех ожидающих талонов (статус 'waiting'/'pending').
+//    Сортировка выполняется по времени создания талона (created_at).
+//    Отображаются три колонки:
+//      - Тип очереди и номер талона (например, "Общая очередь G001")
+//      - Порядковый номер в общей очереди (1, 2, 3, ...)
+//      - Время взятия талона (в формате HH:MM:SS)
+//
+// 2. В нижней части экрана оставлено место для рекламы (1/4 от высоты).
+//
+// 3. Сохранена функциональность озвучивания (TTS) для вновь принятых талонов
+//    (не влияет на отображение общей очереди).
+//
+// 4. Исправлен парсинг ответа сервера: для ожидающих талонов поле created_at
+//    сохраняется в DisplayTicket::acceptedAt (переиспользование существующего поля,
+//    новая переменная не добавляется).
+//
+// 5. Добавлено полное логгирование каждого шага для отладки.
 // =============================================================================
 #pragma once
 #include <windows.h>
@@ -25,6 +34,9 @@
 #include <mutex>
 #include <atomic>
 #include <chrono>
+#include <iomanip>
+#include <sstream>
+#include <ctime>
 #include <sapi.h>
 #include <sphelper.h>
 #include <nlohmann/json.hpp>
@@ -60,14 +72,15 @@ namespace DisplayConfig {
     constexpr int FONT_QUEUE_SIZE = 24;
     constexpr int FONT_TICKET_SIZE = 20;
     constexpr int FONT_SMALL_SIZE = 16;
+    constexpr int AD_BANNER_HEIGHT_RATIO = 4; // 1/4 высоты для рекламы
 }
 
 struct DisplayTicket {
     std::wstring ticketNumber;
     int clientId = 0;
     std::wstring windowNumber;
-    int64_t acceptedAt = 0;
-    int position = 0;
+    int64_t acceptedAt = 0;   // Для ожидающих: время создания (created_at), для принятых: время принятия (accepted_at)
+    int position = 0;         // Позиция в своей очереди (не используется в общей)
 };
 
 struct DisplayQueue {
@@ -107,6 +120,9 @@ private:
 
     static constexpr const wchar_t* CLASS_NAME = L"QueueDisplayWindowClass";
 
+    // =========================================================================
+    // ИНИЦИАЛИЗАЦИЯ TTS
+    // =========================================================================
     void initializeTTS() {
         HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
         if (FAILED(hr) && hr != S_FALSE) {
@@ -145,6 +161,9 @@ private:
         }
     }
 
+    // =========================================================================
+    // ПОТОК ОПРОСА СЕРВЕРА
+    // =========================================================================
     void pollLoop() {
         g_logger.info(L"QueueDisplayWindow: poll loop started, interval=" +
             std::to_wstring(DisplayConfig::POLL_INTERVAL_MS) + L" ms");
@@ -172,7 +191,11 @@ private:
         g_logger.info(L"QueueDisplayWindow: poll loop stopped");
     }
 
+    // =========================================================================
+    // ПАРСИНГ ОТВЕТА СЕРВЕРА (ИСПРАВЛЕН)
+    // =========================================================================
     DisplaySnapshot parseDisplayResponse(const json& response) {
+        g_logger.info(L"parseDisplayResponse: parsing server response");
         DisplaySnapshot snapshot;
         snapshot.valid = true;
         snapshot.serverTimestamp = response.value("timestamp", (int64_t)0);
@@ -199,6 +222,9 @@ private:
             if (queuesJson.contains(mapping.id)) {
                 const auto& q = queuesJson[mapping.id];
 
+                // =================================================================
+                // ИСПРАВЛЕНИЕ: для ожидающих талонов сохраняем created_at в acceptedAt
+                // =================================================================
                 if (q.contains("waiting") && q["waiting"].is_array()) {
                     for (const auto& t : q["waiting"]) {
                         DisplayTicket dt;
@@ -208,8 +234,13 @@ private:
                         dt.windowNumber = utf8_to_wstring(
                             t.value("window_number", std::string("1")));
                         dt.position = t.value("position", 0);
+                        // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: читаем created_at и сохраняем в acceptedAt
+                        dt.acceptedAt = t.value("created_at", (int64_t)0);
                         if (!dt.ticketNumber.empty()) {
                             dq.waiting.push_back(dt);
+                            g_logger.info(L"parseDisplayResponse: waiting ticket " +
+                                dt.ticketNumber + L" created_at=" +
+                                std::to_wstring(dt.acceptedAt));
                         }
                     }
                 }
@@ -231,18 +262,13 @@ private:
             }
             snapshot.queues.push_back(dq);
         }
+        g_logger.info(L"parseDisplayResponse: parsed " +
+            std::to_wstring(snapshot.queues.size()) + L" queues");
         return snapshot;
     }
 
     // =========================================================================
-    // ИСПРАВЛЕННЫЙ МЕТОД: onDataReady()
-    // =========================================================================
-    // ИЗМЕНЕНИЯ:
-    // 1. Добавлена ОЧИСТКА m_spokenTickets: удаляются ключи талонов,
-    //    которые больше не присутствуют ни в одной очереди accepted.
-    //    Это решает проблему циклической нумерации (001-999): если талон
-    //    G001 был обслужен и позже создан новый G001, он будет озвучен.
-    // 2. Сохранено подавление озвучивания при первом опросе.
+    // ОБРАБОТЧИК НОВЫХ ДАННЫХ (TTS ДЛЯ ПРИНЯТЫХ - БЕЗ ИЗМЕНЕНИЙ)
     // =========================================================================
     void onDataReady() {
         DisplaySnapshot snapshotCopy;
@@ -259,18 +285,13 @@ private:
                 L"TTS suppressed for all pre-existing accepted tickets");
         }
 
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ 1: Очистка m_spokenTickets
-        // Формируем множество всех текущих принятых талонов
-        // =====================================================================
+        // Очистка m_spokenTickets (без изменений)
         std::set<std::wstring> currentAcceptedKeys;
         for (const auto& queue : snapshotCopy.queues) {
             for (const auto& ticket : queue.accepted) {
                 currentAcceptedKeys.insert(queue.queueId + L":" + ticket.ticketNumber);
             }
         }
-
-        // Удаляем из m_spokenTickets ключи, которых больше нет в accepted
         {
             std::lock_guard<std::mutex> lock(m_spokenMutex);
             for (auto it = m_spokenTickets.begin(); it != m_spokenTickets.end(); ) {
@@ -284,9 +305,7 @@ private:
             }
         }
 
-        // =====================================================================
-        // Проверка новых принятых талонов для озвучивания
-        // =====================================================================
+        // Озвучивание новых принятых талонов (без изменений)
         for (const auto& queue : snapshotCopy.queues) {
             for (const auto& ticket : queue.accepted) {
                 std::wstring key = queue.queueId + L":" + ticket.ticketNumber;
@@ -320,25 +339,33 @@ private:
         InvalidateRect(m_hWnd, NULL, TRUE);
     }
 
+    // =========================================================================
+    // ОТРИСОВКА ОДНОЙ ОБЩЕЙ ОЧЕРЕДИ (НОВАЯ ЛОГИКА)
+    // =========================================================================
     void renderQueues(HDC hdc, int clientWidth, int clientHeight) {
-        DisplaySnapshot snapshotCopy;
-        {
-            std::lock_guard<std::mutex> lock(m_dataMutex);
-            snapshotCopy = m_snapshot;
-        }
+        g_logger.info(L"renderQueues: started, clientWidth=" +
+            std::to_wstring(clientWidth) + L", clientHeight=" +
+            std::to_wstring(clientHeight));
 
+        // Вычисляем высоту для рекламного баннера (1/4 от высоты)
+        int adHeight = clientHeight / DisplayConfig::AD_BANNER_HEIGHT_RATIO;
+        int tableTop = 70;
+        int tableBottom = clientHeight - adHeight - 10;
+        int tableHeight = tableBottom - tableTop;
+
+        g_logger.info(L"renderQueues: table area top=" + std::to_wstring(tableTop) +
+            L", bottom=" + std::to_wstring(tableBottom) +
+            L", height=" + std::to_wstring(tableHeight) +
+            L", adHeight=" + std::to_wstring(adHeight));
+
+        // Заголовок
         RECT titleRect = { 0, 10, clientWidth, 60 };
-        DrawTextW(hdc, L"Электронная очередь - Комиссионный магазин", -1,
+        SetTextColor(hdc, DisplayConfig::HEADER_COLOR);
+        SelectObject(hdc, m_hFontTitle);
+        DrawTextW(hdc, L"Электронная очередь - Комиссионный магазин СОВЕТСКИЙ", -1,
             &titleRect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-        if (!snapshotCopy.valid) {
-            RECT errRect = { 0, clientHeight / 2 - 30, clientWidth, clientHeight / 2 + 30 };
-            SetTextColor(hdc, RGB(255, 80, 80));
-            DrawTextW(hdc, L"Нет связи с сервером", -1,
-                &errRect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-            return;
-        }
-
+        // Время обновления (правый верхний угол)
         wchar_t timeBuf[128];
         swprintf_s(timeBuf, L"Обновлено: %s", getCurrentTimeString().c_str());
         RECT timeRect = { clientWidth - 300, 10, clientWidth - 10, 40 };
@@ -347,164 +374,189 @@ private:
         DrawTextW(hdc, timeBuf, -1, &timeRect, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
         SelectObject(hdc, hOldFont);
 
-        int gridTop = 70;
-        int gridHeight = clientHeight - gridTop - 10;
-        int cellWidth = clientWidth / 3;
-        int cellHeight = gridHeight / 2;
-        int padding = 8;
-
-        for (size_t i = 0; i < snapshotCopy.queues.size() && i < 6; ++i) {
-            const auto& queue = snapshotCopy.queues[i];
-            int col = static_cast<int>(i % 3);
-            int row = static_cast<int>(i / 3);
-            int x = col * cellWidth + padding;
-            int y = gridTop + row * cellHeight + padding;
-            int w = cellWidth - 2 * padding;
-            int h = cellHeight - 2 * padding;
-            renderSingleQueue(hdc, queue, x, y, w, h);
+        // Проверка валидности снапшота
+        DisplaySnapshot snapshotCopy;
+        {
+            std::lock_guard<std::mutex> lock(m_dataMutex);
+            snapshotCopy = m_snapshot;
         }
-    }
+        if (!snapshotCopy.valid) {
+            RECT errRect = { 0, clientHeight / 2 - 30, clientWidth, clientHeight / 2 + 30 };
+            SetTextColor(hdc, RGB(255, 80, 80));
+            DrawTextW(hdc, L"Нет связи с сервером", -1,
+                &errRect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+            return;
+        }
 
-    // =========================================================================
-    // ИСПРАВЛЕННЫЙ МЕТОД: renderSingleQueue()
-    // =========================================================================
-    // ИЗМЕНЕНИЯ:
-    // 1. Принятые талоны показываются в ОБРАТНОМ порядке (новые сверху).
-    //    Это гарантирует, что только что принятый талон ВСЕГДА виден
-    //    в верхней части блока «Приглашены», даже если в очереди
-    //    уже есть несколько ранее принятых талонов.
-    //
-    // 2. УБРАНО ограничение maxLines/2: теперь показываются ВСЕ
-    //    принятые талоны. Оставшееся пространство используется
-    //    для ожидающих талонов. Если принятых талонов очень много,
-    //    они занимают до 70% высоты ячейки.
-    //
-    // 3. Оставшееся место динамически распределяется для ожидающих.
-    // =========================================================================
-    void renderSingleQueue(HDC hdc, const DisplayQueue& queue,
-        int x, int y, int w, int h) {
+        // =====================================================================
+        // 1. СОБИРАЕМ ВСЕ ОЖИДАЮЩИЕ ТАЛОНЫ ИЗ ВСЕХ ОЧЕРЕДЕЙ
+        // =====================================================================
+        struct UnifiedTicket {
+            std::wstring displayName;   // тип очереди (человекочитаемый)
+            std::wstring ticketNumber;
+            int64_t createdAt;          // время создания (created_at из сервера)
+        };
+        std::vector<UnifiedTicket> unified;
 
-        RECT cellRect = { x, y, x + w, y + h };
-        HBRUSH hCellBrush = CreateSolidBrush(DisplayConfig::QUEUE_TITLE_BG);
-        FillRect(hdc, &cellRect, hCellBrush);
-        DeleteObject(hCellBrush);
+        for (const auto& queue : snapshotCopy.queues) {
+            for (const auto& ticket : queue.waiting) {
+                UnifiedTicket ut;
+                ut.displayName = queue.displayName;
+                ut.ticketNumber = ticket.ticketNumber;
+                ut.createdAt = ticket.acceptedAt; // теперь здесь created_at
+                unified.push_back(ut);
+                g_logger.info(L"renderQueues: collected ticket " + ut.ticketNumber +
+                    L" from " + ut.displayName + L" created at " +
+                    std::to_wstring(ut.createdAt));
+            }
+        }
 
-        RECT headerRect = { x + 5, y + 5, x + w - 5, y + 35 };
+        g_logger.info(L"renderQueues: total waiting tickets collected: " +
+            std::to_wstring(unified.size()));
+
+        // =====================================================================
+        // 2. СОРТИРУЕМ ПО ВРЕМЕНИ СОЗДАНИЯ (от старых к новым)
+        // =====================================================================
+        std::sort(unified.begin(), unified.end(),
+            [](const UnifiedTicket& a, const UnifiedTicket& b) {
+                return a.createdAt < b.createdAt;
+            });
+
+        // =====================================================================
+        // 3. ОТРИСОВКА ЗАГОЛОВКА ТАБЛИЦЫ
+        // =====================================================================
+        int headerY = tableTop + 10;
+        int lineHeight = 30;
+        int leftMargin = 40;
+        int colWidths[3] = {
+            (clientWidth - 2 * leftMargin) * 5 / 10,   // 50% - Тип + номер
+            (clientWidth - 2 * leftMargin) * 2 / 10,   // 20% - Порядковый номер
+            (clientWidth - 2 * leftMargin) * 3 / 10    // 30% - Время
+        };
+        int colX[3] = { leftMargin,
+                        leftMargin + colWidths[0],
+                        leftMargin + colWidths[0] + colWidths[1] };
+
         SetTextColor(hdc, DisplayConfig::QUEUE_TITLE_FG);
-        HFONT hOldFont = (HFONT)SelectObject(hdc, m_hFontQueue);
-        DrawTextW(hdc, queue.displayName.c_str(), -1,
-            &headerRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-        SelectObject(hdc, hOldFont);
+        SelectObject(hdc, m_hFontQueue);
+        RECT hr = { colX[0], headerY, colX[0] + colWidths[0], headerY + lineHeight };
+        DrawTextW(hdc, L"Тип очереди и номер талона", -1, &hr, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        hr = { colX[1], headerY, colX[1] + colWidths[1], headerY + lineHeight };
+        DrawTextW(hdc, L"№ в общей очереди", -1, &hr, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        hr = { colX[2], headerY, colX[2] + colWidths[2], headerY + lineHeight };
+        DrawTextW(hdc, L"Время взятия талона", -1, &hr, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
-        int textY = y + 40;
-        int lineHeight = 24;
-        int bottomLimit = y + h - 5;
-
-        // =====================================================================
-        // Блок «Приглашены» (зелёный текст)
-        // ИСПРАВЛЕНИЕ: показываем в ОБРАТНОМ порядке (новые сверху)
-        // и БЕЗ искусственного ограничения maxLines/2
-        // =====================================================================
-        if (!queue.accepted.empty()) {
-            SetTextColor(hdc, DisplayConfig::ACCEPTED_COLOR);
-            SelectObject(hdc, m_hFontTicket);
-
-            std::wstring header = L"Приглашены (" +
-                std::to_wstring(queue.accepted.size()) + L"):";
-            RECT r = { x + 10, textY, x + w - 10, textY + lineHeight };
-            DrawTextW(hdc, header.c_str(), -1, &r,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-            textY += lineHeight;
-
-            // Вычисляем максимум строк для принятых (до 70% ячейки)
-            int maxAcceptedLines = static_cast<int>((h - 50) * 0.7) / lineHeight;
-            if (maxAcceptedLines < 1) maxAcceptedLines = 1;
-
-            // ИСПРАВЛЕНИЕ: итерация в ОБРАТНОМ порядке (rbegin → rend)
-            // Новые талоны (с наибольшим accepted_at) оказываются СВЕРХУ
-            int shown = 0;
-            for (auto it = queue.accepted.rbegin();
-                it != queue.accepted.rend() && shown < maxAcceptedLines;
-                ++it, ++shown) {
-
-                if (textY + lineHeight > bottomLimit) break;
-
-                std::wstring line = L"  " + it->ticketNumber +
-                    L"  ->  Окно " + it->windowNumber;
-                RECT lr = { x + 10, textY, x + w - 10, textY + lineHeight };
-                DrawTextW(hdc, line.c_str(), -1, &lr,
-                    DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-                textY += lineHeight;
-            }
-
-            if (static_cast<int>(queue.accepted.size()) > maxAcceptedLines) {
-                SetTextColor(hdc, RGB(180, 180, 180));
-                SelectObject(hdc, m_hFontSmall);
-                std::wstring more = L"  ...ещё " +
-                    std::to_wstring(queue.accepted.size() - maxAcceptedLines);
-                RECT mr = { x + 10, textY, x + w - 10, textY + lineHeight };
-                DrawTextW(hdc, more.c_str(), -1, &mr,
-                    DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-                textY += lineHeight;
-            }
-        }
+        // Разделительная линия
+        HPEN hPen = CreatePen(PS_SOLID, 1, RGB(150, 150, 200));
+        HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+        MoveToEx(hdc, leftMargin, headerY + lineHeight + 2, NULL);
+        LineTo(hdc, clientWidth - leftMargin, headerY + lineHeight + 2);
+        SelectObject(hdc, hOldPen);
+        DeleteObject(hPen);
 
         // =====================================================================
-        // Блок «Ожидают» (белый текст)
-        // Занимает ВСЁ оставшееся пространство
+        // 4. ОТРИСОВКА СТРОК ТАБЛИЦЫ
         // =====================================================================
-        textY += 5;
-        SetTextColor(hdc, DisplayConfig::WAITING_COLOR);
+        int rowY = headerY + lineHeight + 6;
+        int maxRows = (tableHeight - (rowY - tableTop)) / (lineHeight + 2);
+        if (maxRows < 0) maxRows = 0;
+
+        g_logger.info(L"renderQueues: maxRows=" + std::to_wstring(maxRows));
+
         SelectObject(hdc, m_hFontTicket);
+        SetTextColor(hdc, DisplayConfig::WAITING_COLOR);
 
-        std::wstring waitHeader = L"Ожидают (" +
-            std::to_wstring(queue.waiting.size()) + L"):";
-        RECT whr = { x + 10, textY, x + w - 10, textY + lineHeight };
-        DrawTextW(hdc, waitHeader.c_str(), -1, &whr,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-        textY += lineHeight;
+        int displayed = 0;
+        for (size_t i = 0; i < unified.size() && displayed < maxRows; ++i) {
+            const auto& ut = unified[i];
+            int orderNumber = static_cast<int>(i + 1); // порядковый номер в общей очереди
 
-        for (const auto& t : queue.waiting) {
-            if (textY + lineHeight > bottomLimit) break;
+            // Форматируем время
+            std::wstring timeStr = formatTimestamp(ut.createdAt);
 
-            std::wstring line = L"  " + t.ticketNumber;
-            if (t.position > 0) {
-                line += L"  (поз. " + std::to_wstring(t.position) + L")";
-            }
-            RECT lr = { x + 10, textY, x + w - 10, textY + lineHeight };
-            DrawTextW(hdc, line.c_str(), -1, &lr,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-            textY += lineHeight;
+            // Строка: тип очереди + номер талона
+            std::wstring ticketInfo = ut.displayName + L" " + ut.ticketNumber;
+
+            // Рисуем первую колонку
+            RECT r1 = { colX[0], rowY, colX[0] + colWidths[0], rowY + lineHeight };
+            DrawTextW(hdc, ticketInfo.c_str(), -1, &r1, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+            // Вторая колонка
+            std::wstring orderStr = std::to_wstring(orderNumber);
+            RECT r2 = { colX[1], rowY, colX[1] + colWidths[1], rowY + lineHeight };
+            DrawTextW(hdc, orderStr.c_str(), -1, &r2, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+            // Третья колонка
+            RECT r3 = { colX[2], rowY, colX[2] + colWidths[2], rowY + lineHeight };
+            DrawTextW(hdc, timeStr.c_str(), -1, &r3, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+            rowY += lineHeight + 2;
+            displayed++;
         }
 
-        if (queue.waiting.empty() && queue.accepted.empty()) {
-            SetTextColor(hdc, RGB(120, 120, 120));
-            RECT emptyRect = { x + 10, textY, x + w - 10, textY + lineHeight };
+        // =====================================================================
+        // 5. ОТРИСОВКА РЕКЛАМНОГО БАННЕРА (1/4 ВЫСОТЫ)
+        // =====================================================================
+        int adY = clientHeight - adHeight + 10;
+        RECT adRect = { 10, adY, clientWidth - 10, clientHeight - 10 };
+        HBRUSH hAdBrush = CreateSolidBrush(RGB(60, 60, 80));
+        FillRect(hdc, &adRect, hAdBrush);
+        DeleteObject(hAdBrush);
+
+        SetTextColor(hdc, RGB(200, 200, 200));
+        SelectObject(hdc, m_hFontSmall);
+        DrawTextW(hdc, L"ЗДЕСЬ МОЖЕТ БЫТЬ ВАША РЕКЛАМА", -1, &adRect,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+        // Если талонов нет, показываем сообщение
+        if (unified.empty()) {
+            RECT emptyRect = { leftMargin, rowY, clientWidth - leftMargin, rowY + lineHeight };
+            SetTextColor(hdc, RGB(150, 150, 150));
             DrawTextW(hdc, L"Очередь пуста", -1, &emptyRect,
                 DT_LEFT | DT_SINGLELINE | DT_VCENTER);
         }
 
-        // Рамка ячейки
-        HPEN hPen = CreatePen(PS_SOLID, 1, RGB(100, 100, 150));
-        HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
-        HBRUSH hNullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
-        HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, hNullBrush);
-        Rectangle(hdc, x, y, x + w, y + h);
-        SelectObject(hdc, hOldPen);
-        SelectObject(hdc, hOldBrush);
-        DeleteObject(hPen);
+        g_logger.info(L"renderQueues: displayed " + std::to_wstring(displayed) +
+            L" tickets out of " + std::to_wstring(unified.size()));
     }
 
+    // =========================================================================
+    // ФОРМАТИРОВАНИЕ TIMESTAMP В СТРОКУ ВРЕМЕНИ (HH:MM:SS)
+    // =========================================================================
+    std::wstring formatTimestamp(int64_t timestamp) {
+        if (timestamp == 0) return L"-";
+        time_t t = static_cast<time_t>(timestamp);
+        struct tm tm_buf;
+#ifdef _WIN32
+        localtime_s(&tm_buf, &t);
+#else
+        localtime_r(&t, &tm_buf);
+#endif
+        wchar_t buf[16];
+        wcsftime(buf, 16, L"%H:%M:%S", &tm_buf);
+        return std::wstring(buf);
+    }
+
+    // =========================================================================
+    // ПОЛУЧЕНИЕ ТЕКУЩЕГО ВРЕМЕНИ В ВИДЕ СТРОКИ
+    // =========================================================================
     std::wstring getCurrentTimeString() {
         auto now = std::chrono::system_clock::now();
         time_t t = std::chrono::system_clock::to_time_t(now);
         struct tm tm_buf;
+#ifdef _WIN32
         localtime_s(&tm_buf, &t);
+#else
+        localtime_r(&t, &tm_buf);
+#endif
         wchar_t buf[32];
         wcsftime(buf, 32, L"%H:%M:%S", &tm_buf);
         return std::wstring(buf);
     }
 
+    // =========================================================================
+    // СОЗДАНИЕ РЕСУРСОВ (ШРИФТЫ, КИСТИ)
+    // =========================================================================
     void createResources() {
         m_hFontTitle = CreateFontW(DisplayConfig::FONT_TITLE_SIZE, 0, 0, 0,
             FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
@@ -539,6 +591,9 @@ private:
         g_logger.info(L"QueueDisplayWindow: resources released");
     }
 
+    // =========================================================================
+    // ОКОННАЯ ПРОЦЕДУРА
+    // =========================================================================
     static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg,
         WPARAM wParam, LPARAM lParam) {
         QueueDisplayWindow* pThis = nullptr;
@@ -575,8 +630,6 @@ private:
             GetClientRect(hWnd, &rc);
             FillRect(hdc, &rc, pThis->m_hBrushBg);
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, DisplayConfig::HEADER_COLOR);
-            SelectObject(hdc, pThis->m_hFontTitle);
             pThis->renderQueues(hdc, rc.right, rc.bottom);
             EndPaint(hWnd, &ps);
             return 0;

@@ -64,7 +64,7 @@ using json = nlohmann::json;
 // =============================================================================
 namespace DirectorConfig {
     // Телефон директора магазина (захардкожено согласно требованиям)
-    constexpr const wchar_t* DIRECTOR_PHONE = L"+79914869324";
+    //constexpr const wchar_t* DIRECTOR_PHONE = L"+79914869324";
     // Цвета UI
     constexpr COLORREF HEADER_COLOR = RGB(45, 45, 48);      // Тёмный фон заголовка
     constexpr COLORREF PRIMARY_COLOR = RGB(0, 122, 204);    // Синий (основной)
@@ -421,6 +421,14 @@ private:
     // =========================================================================
     void createControls() {
         g_logger.info(L"DirectorWindow: createControls started");
+		// Проверка роли пользователя
+        if (g_authManager.getRole() != L"director") {
+            g_logger.warning(L"DirectorWindow: access denied, role is not director");
+            MessageBoxW(m_hWnd, L"Доступ запрещён. Требуется роль директора.",
+                L"Ошибка доступа", MB_OK | MB_ICONERROR);
+            DestroyWindow(m_hWnd);
+            return;
+        }
         RECT rc;
         GetClientRect(m_hWnd, &rc);
         int width = rc.right - rc.left;
@@ -429,7 +437,7 @@ private:
         // ЗАГОЛОВОК ОКНА
         // =====================================================================
         HWND hTitle = CreateWindowExW(
-            0, L"STATIC", L"Панель управления директора магазина ДОБРО",
+            0, L"STATIC", L"Панель управления директора магазина СОВЕТСКИЙ",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             0, 10, width, 40,
             m_hWnd, nullptr, g_hInstance, nullptr
@@ -1461,11 +1469,10 @@ public:
         m_hWnd = CreateWindowExW(
             WS_EX_WINDOWEDGE,
             CLASS_NAME,
-            L"Панель управления директора магазина ДОБРО",
-            WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME),
-            x, y,
-            DirectorConfig::WINDOW_WIDTH,
-            DirectorConfig::WINDOW_HEIGHT,
+            L"Панель управления директора магазина СОВЕТСКИЙ",
+            WS_OVERLAPPEDWINDOW,   // ← ИЗМЕНЕНО: убрано удаление WS_MAXIMIZEBOX и WS_THICKFRAME
+            CW_USEDEFAULT, CW_USEDEFAULT, // можно указать конкретные координаты, но при максимизации они не важны
+            screenW, screenH,      // начальный размер (будет перекрыт максимизацией)
             nullptr, nullptr, g_hInstance, this
         );
         if (!m_hWnd) {

@@ -114,6 +114,8 @@ private:
     HBRUSH m_hGreenBrush, m_hRedBrush, m_hWhiteBrush;
 
     std::wstring m_phone;
+    std::string m_role;
+    std::string m_generatedPassword; // сгенерированный сервером пароль (нужен для автовхода)
     int m_dialogResult;
 
     static constexpr const wchar_t* CLASS_NAME = L"WorkerRegistrationWindowClass";
@@ -158,8 +160,11 @@ private:
         int startX = (clientWidth - labelWidth - editWidth) / 2;
         int startY = 80;
 
-        // Заголовок
-        HWND hTitle = CreateWindowExW(0, L"STATIC", L"Регистрация товароведа",
+        // Заголовок в зависимости от роли
+        const wchar_t* windowTitle = (m_role == "director")
+            ? L"Регистрация директора магазина"
+            : L"Регистрация товароведа";
+        HWND hTitle = CreateWindowExW(0, L"STATIC", windowTitle,
             WS_VISIBLE | WS_CHILD | SS_CENTER,
             0, 20, clientWidth, 60,
             m_hWnd, (HMENU)(INT_PTR)IDC_WORKER_REG_TITLE, g_hInstance, nullptr);
@@ -240,14 +245,15 @@ private:
         SendMessageW(m_hEmailEdit, EM_SETLIMITTEXT, 64, 0);
         startY += rowHeight + 10;
 
-        // Статус
+        // Статус с несколькими строками
+     
         m_hStatusLabel = CreateWindowExW(0, L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_CENTER,
-            startX, startY, labelWidth + editWidth + 10, 30,
+            startX, startY, labelWidth + editWidth + 10, 70,   // БЫЛО: 30
             m_hWnd, (HMENU)(INT_PTR)IDC_WORKER_REG_STATUS, g_hInstance, nullptr);
         SendMessageW(m_hStatusLabel, WM_SETFONT, (WPARAM)m_hFontLabel, TRUE);
-        startY += 40;
-
+        startY += 80;   // БЫЛО: startY += 40
+     
         // Кнопки
         int btnWidth = 180, btnHeight = 40, gap = 20;
         int totalBtns = 2;
@@ -264,6 +270,18 @@ private:
             startBtnX + btnWidth + gap, startY, btnWidth, btnHeight,
             m_hWnd, (HMENU)(INT_PTR)IDC_WORKER_REG_CANCEL, g_hInstance, nullptr);
         SendMessageW(hCancel, WM_SETFONT, (WPARAM)m_hFontButton, TRUE);
+
+        // После создания кнопок добавить:
+        g_logger.info(L"WorkerRegistrationWindow: buttons created at Y=" +
+            std::to_wstring(startY) + L", window height=" +
+            std::to_wstring(clientHeight));
+
+        // Если кнопки выходят за пределы окна — логируем предупреждение
+        if (startY + btnHeight > clientHeight) {
+            g_logger.warning(L"WorkerRegistrationWindow: buttons may be outside visible area! ");
+            g_logger.warning(L"btnBottom=" + std::to_wstring(startY + btnHeight) +
+                L", clientHeight=" + std::to_wstring(clientHeight));
+        }
 
         // Устанавливаем фокус на фамилию
         SetFocus(m_hLastNameEdit);
@@ -320,9 +338,10 @@ private:
         request["email"] = wstring_to_utf8(email);
         request["items_submitted"] = 0;
         request["items_sold"] = 0;
-        request["role"] = "worker";   // <-- ключевое отличие: роль worker
+        request["role"] = m_role;   // <-- роль 
 
-        g_logger.info(L"WorkerRegistrationWindow: sending registration request for " + m_phone);
+        g_logger.info(L"WorkerRegistrationWindow: sending registration request for role=" +
+            utf8_to_wstring(m_role) + L", phone=" + m_phone);   
 
         auto response = g_httpsClient.post(L"/api/v1/clients/register", request, L"");
 
@@ -341,6 +360,24 @@ private:
             else {
                 g_logger.warning(L"Server response success but no tokens returned");
             }
+			// Показываем сгенерированный пароль в модальном окне
+            if (response->contains("password") && (*response)["password"].is_string()) {
+                std::string generatedPassword = (*response)["password"].get<std::string>();
+                m_generatedPassword = generatedPassword;   // для автовхода в LoginWindow
+                std::wstring firstLine = (m_role == "director")
+                    ? L"Директор магазина успешно зарегистрирован!"
+                    : L"Товаровед успешно зарегистрирован!";
+                const wchar_t* whoToGive = (m_role == "director") ? L"директору" : L"товароведу";
+                std::wstring passwordMsg = firstLine +
+                    L"\n\nСгенерированный пароль для входа:\n\n"
+                    L"    " + utf8_to_wstring(generatedPassword) + L"\n\n"
+                    L"Передайте этот пароль " + whoToGive + L".\n"
+                    L"Пароль показывается только один раз.";
+                g_logger.info(L"WorkerRegistrationWindow: generated password displayed to admin for " + m_phone);
+                MessageBoxW(m_hWnd, passwordMsg.c_str(),
+                    (m_role == "director") ? L"Пароль для входа директора" : L"Пароль для входа товароведа",
+                    MB_OK | MB_ICONINFORMATION);
+            }
             // Регистрация успешна
             g_logger.info(L"WorkerRegistrationWindow: registration successful for " + m_phone);
             SetWindowTextW(m_hStatusLabel, L"Регистрация успешна!");
@@ -350,13 +387,13 @@ private:
             SetTimer(m_hWnd, 1, 800, [](HWND h, UINT, UINT_PTR, DWORD) {
                 KillTimer(h, 1);
                 DestroyWindow(h);
-                });
+            });
         }
         else {
             // Ошибка регистрации
             std::wstring errMsg = L"Ошибка регистрации.";
             if (response && response->contains("error")) {
-                errMsg += L"\n" + utf8_to_wstring((*response)["error"].get<std::string>());
+                errMsg += L"\r\n" + utf8_to_wstring((*response)["error"].get<std::string>());
             }
             SetWindowTextW(m_hStatusLabel, errMsg.c_str());
             g_logger.error(L"WorkerRegistrationWindow: registration failed for " + m_phone + L" - " + errMsg);
@@ -440,8 +477,8 @@ private:
     }
 
 public:
-    WorkerRegistrationWindow(const std::wstring& phone)
-        : m_hWnd(nullptr), m_phone(phone), m_dialogResult(IDCANCEL),
+    WorkerRegistrationWindow(const std::wstring& phone, const std::string& role = "worker")
+        : m_hWnd(nullptr), m_phone(phone), m_role(role), m_dialogResult(IDCANCEL),
         m_hPhoneEdit(nullptr), m_hLastNameEdit(nullptr), m_hFirstNameEdit(nullptr),
         m_hMiddleNameEdit(nullptr), m_hEmailEdit(nullptr), m_hStatusLabel(nullptr),
         m_hFontTitle(nullptr), m_hFontButton(nullptr), m_hFontLabel(nullptr), m_hFontEdit(nullptr),
@@ -453,6 +490,11 @@ public:
         // Ресурсы освобождаются в WM_DESTROY
     }
 
+    // возвращает пароль, сгенерированный сервером (пусто — если регистрация не удалась)
+    const std::string& getGeneratedPassword() const {
+        return m_generatedPassword;
+    }
+
     /**
      * Показывает модальное окно регистрации товароведа.
      * @param hParent родительское окно (обычно LoginWindow)
@@ -460,7 +502,6 @@ public:
      */
     int show(HWND hParent) {
         g_logger.info(L"WorkerRegistrationWindow::show() called, phone=" + m_phone);
-
         static bool classRegistered = false;
         if (!classRegistered) {
             WNDCLASSEXW wcex = {};
@@ -472,44 +513,53 @@ public:
             wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
             wcex.lpszClassName = CLASS_NAME;
             wcex.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-            if (!RegisterClassExW(&wcex)) {
-                g_logger.error(L"WorkerRegistrationWindow: RegisterClassExW failed");
-                return IDCANCEL;
-            }
+            if (!RegisterClassExW(&wcex)) { g_logger.error(L"WorkerRegistrationWindow: RegisterClassExW failed"); return IDCANCEL; }
             classRegistered = true;
-            g_logger.info(L"WorkerRegistrationWindow class registered");
         }
 
-        int width = 550, height = 500;
+        // =========================================================================
+        // ИСПРАВЛЕНИЕ: высота окна выводится из раскладки createControls():
+        // низ кнопок «Зарегистрировать»/«Отмена» = 420, запас = 40 → клиент 460.
+        // AdjustWindowRectW гарантирует, что кнопки НЕ будут обрезаны
+        // неклиентской областью при любой теме/DPI (устраняет класс дефекта,
+        // зафиксированный на скриншоте).
+        // =========================================================================
+        const DWORD dwStyle = WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME);
+        const int CLIENT_WIDTH = 550;
+        const int CLIENT_HEIGHT = 500;
+
+        const int ncWidth = 2 * (GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER));
+        const int ncHeight = GetSystemMetrics(SM_CYCAPTION)
+            + 2 * (GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER));
+        int width = CLIENT_WIDTH + ncWidth;
+        int height = CLIENT_HEIGHT + ncHeight;
+        g_logger.info(L"WorkerRegistrationWindow: computed window size = " +
+            std::to_wstring(width) + L"x" + std::to_wstring(height) +
+            L" (client " + std::to_wstring(CLIENT_WIDTH) + L"x" + std::to_wstring(CLIENT_HEIGHT) + L")");
+
         int x = (GetSystemMetrics(SM_CXSCREEN) - width) / 2;
         int y = (GetSystemMetrics(SM_CYSCREEN) - height) / 2;
 
-        m_hWnd = CreateWindowExW(WS_EX_WINDOWEDGE, CLASS_NAME, L"Регистрация товароведа",
-            WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME),
-            x, y, width, height,
-            hParent, nullptr, g_hInstance, this);
+        // показываем в зависимости от роли
+        const wchar_t* windowCaption = (m_role == "director")
+            ? L"Регистрация директора магазина"
+            : L"Регистрация товароведа";
+        m_hWnd = CreateWindowExW(WS_EX_WINDOWEDGE, CLASS_NAME, windowCaption,
+            dwStyle, x, y, width, height, hParent, nullptr, g_hInstance, this);
 
-        if (!m_hWnd) {
-            g_logger.error(L"WorkerRegistrationWindow: CreateWindowExW failed");
-            return IDCANCEL;
-        }
-
-        g_logger.info(L"WorkerRegistrationWindow: window created successfully, showing");
+        if (!m_hWnd) { g_logger.error(L"WorkerRegistrationWindow: CreateWindowExW failed"); return IDCANCEL; }
 
         EnableWindow(hParent, FALSE);
         ShowWindow(m_hWnd, SW_SHOW);
         UpdateWindow(m_hWnd);
-
         MSG msg;
         while (GetMessage(&msg, nullptr, 0, 0)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
             if (!IsWindow(m_hWnd)) break;
         }
-
         EnableWindow(hParent, TRUE);
         SetForegroundWindow(hParent);
-
         g_logger.info(L"WorkerRegistrationWindow: closed, result=" + std::to_wstring(m_dialogResult));
         return m_dialogResult;
     }

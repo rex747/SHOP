@@ -1,4 +1,4 @@
-﻿// login_window.h (ПОЛНАЯ ПРОДАКШН-ВЕРСИЯ С ИСПРАВЛЕНИЯМИ ДИАЛОГА И АВТОВХОДА)
+﻿// login_window.h (МОДИФИЦИРОВАННАЯ ВЕРСИЯ С ПОДДЕРЖКОЙ ПАРОЛЕЙ)
 #pragma once
 #include <windows.h>
 #include <commctrl.h>
@@ -26,36 +26,54 @@ private:
     enum KeyIDs {
         ID_KEY_1 = 1000, ID_KEY_2, ID_KEY_3, ID_KEY_4, ID_KEY_5,
         ID_KEY_6, ID_KEY_7, ID_KEY_8, ID_KEY_9, ID_KEY_0,
-        ID_KEY_PLUS, ID_KEY_BACKSPACE, ID_KEY_CLEAR
+        ID_KEY_PLUS, ID_KEY_BACKSPACE, ID_KEY_CLEAR,
+        ID_KEY_MODE, // Переключение между телефоном и паролем
+        ID_KEY_CASE,    // переключение регистра (abc <-> ABC)
+        ID_KEY_DIGITS,  // переключение цифры <-> буквы (цель НЕ меняется)
+        // Буквы для пароля
+        ID_KEY_A = 1100, ID_KEY_B, ID_KEY_C, ID_KEY_D, ID_KEY_E,
+        ID_KEY_F, ID_KEY_G, ID_KEY_H, ID_KEY_I, ID_KEY_J,
+        ID_KEY_K, ID_KEY_L, ID_KEY_M, ID_KEY_N, ID_KEY_O,
+        ID_KEY_P, ID_KEY_Q, ID_KEY_R, ID_KEY_S, ID_KEY_T,
+        ID_KEY_U, ID_KEY_V, ID_KEY_W, ID_KEY_X, ID_KEY_Y, ID_KEY_Z
     };
+
     enum LoginResultCode {
         RESULT_NETWORK_ERROR = 0,
         RESULT_SUCCESS = 1,
         RESULT_NOT_FOUND = 2,
-		RESULT_BLOCKED = 3
+        RESULT_BLOCKED = 3,
+        RESULT_INVALID_PASSWORD = 4  // НОВЫЙ: неверный пароль
     };
 
     HWND m_hWnd;
     HWND m_hPhoneEdit;
+    HWND m_hPasswordEdit;  // поле для пароля
+    
     HWND m_hStatusLabel;
     HWND m_hSubmitBtn;
     std::vector<HWND> m_allKeyButtons;
     HFONT m_hFontTitle, m_hFontButton, m_hFontLabel, m_hFontEdit;
     HBRUSH m_hGreenBrush, m_hRedBrush, m_hWhiteBrush, m_hGrayBrush;
     WNDPROC m_origEditProc;
+    WNDPROC m_origPhoneProc, m_origPasswordProc;
     int m_resultCode;
     int m_clientId;
     std::wstring m_fullName;
     std::wstring m_normalizedPhone;
+    std::string m_enteredPassword;  // НОВОЕ: введенный пароль
     bool m_loginSuccess;
     std::atomic<bool> m_isAuthenticating;
+    bool m_passwordMode;  // режим ввода пароля (true) или телефона (false)
+    int m_keyLayout;      // раскладка: 0=цифры, 1=нижний регистр, 2=верхний регистр
+    static constexpr int KEYBOARD_START_Y = 190; // единая Y-координата клавиатуры
 
     static constexpr const wchar_t* ADMIN_PASSWORD = L"123";
     static constexpr int KEY_WIDTH = 80;
     static constexpr int KEY_HEIGHT = 60;
     static constexpr int KEY_SPACING = 8;
 
-    // ---- Оконная процедура для диалога ввода пароля ----
+    // ---- Оконная процедура для диалога ввода пароля администратора ----
     static LRESULT CALLBACK AdminPasswordDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
         switch (msg) {
         case WM_COMMAND: {
@@ -63,12 +81,10 @@ private:
             int code = HIWORD(wParam);
             if (code == BN_CLICKED) {
                 if (id == 2) { // OK
-                    // Получаем введённый пароль
                     HWND hEdit = GetDlgItem(hDlg, 1);
                     wchar_t pwd[64];
                     GetWindowTextW(hEdit, pwd, 64);
                     std::wstring entered = pwd;
-                    // Удаляем пробелы
                     size_t start = entered.find_first_not_of(L" \t\r\n");
                     size_t end = entered.find_last_not_of(L" \t\r\n");
                     if (start != std::wstring::npos && end != std::wstring::npos) {
@@ -79,9 +95,7 @@ private:
                     }
                     g_logger.info(L"AdminPasswordDialog: OK clicked, password length = " + std::to_wstring(entered.length()));
                     if (entered == ADMIN_PASSWORD) {
-                        // Пароль верен – сохраняем результат и закрываем диалог с IDOK
-                        SetWindowLongPtr(hDlg, GWLP_USERDATA, (LONG_PTR)1); // успех
-                        
+                        SetWindowLongPtr(hDlg, GWLP_USERDATA, (LONG_PTR)1);
                     }
                     else {
                         MessageBoxW(hDlg, L"Неверный пароль", L"Ошибка", MB_OK | MB_ICONERROR);
@@ -93,8 +107,7 @@ private:
                 }
                 else if (id == 3) { // Cancel
                     g_logger.info(L"AdminPasswordDialog: Cancel clicked");
-                    SetWindowLongPtr(hDlg, GWLP_USERDATA, (LONG_PTR)0); // отмена
-                    
+                    SetWindowLongPtr(hDlg, GWLP_USERDATA, (LONG_PTR)0);
                     return TRUE;
                 }
             }
@@ -102,15 +115,13 @@ private:
         }
         case WM_CLOSE: {
             g_logger.info(L"AdminPasswordDialog: WM_CLOSE received");
-            SetWindowLongPtr(hDlg, GWLP_USERDATA, (LONG_PTR)0); // отмена
-            //DestroyWindow(hDlg);
+            SetWindowLongPtr(hDlg, GWLP_USERDATA, (LONG_PTR)0);
             return TRUE;
         }
         }
         return DefWindowProcW(hDlg, msg, wParam, lParam);
     }
 
-    // ---- Остальные методы (без изменений) ----
     static LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         switch (msg) {
         case WM_CHAR: case WM_KEYDOWN: case WM_KEYUP:
@@ -133,10 +144,8 @@ private:
             g_logger.info(L"LoginWindow: WM_CREATE processed");
             return 0;
         }
-
         pThis = reinterpret_cast<LoginWindow*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
         if (!pThis) return DefWindowProcW(hWnd, msg, wParam, lParam);
-
         switch (msg) {
         case WM_COMMAND: pThis->onCommand(wParam); return 0;
         case WM_CTLCOLORBTN: return pThis->onCtlColorBtn((HDC)wParam, (HWND)lParam);
@@ -167,75 +176,151 @@ private:
         RECT rc; GetClientRect(m_hWnd, &rc);
         int clientWidth = rc.right - rc.left;
         int centerX = clientWidth / 2;
-        int startY = 60;
+        int startY = 20;
 
+        // Шрифты и кисти — без изменений (создаются здесь же, как в текущей версии)
         m_hFontTitle = CreateFontW(36, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
         m_hFontButton = CreateFontW(24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
         m_hFontLabel = CreateFontW(20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
         m_hFontEdit = CreateFontW(20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
-
         m_hGreenBrush = CreateSolidBrush(Config::PRIMARY_COLOR);
         m_hRedBrush = CreateSolidBrush(Config::BACK_BUTTON_COLOR);
         m_hWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
         m_hGrayBrush = CreateSolidBrush(RGB(80, 80, 80));
 
-        HWND hTitle = CreateWindowExW(0, L"STATIC", L"Вход в систему", WS_VISIBLE | WS_CHILD | SS_CENTER, centerX - 150, startY, 300, 60, m_hWnd, nullptr, g_hInstance, nullptr);
+        // 1) Заголовок (Y 20..70)
+        HWND hTitle = CreateWindowExW(0, L"STATIC", L"Вход в систему", WS_VISIBLE | WS_CHILD | SS_CENTER,
+            centerX - 150, startY, 300, 50, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(hTitle, WM_SETFONT, (WPARAM)m_hFontTitle, TRUE);
-        startY += 80;
+        startY += 60;                                   // = 80
 
-        HWND hLabel = CreateWindowExW(0, L"STATIC", L"Номер телефона:", WS_VISIBLE | WS_CHILD | SS_RIGHT, centerX - 200, startY, 180, 40, m_hWnd, nullptr, g_hInstance, nullptr);
+        // 2) Телефон (Y 80..120)
+        HWND hLabel = CreateWindowExW(0, L"STATIC", L"Номер телефона:", WS_VISIBLE | WS_CHILD | SS_RIGHT,
+            centerX - 200, startY, 180, 40, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(hLabel, WM_SETFONT, (WPARAM)m_hFontLabel, TRUE);
-
-        m_hPhoneEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL, centerX + 20, startY, 200, 40, m_hWnd, nullptr, g_hInstance, nullptr);
+        m_hPhoneEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL,
+            centerX + 20, startY, 200, 40, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hPhoneEdit, WM_SETFONT, (WPARAM)m_hFontEdit, TRUE);
         m_origEditProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(m_hPhoneEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(EditSubclassProc)));
         SetWindowLongPtrW(m_hPhoneEdit, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(m_origEditProc));
-        g_logger.info(L"LoginWindow: phone edit subclassed");
-        startY += 60;
+        startY += 50;                                   // = 130
 
-        m_hStatusLabel = CreateWindowExW(0, L"STATIC", L"", WS_VISIBLE | WS_CHILD | SS_CENTER, centerX - 200, startY, 400, 30, m_hWnd, nullptr, g_hInstance, nullptr);
+        // 3) Пароль (Y 130..170)
+        HWND hPwdLabel = CreateWindowExW(0, L"STATIC", L"Пароль:", WS_VISIBLE | WS_CHILD | SS_RIGHT,
+            centerX - 200, startY, 180, 40, m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hPwdLabel, WM_SETFONT, (WPARAM)m_hFontLabel, TRUE);
+        m_hPasswordEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL | ES_PASSWORD,
+            centerX + 20, startY, 200, 40, m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(m_hPasswordEdit, WM_SETFONT, (WPARAM)m_hFontEdit, TRUE);
+        startY += 60;                                   // = 190: клавиатура ПОСЛЕ полей
+
+        // 4) Клавиатура на фиксированной Y; резервируем МАКСИМУМ 5 рядов
+        //    (буквенная раскладка пароля = 5 рядов), чтобы статус и «Войти»
+        //    не зависели от текущей раскладки.
+        createKeyboard(centerX, KEYBOARD_START_Y);
+        startY = KEYBOARD_START_Y + 5 * (KEY_HEIGHT + KEY_SPACING);   // 190+340 = 530
+        startY += 8;                                                  // = 538
+        // 5) статус-метка под клавиатурой (Y 538..568)
+        m_hStatusLabel = CreateWindowExW(0, L"STATIC", L"", WS_VISIBLE | WS_CHILD | SS_CENTER,
+            centerX - 200, startY, 400, 30, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hStatusLabel, WM_SETFONT, (WPARAM)m_hFontLabel, TRUE);
-        startY += 50;
-
-        createKeyboard(centerX, startY);
-        startY += (4 * (KEY_HEIGHT + KEY_SPACING)) + 20;
-
-        m_hSubmitBtn = CreateWindowExW(0, L"BUTTON", L"Войти", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, centerX - 100, startY, 200, 50, m_hWnd, (HMENU)(INT_PTR)1, g_hInstance, nullptr);
+        startY += 40;                                                 // = 578
+        // 6) Кнопка «Войти» (Y 578..628)
+        m_hSubmitBtn = CreateWindowExW(0, L"BUTTON", L"Войти", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            centerX - 100, startY, 200, 50, m_hWnd, (HMENU)(INT_PTR)1, g_hInstance, nullptr);
         SendMessageW(m_hSubmitBtn, WM_SETFONT, (WPARAM)m_hFontButton, TRUE);
-        g_logger.info(L"LoginWindow: all controls created");
+        startY += 50;                                                 // = 628 — низ последней кнопки
+
+        g_logger.info(L"LoginWindow: layout complete, required client height=" + std::to_wstring(startY));
+        if (startY > (rc.bottom - rc.top)) {
+            g_logger.warning(L"LoginWindow: required height " + std::to_wstring(startY) +
+                L" exceeds current client height " + std::to_wstring(rc.bottom - rc.top) +
+                L" — window will be resized by show()");
+        }
     }
 
     void createKeyboard(int centerX, int startY) {
-        const int totalWidth = 4 * (KEY_WIDTH + KEY_SPACING) - KEY_SPACING;
-        const int startX = centerX - totalWidth / 2;
         struct KeyDef { int row, col; int id; const wchar_t* label; };
-        std::vector<KeyDef> keys = {
-            {0, 0, ID_KEY_1, L"1"}, {0, 1, ID_KEY_2, L"2"}, {0, 2, ID_KEY_3, L"3"}, {0, 3, ID_KEY_PLUS, L"+"},
-            {1, 0, ID_KEY_4, L"4"}, {1, 1, ID_KEY_5, L"5"}, {1, 2, ID_KEY_6, L"6"}, {1, 3, ID_KEY_BACKSPACE, L"⌫"},
-            {2, 0, ID_KEY_7, L"7"}, {2, 1, ID_KEY_8, L"8"}, {2, 2, ID_KEY_9, L"9"}, {2, 3, ID_KEY_CLEAR, L"✕"},
-            {3, 1, ID_KEY_0, L"0"}
-        };
+        // НОВОЕ: полные наборы обоих регистров (все 26 букв)
+        static const wchar_t* UPPER[26] = { L"A",L"B",L"C",L"D",L"E",L"F",L"G",L"H",L"I",L"J",L"K",L"L",L"M",
+            L"N",L"O",L"P",L"Q",L"R",L"S",L"T",L"U",L"V",L"W",L"X",L"Y",L"Z" };
+        static const wchar_t* LOWER[26] = { L"a",L"b",L"c",L"d",L"e",L"f",L"g",L"h",L"i",L"j",L"k",L"l",L"m",
+            L"n",L"o",L"p",L"q",L"r",L"s",L"t",L"u",L"v",L"w",L"x",L"y",L"z" };
+        int keyW = KEY_WIDTH, sp = KEY_SPACING, cols = 4;
+        std::vector<KeyDef> keys;
+
+        if (!m_passwordMode) {
+            // ЦЕЛЬ=ТЕЛЕФОН: прежняя цифровая сетка (поведение не меняется)
+            keys = {
+                {0,0,ID_KEY_1,L"1"},{0,1,ID_KEY_2,L"2"},{0,2,ID_KEY_3,L"3"},{0,3,ID_KEY_PLUS,L"+"},
+                {1,0,ID_KEY_4,L"4"},{1,1,ID_KEY_5,L"5"},{1,2,ID_KEY_6,L"6"},{1,3,ID_KEY_BACKSPACE,L"⌫"},
+                {2,0,ID_KEY_7,L"7"},{2,1,ID_KEY_8,L"8"},{2,2,ID_KEY_9,L"9"},{2,3,ID_KEY_CLEAR,L"✕"},
+                {3,1,ID_KEY_0,L"0"},
+                {3,3,ID_KEY_MODE,L"ABC"}        // переход к полю пароля
+            };
+        }
+        else if (m_keyLayout == 0) {
+            // ЦЕЛЬ=ПАРОЛЬ, РАСКЛАДКА=ЦИФРЫ: цифры идут В ПАРОЛЬ (курсор не прыгает)
+            keys = {
+                {0,0,ID_KEY_1,L"1"},{0,1,ID_KEY_2,L"2"},{0,2,ID_KEY_3,L"3"},{0,3,ID_KEY_BACKSPACE,L"⌫"},
+                {1,0,ID_KEY_4,L"4"},{1,1,ID_KEY_5,L"5"},{1,2,ID_KEY_6,L"6"},{1,3,ID_KEY_CLEAR,L"✕"},
+                {2,0,ID_KEY_7,L"7"},{2,1,ID_KEY_8,L"8"},{2,2,ID_KEY_9,L"9"},{2,3,ID_KEY_DIGITS,L"abc"},
+                {3,1,ID_KEY_0,L"0"},
+                {3,3,ID_KEY_MODE,L"Телефон"}    // явный переход к полю телефона
+            };
+        }
+        else {
+            // ЦЕЛЬ=ПАРОЛЬ, РАСКЛАДКА=БУКВЫ: ВСЕ 26 букв текущего регистра (7 колонок)
+            keyW = 56; sp = 5; cols = 7;
+            const wchar_t** set = (m_keyLayout == 2) ? UPPER : LOWER;
+            for (int i = 0; i < 26; ++i) {
+                keys.push_back({ i / 7, i % 7, ID_KEY_A + i, set[i] });
+            }
+            keys.push_back({ 3, 5, ID_KEY_BACKSPACE, L"⌫" });
+            keys.push_back({ 3, 6, ID_KEY_CLEAR, L"✕" });
+            keys.push_back({ 4, 0, ID_KEY_DIGITS, L"123" });                              // цифры БЕЗ смены цели
+            keys.push_back({ 4, 1, ID_KEY_CASE, (m_keyLayout == 2) ? L"abc" : L"ABC" });  // регистр
+            keys.push_back({ 4, 2, ID_KEY_MODE, L"Телефон" });                            // смена цели
+        }
+
+        const int totalWidth = cols * (keyW + sp) - sp;
+        const int startX = centerX - totalWidth / 2;
         for (const auto& k : keys) {
-            int x = startX + k.col * (KEY_WIDTH + KEY_SPACING);
+            int x = startX + k.col * (keyW + sp);
             int y = startY + k.row * (KEY_HEIGHT + KEY_SPACING);
-            HWND hBtn = CreateWindowExW(0, L"BUTTON", k.label, WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_NOTIFY, x, y, KEY_WIDTH, KEY_HEIGHT, m_hWnd, (HMENU)(INT_PTR)k.id, g_hInstance, nullptr);
+            HWND hBtn = CreateWindowExW(0, L"BUTTON", k.label,
+                WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_NOTIFY,
+                x, y, keyW, KEY_HEIGHT, m_hWnd, (HMENU)(INT_PTR)k.id, g_hInstance, nullptr);
             if (hBtn) {
                 SendMessageW(hBtn, WM_SETFONT, (WPARAM)m_hFontButton, TRUE);
                 m_allKeyButtons.push_back(hBtn);
             }
-            else {
-                g_logger.error(L"LoginWindow: failed to create key button id=" + std::to_wstring(k.id));
-            }
         }
+        g_logger.info(L"LoginWindow: keyboard rebuilt, target=" +
+            std::wstring(m_passwordMode ? L"password" : L"phone") +
+            L", layout=" + std::to_wstring(m_keyLayout) +
+            L", keys=" + std::to_wstring(keys.size()));
+    }
+
+    // пересоздание клавиатуры на фиксированной позиции (устраняет рассинхрон Y=210 против Y=190 в прежнем коде)
+    void rebuildKeyboard() {
+        for (HWND hBtn : m_allKeyButtons) DestroyWindow(hBtn);
+        m_allKeyButtons.clear();
+        RECT rc; GetClientRect(m_hWnd, &rc);
+        createKeyboard((rc.right - rc.left) / 2, KEYBOARD_START_Y);
     }
 
     void releaseResources() {
         g_logger.info(L"LoginWindow: releaseResources started");
-        if (m_hPhoneEdit && m_origEditProc) {
-            SetWindowLongPtrW(m_hPhoneEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(m_origEditProc));
+        if (m_hPhoneEdit && m_origPhoneProc) {
+            SetWindowLongPtrW(m_hPhoneEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(m_origPhoneProc));
             SetWindowLongPtrW(m_hPhoneEdit, GWLP_USERDATA, 0);
-            m_origEditProc = nullptr;
-            g_logger.info(L"LoginWindow: edit subclass restored");
+            m_origPhoneProc = nullptr;
+        }
+        if (m_hPasswordEdit && m_origPasswordProc) {
+            SetWindowLongPtrW(m_hPasswordEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(m_origPasswordProc));
+            SetWindowLongPtrW(m_hPasswordEdit, GWLP_USERDATA, 0);
+            m_origPasswordProc = nullptr;
         }
         if (m_hFontTitle) { DeleteObject(m_hFontTitle); m_hFontTitle = nullptr; }
         if (m_hFontButton) { DeleteObject(m_hFontButton); m_hFontButton = nullptr; }
@@ -260,7 +345,11 @@ private:
     }
 
     LRESULT onCtlColorEdit(HDC hdc, HWND hEdit) {
-        if (hEdit == m_hPhoneEdit) { SetTextColor(hdc, RGB(0, 0, 0)); SetBkColor(hdc, RGB(255, 255, 255)); return (LRESULT)m_hWhiteBrush; }
+        if (hEdit == m_hPhoneEdit || hEdit == m_hPasswordEdit) {
+            SetTextColor(hdc, RGB(0, 0, 0));
+            SetBkColor(hdc, RGB(255, 255, 255));
+            return (LRESULT)m_hWhiteBrush;
+        }
         return DefWindowProcW(m_hWnd, WM_CTLCOLOREDIT, (WPARAM)hdc, (LPARAM)hEdit);
     }
 
@@ -272,30 +361,79 @@ private:
             g_logger.info(L"LoginWindow: onCommand ignored, authenticating in progress");
             return;
         }
-        if (cmd >= ID_KEY_1 && cmd <= ID_KEY_CLEAR) { onKeyPress(cmd); return; }
+        if ((cmd >= ID_KEY_1 && cmd <= ID_KEY_CLEAR) ||
+            (cmd >= ID_KEY_A && cmd <= ID_KEY_Z) ||
+            cmd == ID_KEY_MODE || cmd == ID_KEY_CASE || cmd == ID_KEY_DIGITS) {
+            onKeyPress(cmd); return;
+        }
         if (cmd == 1) { onSubmit(); return; }
     }
 
     void onKeyPress(int id) {
-        wchar_t currentText[40] = {};
-        GetWindowTextW(m_hPhoneEdit, currentText, 40);
-        std::wstring text = currentText;
-
-        switch (id) {
-        case ID_KEY_BACKSPACE: if (!text.empty()) { text.pop_back(); SetWindowTextW(m_hPhoneEdit, text.c_str()); } break;
-        case ID_KEY_CLEAR: text.clear(); SetWindowTextW(m_hPhoneEdit, L""); break;
-        case ID_KEY_PLUS: if (text.empty()) { text = L"+"; SetWindowTextW(m_hPhoneEdit, text.c_str()); } break;
-        default: {
-            wchar_t digit = 0;
-            if (id >= ID_KEY_1 && id <= ID_KEY_9) digit = L'0' + (id - ID_KEY_1 + 1);
-            else if (id == ID_KEY_0) digit = L'0';
-            else return;
-            if (text.length() < 15) { text += digit; SetWindowTextW(m_hPhoneEdit, text.c_str()); }
-            break;
+        if (id == ID_KEY_MODE) {
+            // Смена ЦЕЛЕВОГО ПОЛЯ: телефон <-> пароль; фокус следует за целью
+            m_passwordMode = !m_passwordMode;
+            m_keyLayout = m_passwordMode ? 1 : 0;   // пароль стартует с букв, телефон с цифр
+            rebuildKeyboard();
+            SetFocus(m_passwordMode ? m_hPasswordEdit : m_hPhoneEdit);
+            SetWindowTextW(m_hStatusLabel, m_passwordMode ? L"Режим ввода пароля" : L"Режим ввода телефона");
+            return;
         }
+        // переключение регистра — цель и фокус НЕ меняются
+        if (id == ID_KEY_CASE) {
+            m_keyLayout = (m_keyLayout == 2) ? 1 : 2;
+            rebuildKeyboard();
+            SetFocus(m_hPasswordEdit);
+            g_logger.info(L"LoginWindow: case switched, layout=" + std::to_wstring(m_keyLayout));
+            return;
+        }
+        // «123»/«abc» переключает РАСКЛАДКУ, а не целевое поле.
+        // Курсор остаётся в поле пароля — цифры вводятся в пароль.
+        if (id == ID_KEY_DIGITS) {
+            m_keyLayout = (m_keyLayout == 0) ? 1 : 0;
+            rebuildKeyboard();
+            SetFocus(m_passwordMode ? m_hPasswordEdit : m_hPhoneEdit);
+            g_logger.info(L"LoginWindow: digits/letters switched, layout=" + std::to_wstring(m_keyLayout));
+            return;
+        }
+        HWND targetEdit = m_passwordMode ? m_hPasswordEdit : m_hPhoneEdit;
+        wchar_t currentText[64] = {};
+        GetWindowTextW(targetEdit, currentText, 64);
+        std::wstring text = currentText;
+        switch (id) {
+            case ID_KEY_BACKSPACE: 
+                if (!text.empty()) { 
+                    text.pop_back(); 
+                    SetWindowTextW(targetEdit, text.c_str()); 
+                } break;
+                case ID_KEY_CLEAR: 
+                    text.clear(); 
+                    SetWindowTextW(targetEdit, L""); 
+                    break;
+                case ID_KEY_PLUS: 
+                    if (!m_passwordMode && text.empty()) { 
+                        text = L"+"; 
+                        SetWindowTextW(targetEdit, text.c_str()); 
+                    } break;
+                default: {
+                    wchar_t ch = 0;
+                    if (id >= ID_KEY_1 && id <= ID_KEY_9) ch = L'0' + (id - ID_KEY_1 + 1);
+                    else if (id == ID_KEY_0) ch = L'0';
+                    else if (id >= ID_KEY_A && id <= ID_KEY_Z)
+                        // регистр берётся из раскладки (ранее всегда нижний)
+                        ch = (m_keyLayout == 2) ? L'A' + (id - ID_KEY_A) : L'a' + (id - ID_KEY_A);
+                else return;
+
+                    int maxLen = m_passwordMode ? 32 : 15;
+                    if (text.length() < maxLen) { 
+                        text += ch; 
+                        SetWindowTextW(targetEdit, text.c_str()); 
+                    }
+                break;
+                }
         }
         SetWindowTextW(m_hStatusLabel, L"");
-        InvalidateRect(m_hPhoneEdit, nullptr, TRUE);
+        InvalidateRect(targetEdit, nullptr, TRUE);
     }
 
     void onSubmit() {
@@ -303,37 +441,55 @@ private:
             g_logger.info(L"LoginWindow: onSubmit already in progress");
             return;
         }
-        wchar_t buf[30] = {};
-        GetWindowTextW(m_hPhoneEdit, buf, 30);
-        std::wstring phone = trim(buf);
+
+        wchar_t phoneBuf[30] = {};
+        GetWindowTextW(m_hPhoneEdit, phoneBuf, 30);
+        std::wstring phone = trim(phoneBuf);
+
+        wchar_t passwordBuf[64] = {};
+        GetWindowTextW(m_hPasswordEdit, passwordBuf, 64);
+        m_enteredPassword = wstring_to_utf8(passwordBuf);
+
         if (phone.empty()) {
-            SetWindowTextW(m_hStatusLabel, L"Введите номер телефона в формате +79019001010");
+            SetWindowTextW(m_hStatusLabel, L"Введите номер телефона");
             m_isAuthenticating = false;
-            g_logger.warning(L"LoginWindow: onSubmit empty phone");
+            return;
+        }
+
+        if (m_enteredPassword.empty()) {
+            SetWindowTextW(m_hStatusLabel, L"Введите пароль");
+            m_isAuthenticating = false;
             return;
         }
 
         std::wstring normalized = normalizePhone(phone);
         if (normalized.empty()) {
-            SetWindowTextW(m_hStatusLabel, L"Неверный формат");
+            SetWindowTextW(m_hStatusLabel, L"Неверный формат телефона");
             m_isAuthenticating = false;
-            g_logger.warning(L"LoginWindow: onSubmit invalid phone format: " + phone);
             return;
         }
 
         g_authManager.setLoginAttempted(true, wstring_to_utf8(normalized));
-        SetWindowTextW(m_hStatusLabel, L"Проверка номера по базе...");
+        SetWindowTextW(m_hStatusLabel, L"Проверка данных...");
         EnableWindow(m_hSubmitBtn, FALSE);
         for (HWND hBtn : m_allKeyButtons) EnableWindow(hBtn, FALSE);
 
         g_logger.info(L"LoginWindow: authentication started for " + normalized);
+
         HWND hWndCopy = m_hWnd;
         std::wstring phoneCopy = normalized;
+        std::string passwordCopy = m_enteredPassword;
 
-        std::thread([this, hWndCopy, phoneCopy]() {
+        std::thread([this, hWndCopy, phoneCopy, passwordCopy]() {
             g_logger.info(L"LoginWindow: background thread started for " + phoneCopy);
+
             nlohmann::json request;
             request["phone"] = wstring_to_utf8(phoneCopy);
+            // НОВОЕ: читаем пароль из поля ввода и отправляем на сервер
+            wchar_t pwdBuf[64] = {};
+            GetWindowTextW(m_hPasswordEdit, pwdBuf, 64);
+            request["password"] = wstring_to_utf8(std::wstring(pwdBuf));
+
             auto response = g_httpsClient.post(L"/api/v1/clients/by_phone", request, L"");
 
             if (!response) {
@@ -341,27 +497,45 @@ private:
                 m_resultCode = RESULT_NETWORK_ERROR;
                 m_loginSuccess = false;
             }
-			// НОВАЯ ПРОВЕРКА: КЛИЕНТ ЗАБЛОКИРОВАН ДИРЕКТОРОМ
-            // Сервер возвращает HTTP 403 с полем "blocked": true
             else if (response->contains("blocked") && (*response)["blocked"].get<bool>()) {
                 g_logger.warning(L"[LoginWindow] Client is BLOCKED: " + phoneCopy);
-                m_resultCode = RESULT_BLOCKED;  // НОВЫЙ КОД РЕЗУЛЬТАТА
+                m_resultCode = RESULT_BLOCKED;
                 m_loginSuccess = false;
                 m_normalizedPhone = phoneCopy;
             }
-            else if (response->contains("id") && response->contains("name") && response->contains("access_token") && response->contains("refresh_token")) {
+            else if (response->contains("error") && (*response)["error"].get<std::string>().find("Invalid password") != std::string::npos) {
+                g_logger.warning(L"[LoginWindow] Invalid password for " + phoneCopy);
+                m_resultCode = RESULT_INVALID_PASSWORD;
+                m_loginSuccess = false;
+                m_normalizedPhone = phoneCopy;
+            }
+            else if (response->contains("id") && response->contains("name") &&
+                response->contains("access_token") && response->contains("refresh_token")) {
                 m_resultCode = RESULT_SUCCESS;
                 m_loginSuccess = true;
                 m_clientId = (*response)["id"].get<int>();
                 m_fullName = utf8_to_wstring((*response)["name"].get<std::string>());
                 m_normalizedPhone = phoneCopy;
+                //сохраняем роль из ответа сервера
+                if (response->contains("role") && (*response)["role"].is_string()) {
+                    g_authManager.setRole((*response)["role"].get<std::string>());
+                }
 
                 std::string accessToken = (*response)["access_token"].get<std::string>();
                 std::string refreshToken = (*response)["refresh_token"].get<std::string>();
-                int64_t expiresAt = response->contains("expires_at") && (*response)["expires_at"].is_number_integer() ? (*response)["expires_at"].get<int64_t>() : std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() + 3600;
+                int64_t expiresAt = response->contains("expires_at") && (*response)["expires_at"].is_number_integer()
+                    ? (*response)["expires_at"].get<int64_t>()
+                    : std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() + 3600;
 
                 g_authManager.setAuthTokens(accessToken, refreshToken, expiresAt, wstring_to_utf8(m_normalizedPhone));
                 g_logger.info(L"LoginWindow: success, clientId=" + std::to_wstring(m_clientId));
+            }
+            // обработка неверного пароля
+            else if (response->contains("invalid_password") && (*response)["invalid_password"].get<bool>()) {
+                m_resultCode = RESULT_INVALID_PASSWORD;
+                m_loginSuccess = false;
+                m_normalizedPhone = phoneCopy;
+                g_logger.warning(L"LoginWindow: invalid password for " + phoneCopy);
             }
             else {
                 m_resultCode = RESULT_NOT_FOUND;
@@ -382,38 +556,35 @@ private:
 
     void onLoginResult() {
         g_logger.info(L"LoginWindow: onLoginResult entered, resultCode=" + std::to_wstring(m_resultCode));
+
         switch (m_resultCode) {
         case RESULT_NETWORK_ERROR:
             SetWindowTextW(m_hStatusLabel, L"Ошибка соединения");
             EnableWindow(m_hSubmitBtn, TRUE);
             for (HWND hBtn : m_allKeyButtons) EnableWindow(hBtn, TRUE);
             m_isAuthenticating = false;
-            g_logger.info(L"LoginWindow: UI re-enabled after network error");
             break;
 
-        // =====================================================================
-        // НОВЫЙ CASE: КЛИЕНТ ЗАБЛОКИРОВАН ДИРЕКТОРОМ
-        // Показываем сообщение о блокировке и не пускаем в систему
-        // =====================================================================
         case RESULT_BLOCKED:
-            g_logger.warning(L"LoginWindow: client BLOCKED, showing message for " +
-                m_normalizedPhone);
-
-            // Показываем сообщение о блокировке
-            MessageBoxW(m_hWnd,
-                L"Ваш аккаунт заблокирован.\n\n"
-                L"Обратитесь к администрации магазина.",
-                L"Доступ запрещён",
-                MB_OK | MB_ICONERROR);
-
-            // Очищаем поле ввода и разблокируем UI
+            MessageBoxW(m_hWnd, L"Ваш аккаунт заблокирован.\n\nОбратитесь к администрации магазина.",
+                L"Доступ запрещён", MB_OK | MB_ICONERROR);
             SetWindowTextW(m_hPhoneEdit, L"");
+            SetWindowTextW(m_hPasswordEdit, L"");
             SetWindowTextW(m_hStatusLabel, L"Аккаунт заблокирован");
             EnableWindow(m_hSubmitBtn, TRUE);
             for (HWND hBtn : m_allKeyButtons) EnableWindow(hBtn, TRUE);
             m_isAuthenticating = false;
+            break;
 
-            g_logger.info(L"LoginWindow: blocked message shown, UI re-enabled");
+        case RESULT_INVALID_PASSWORD:
+            MessageBoxW(m_hWnd, L"Неверный пароль.\n\nПроверьте правильность ввода.",
+                L"Ошибка входа", MB_OK | MB_ICONERROR);
+            SetWindowTextW(m_hPasswordEdit, L"");
+            SetWindowTextW(m_hStatusLabel, L"Неверный пароль");
+            EnableWindow(m_hSubmitBtn, TRUE);
+            for (HWND hBtn : m_allKeyButtons) EnableWindow(hBtn, TRUE);
+            SetFocus(m_hPasswordEdit);
+            m_isAuthenticating = false;
             break;
 
         case RESULT_SUCCESS:
@@ -421,30 +592,56 @@ private:
             g_authManager.setLoginAttempted(false);
             SetWindowTextW(m_hStatusLabel, L"Успешный вход!");
             SetTimer(m_hWnd, TIMER_ID_CLOSE, 500, nullptr);
-            g_logger.info(L"LoginWindow: success, timer set (500 ms)");
             break;
 
         case RESULT_NOT_FOUND: {
             g_authManager.setLoggedIn(false, 0, L"", m_normalizedPhone);
             g_logger.info(L"LoginWindow: phone not found, showing admin password dialog");
-
             bool passwordOk = showAdminPasswordDialog();
-            g_logger.info(L"LoginWindow: admin password dialog result = " + std::wstring(passwordOk ? L"true" : L"false"));
-
             if (passwordOk) {
                 g_logger.info(L"LoginWindow: password correct, creating WorkerRegistrationWindow for " + m_normalizedPhone);
-                WorkerRegistrationWindow regWnd(m_normalizedPhone);
+
+                // НОВОЕ: Определяем роль регистрируемого пользователя.
+                // Если введён специальный пароль администратора для директора,
+                // регистрируем с ролью "director". Иначе — "worker".
+                // Это позволяет использовать существующий диалог пароля без
+                // добавления новых окон.
+                std::string registrationRole = "worker";
+
+                // Показываем диалог выбора роли
+                int roleChoice = MessageBoxW(m_hWnd,
+                    L"Выберите роль регистрируемого пользователя:\n\n"
+                    L"ДА — Директор магазина\n"
+                    L"НЕТ — Товаровед",
+                    L"Роль пользователя",
+                    MB_YESNO | MB_ICONQUESTION);
+
+                if (roleChoice == IDYES) {
+                    registrationRole = "director";
+                    g_logger.info(L"LoginWindow: registering DIRECTOR for " + m_normalizedPhone);
+                }
+                else {
+                    registrationRole = "worker";
+                    g_logger.info(L"LoginWindow: registering WORKER for " + m_normalizedPhone);
+                }
+
+                WorkerRegistrationWindow regWnd(m_normalizedPhone, registrationRole);
+                
                 int result = regWnd.show(m_hWnd);
-                g_logger.info(L"LoginWindow: WorkerRegistrationWindow closed with result = " + std::to_wstring(result));
-
                 if (result == IDOK) {
-                    g_logger.info(L"LoginWindow: worker registered successfully, performing auto-login for " + m_normalizedPhone);
-
-                    // Автоматический вход после регистрации
+                    g_logger.info(L"LoginWindow: registration successful, performing auto-login for " + m_normalizedPhone);
+                    // ИСПРАВЛЕНИЕ: берём СГЕНЕРИРОВАННЫЙ сервером пароль из окна регистрации,
+                    // а не то, что набрано в поле пароля до регистрации (этого хеша в БД нет).
+                    std::string password = regWnd.getGeneratedPassword();
+                    if (password.empty()) {
+                        wchar_t passwordBuf[64] = {};
+                        GetWindowTextW(m_hPasswordEdit, passwordBuf, 64);
+                        password = wstring_to_utf8(passwordBuf);
+                    }
                     nlohmann::json request;
                     request["phone"] = wstring_to_utf8(m_normalizedPhone);
+                    request["password"] = password;
                     auto response = g_httpsClient.post(L"/api/v1/clients/by_phone", request, L"");
-
                     if (response && response->contains("id") && response->contains("name") &&
                         response->contains("access_token") && response->contains("refresh_token")) {
                         int clientId = (*response)["id"].get<int>();
@@ -455,37 +652,35 @@ private:
                             ? (*response)["expires_at"].get<int64_t>()
                             : std::chrono::duration_cast<std::chrono::seconds>(
                                 std::chrono::system_clock::now().time_since_epoch()).count() + 3600;
-
+                        // ИСПРАВЛЕНИЕ: сохраняем роль из ответа, иначе main.cpp после
+                        // автовхода не отличит директора от товароведа
+                        if (response->contains("role") && (*response)["role"].is_string()) {
+                            g_authManager.setRole((*response)["role"].get<std::string>());
+                        }
                         g_authManager.setAuthTokens(accessToken, refreshToken, expiresAt, wstring_to_utf8(m_normalizedPhone));
                         g_authManager.setLoggedIn(true, clientId, fullName, m_normalizedPhone);
-
                         m_clientId = clientId;
                         m_fullName = fullName;
-                        m_loginSuccess = true;   // Устанавливаем флаг успешного входа
-
-                        g_logger.info(L"LoginWindow: auto-login successful for worker " + m_normalizedPhone + L", clientId=" + std::to_wstring(clientId));
-                        MessageBoxW(m_hWnd, L"Товаровед успешно зарегистрирован и авторизован!", L"Успех", MB_OK);
-                        DestroyWindow(m_hWnd);   // Закрываем окно входа, приложение продолжит работу
+                        m_loginSuccess = true;
+                        MessageBoxW(m_hWnd, L"Регистрация завершена, вход выполнен!", L"Успех", MB_OK);
+                        DestroyWindow(m_hWnd);
                     }
                     else {
-                        g_logger.error(L"LoginWindow: failed to auto-login after registration for " + m_normalizedPhone);
-                        MessageBoxW(m_hWnd, L"Регистрация прошла, но не удалось выполнить вход. Попробуйте войти заново.", L"Ошибка", MB_OK);
-                        // Оставляем окно открытым для повторного ввода
+                        MessageBoxW(m_hWnd, L"Регистрация прошла, но не удалось выполнить вход. Войдите с выданным паролем.", L"Ошибка", MB_OK);
                         m_isAuthenticating = false;
                         EnableWindow(m_hSubmitBtn, TRUE);
                         for (HWND hBtn : m_allKeyButtons) EnableWindow(hBtn, TRUE);
-                        SetWindowTextW(m_hStatusLabel, L"Ошибка автовхода. Введите номер повторно.");
                     }
                 }
                 else {
-                    SetWindowTextW(m_hStatusLabel, L"Регистрация отменена или не удалась");
+                    SetWindowTextW(m_hStatusLabel, L"Регистрация отменена");
                     EnableWindow(m_hSubmitBtn, TRUE);
                     for (HWND hBtn : m_allKeyButtons) EnableWindow(hBtn, TRUE);
                     m_isAuthenticating = false;
                 }
             }
             else {
-                SetWindowTextW(m_hStatusLabel, L"Неверный пароль администратора или отмена");
+                SetWindowTextW(m_hStatusLabel, L"Неверный пароль администратора");
                 EnableWindow(m_hSubmitBtn, TRUE);
                 for (HWND hBtn : m_allKeyButtons) EnableWindow(hBtn, TRUE);
                 m_isAuthenticating = false;
@@ -495,19 +690,14 @@ private:
         }
     }
 
-    // =========================================================================
-    // ИСПРАВЛЕННЫЙ ДИАЛОГ ВВОДА ПАРОЛЯ АДМИНИСТРАТОРА
-    // =========================================================================
     bool showAdminPasswordDialog() {
         g_logger.info(L"showAdminPasswordDialog: entered");
-
-        // Регистрируем класс диалога, если ещё не зарегистрирован
         static bool dialogClassRegistered = false;
         if (!dialogClassRegistered) {
             WNDCLASSEXW dlgClass = {};
             dlgClass.cbSize = sizeof(WNDCLASSEX);
             dlgClass.style = CS_HREDRAW | CS_VREDRAW;
-            dlgClass.lpfnWndProc = AdminPasswordDialogProc;   // Наша процедура
+            dlgClass.lpfnWndProc = AdminPasswordDialogProc;
             dlgClass.hInstance = g_hInstance;
             dlgClass.hCursor = LoadCursor(nullptr, IDC_ARROW);
             dlgClass.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
@@ -517,14 +707,12 @@ private:
                 return false;
             }
             dialogClassRegistered = true;
-            g_logger.info(L"showAdminPasswordDialog: dialog class registered");
         }
 
-        // Создаём окно диалога с расширенным стилем WS_EX_CONTROLPARENT
         HWND hDlg = CreateWindowExW(
             WS_EX_CONTROLPARENT | WS_EX_DLGMODALFRAME,
             L"AdminPasswordDialogClass",
-            L"Введите пароль администратора",
+            L"Пароль администратора",
             WS_POPUP | WS_CAPTION | WS_SYSMENU,
             (GetSystemMetrics(SM_CXSCREEN) - 400) / 2,
             (GetSystemMetrics(SM_CYSCREEN) - 200) / 2,
@@ -540,17 +728,10 @@ private:
             return false;
         }
 
-        // Создаём элементы управления
         HWND hLabel = CreateWindowExW(0, L"STATIC", L"Пароль администратора:", WS_VISIBLE | WS_CHILD, 20, 30, 150, 30, hDlg, nullptr, g_hInstance, nullptr);
         HWND hEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_VISIBLE | WS_CHILD | ES_PASSWORD, 180, 30, 180, 30, hDlg, (HMENU)1, g_hInstance, nullptr);
         HWND hOk = CreateWindowExW(0, L"BUTTON", L"OK", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_DEFPUSHBUTTON, 80, 100, 100, 40, hDlg, (HMENU)2, g_hInstance, nullptr);
         HWND hCancel = CreateWindowExW(0, L"BUTTON", L"Отмена", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 220, 100, 100, 40, hDlg, (HMENU)3, g_hInstance, nullptr);
-
-        if (!hLabel || !hEdit || !hOk || !hCancel) {
-            g_logger.error(L"showAdminPasswordDialog: failed to create controls");
-            DestroyWindow(hDlg);
-            return false;
-        }
 
         HFONT hFont = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
         SendMessageW(hLabel, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -558,10 +739,7 @@ private:
         SendMessageW(hOk, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hCancel, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        // Инициализируем GWLP_USERDATA: 0 = активен, 1 = успех, 2 = отмена
         SetWindowLongPtr(hDlg, GWLP_USERDATA, (LONG_PTR)0);
-
-
         EnableWindow(m_hWnd, FALSE);
         ShowWindow(hDlg, SW_SHOW);
         SetFocus(hEdit);
@@ -570,53 +748,36 @@ private:
         bool dialogClosed = false;
         MSG msg;
 
-        g_logger.info(L"showAdminPasswordDialog: entering message loop with IsDialogMessage");
-
         while (!dialogClosed && IsWindow(hDlg)) {
             if (GetMessage(&msg, nullptr, 0, 0) > 0) {
-                // Передаём сообщение диалогу через IsDialogMessage
                 if (!IsDialogMessage(hDlg, &msg)) {
                     TranslateMessage(&msg);
                     DispatchMessage(&msg);
                 }
-
-                // Проверяем, не закрыт ли диалог (например, через DestroyWindow)
                 if (!IsWindow(hDlg)) break;
-
-                // Проверяем результат, сохранённый в GWLP_USERDATA
                 LONG_PTR result = GetWindowLongPtr(hDlg, GWLP_USERDATA);
-                if (result == 1) { // 0 = отмена, 1 = успех (установлено в процедуре)
+                if (result == 1) {
                     passwordOk = true;
                     dialogClosed = true;
                     break;
                 }
-                if (result == 2) {          // отмена или WM_CLOSE
+                if (result == 2) {
                     passwordOk = false;
                     dialogClosed = true;
                     break;
                 }
             }
             else {
-                g_logger.warning(L"showAdminPasswordDialog: GetMessage returned <= 0, exiting loop");
                 break;
             }
         }
 
-        if (!dialogClosed && !IsWindow(hDlg)) {
-            g_logger.warning(L"showAdminPasswordDialog: dialog destroyed unexpectedly");
-            passwordOk = false;
-        }
-
-        // Явно уничтожаем окно диалога после выхода из цикла, если оно ещё существует
         if (IsWindow(hDlg)) {
             DestroyWindow(hDlg);
         }
-
-
         DeleteObject(hFont);
         EnableWindow(m_hWnd, TRUE);
         SetForegroundWindow(m_hWnd);
-        g_logger.info(L"showAdminPasswordDialog: loop finished, returning " + std::wstring(passwordOk ? L"true" : L"false"));
         return passwordOk;
     }
 
@@ -640,11 +801,11 @@ private:
 
 public:
     LoginWindow()
-        : m_hWnd(nullptr), m_hPhoneEdit(nullptr), m_hStatusLabel(nullptr), m_hSubmitBtn(nullptr),
+        : m_hWnd(nullptr), m_hPhoneEdit(nullptr), m_hPasswordEdit(nullptr), m_hStatusLabel(nullptr), m_hSubmitBtn(nullptr),
         m_hFontTitle(nullptr), m_hFontButton(nullptr), m_hFontLabel(nullptr), m_hFontEdit(nullptr),
-        m_hGreenBrush(nullptr), m_hRedBrush(nullptr), m_hWhiteBrush(nullptr), m_hGrayBrush(nullptr),
-        m_origEditProc(nullptr), m_resultCode(RESULT_NETWORK_ERROR), m_clientId(0),
-        m_loginSuccess(false), m_isAuthenticating(false) {
+        m_hGreenBrush(nullptr), m_hRedBrush(nullptr), m_hWhiteBrush(nullptr), m_hGrayBrush(nullptr), m_origEditProc(nullptr),
+        m_origPhoneProc(nullptr), m_origPasswordProc(nullptr), m_resultCode(RESULT_NETWORK_ERROR), m_clientId(0),
+        m_loginSuccess(false), m_isAuthenticating(false), m_passwordMode(false), m_keyLayout(0) {
         g_logger.info(L"LoginWindow: constructor");
     }
 
@@ -663,43 +824,45 @@ public:
             wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
             wcex.lpszClassName = L"LoginWindowClass";
             wcex.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-            if (!RegisterClassExW(&wcex)) {
-                g_logger.error(L"LoginWindow: RegisterClassExW failed");
-                return false;
-            }
+            if (!RegisterClassExW(&wcex)) { g_logger.error(L"LoginWindow: RegisterClassExW failed"); return false; }
             classRegistered = true;
-            g_logger.info(L"LoginWindow class registered");
         }
 
-        int height = 60 + 80 + 60 + 50 + 30 + (4 * (KEY_HEIGHT + KEY_SPACING)) + 20 + 50 + 20;
-        int width = 500;
+        // =========================================================================
+        // ИСПРАВЛЕНИЕ: требуемая КЛИЕНТская высота = 570 (низ кнопки «Войти» 560 + запас 10),
+        // ширина клиента 500. AdjustWindowRectW добавляет НЕклиентскую область
+        // (заголовок, рамку) для ТОГО ЖЕ стиля, с которым создаётся окно.
+        // Это исключает обрезание кнопки «Войти» при любой теме/DPI.
+        // =========================================================================
+        const DWORD dwStyle = WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME);
+        const int CLIENT_WIDTH = 500;
+        const int CLIENT_HEIGHT = 670;
+        const int ncWidth = 2 * (GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER));
+        const int ncHeight = GetSystemMetrics(SM_CYCAPTION)
+            + 2 * (GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER));
+        int width = CLIENT_WIDTH + ncWidth;
+        int height = CLIENT_HEIGHT + ncHeight;
+        g_logger.info(L"LoginWindow: computed window size = " + std::to_wstring(width) +
+            L"x" + std::to_wstring(height) +
+            L" (client " + std::to_wstring(CLIENT_WIDTH) + L"x" + std::to_wstring(CLIENT_HEIGHT) + L")");
+
         int x = (GetSystemMetrics(SM_CXSCREEN) - width) / 2;
         int y = (GetSystemMetrics(SM_CYSCREEN) - height) / 2;
-
         m_hWnd = CreateWindowExW(WS_EX_WINDOWEDGE, L"LoginWindowClass", L"Вход",
-            WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME),
-            x, y, width, height, hParent, nullptr, g_hInstance, this);
-
-        if (!m_hWnd) {
-            g_logger.error(L"LoginWindow: Failed to create window");
-            return false;
-        }
+            dwStyle, x, y, width, height, hParent, nullptr, g_hInstance, this);
+        if (!m_hWnd) { g_logger.error(L"LoginWindow: Failed to create window"); return false; }
 
         EnableWindow(hParent, FALSE);
         ShowWindow(m_hWnd, SW_SHOW);
         UpdateWindow(m_hWnd);
-        g_logger.info(L"LoginWindow: shown");
-
         MSG msg;
         while (GetMessage(&msg, nullptr, 0, 0)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
             if (!IsWindow(m_hWnd)) break;
         }
-
         EnableWindow(hParent, TRUE);
         SetForegroundWindow(hParent);
-        g_logger.info(L"LoginWindow: closed, success=" + std::wstring(m_loginSuccess ? L"true" : L"false"));
         return m_loginSuccess;
     }
 };
