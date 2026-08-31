@@ -538,6 +538,81 @@ public:
             g_serverLogger.info("Migration: item_sales table created successfully");
             g_serverLogger.info("Migration: idx_items_status index created");
 
+            // ========================================================================
+// НОВОЕ: АВТОСИНХРОНИЗАЦИЯ СЧЁТЧИКОВ clients.items_submitted / items_sold
+//
+// ПРИЧИНА: колонки не обновлялись при приёмке/продаже, поэтому поиск
+// товароведа (getClientFullInfo / searchClientsByFio) всегда выдавал 0.
+//
+// РЕШЕНИЕ:
+//   1) одноразовый полный пересчёт по всем комитентам при старте сервера;
+//   2) триггер AFTER INSERT OR UPDATE OR DELETE ON items, который при
+//      каждом изменении товаров автоматически пересчитывает счётчики
+//      затронутого клиента (внутри той же транзакции — атомарно).
+// ========================================================================
+
+// --- 1) Полный пересчёт для всех комитентов, у которых есть товары ---
+            txn.exec(R"(
+             UPDATE clients c SET
+                 items_submitted = COALESCE(s.total_qty, 0),
+                 items_sold       = COALESCE(s.total_sold, 0),
+                 updated_at       = EXTRACT(EPOCH FROM NOW())
+             FROM (
+                 SELECT client_id,
+                        SUM(quantity)       AS total_qty,
+                        SUM(sold_quantity)  AS total_sold
+                 FROM items
+                 GROUP BY client_id
+             ) s
+             WHERE c.id = s.client_id;
+         )");
+
+            // --- 1б) Обнуление счётчиков комитентам, у которых товаров нет ---
+            txn.exec(R"(
+             UPDATE clients SET items_submitted = 0, items_sold = 0
+             WHERE (items_submitted <> 0 OR items_sold <> 0)
+               AND NOT EXISTS (SELECT 1 FROM items i WHERE i.client_id = clients.id);
+         )");
+            g_serverLogger.info("Migration: clients counters recalculated from items");
+
+            // --- 2) Функция автосинхронизации счётчиков одного клиента ---
+            txn.exec(R"(
+             CREATE OR REPLACE FUNCTION sync_client_counters() RETURNS trigger AS $$
+             DECLARE
+                 target_id INTEGER;
+             BEGIN
+                 IF TG_OP = 'DELETE' THEN
+                     target_id := OLD.client_id;
+                 ELSE
+                     target_id := NEW.client_id;
+                 END IF;
+
+                 UPDATE clients c SET
+                     items_submitted = COALESCE(s.total_qty, 0),
+                     items_sold       = COALESCE(s.total_sold, 0),
+                     updated_at       = EXTRACT(EPOCH FROM NOW())
+                 FROM (
+                     SELECT SUM(quantity)      AS total_qty,
+                            SUM(sold_quantity) AS total_sold
+                     FROM items
+                     WHERE client_id = target_id
+                 ) s
+                 WHERE c.id = target_id;
+
+                 IF TG_OP = 'DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
+             END;
+             $$ LANGUAGE plpgsql;
+         )");
+
+            // --- 3) Триггер: срабатывает на каждое изменение items ---
+            txn.exec(R"(DROP TRIGGER IF EXISTS trg_items_sync_client_counters ON items;)");
+            txn.exec(R"(
+             CREATE TRIGGER trg_items_sync_client_counters
+             AFTER INSERT OR UPDATE OR DELETE ON items
+             FOR EACH ROW EXECUTE FUNCTION sync_client_counters();
+         )");
+            g_serverLogger.info("Migration: trigger trg_items_sync_client_counters created (auto-sync of clients counters)");
+
             txn.commit();
             g_serverLogger.info("Database initialized successfully");
             return true;
@@ -2558,15 +2633,6 @@ public:
                               barcodePayload.empty() ? std::optional<std::string>{} : barcodePayload }
             );
 
-            // =================================================================
-            // ШАГ 7: Обновляем счётчики клиента (items_sold).
-            // =================================================================
-            txn.exec(
-                "UPDATE clients SET items_sold = items_sold + 1, "
-                "updated_at = EXTRACT(EPOCH FROM NOW()) WHERE id = $1",
-                pqxx::params{ clientId }
-            );
-
             txn.commit();
             g_serverLogger.info("registerItemSale: SUCCESS - itemId=" + std::to_string(itemId) +
                 ", newSoldQty=" + std::to_string(newSoldQty) +
@@ -2933,4 +2999,398 @@ public:
         }
         return result;
     }
+
+    // =========================================================================
+// НОВЫЙ МЕТОД: УДАЛЕНИЕ ТАЛОНА ИЗ ОБЩИХ ОЧЕРЕДЕЙ
+// (general, extra_20, paid, expensive)
+// =========================================================================
+//
+// НАЗНАЧЕНИЕ:
+// Удаляет талон из таблицы queue_tickets, по которому комитент не
+// подошёл к окну товароведа в течение 2 минут.
+//
+// ЗАЩИТА ОТ ГОНОК И НЕКОРРЕКТНОГО УДАЛЕНИЯ:
+// Удаление выполняется одним атомарным DELETE с четырьмя условиями:
+//   1. номер талона совпадает;
+//   2. тип очереди совпадает;
+//   3. статус = 'waiting' (не 'accepted', не 'served');
+//   4. created_at <= NOW() - 120 секунд (талону не менее 2 минут).
+//
+// Если хотя бы одно условие не выполнено, DELETE не удаляет ни одной
+// строки и метод возвращает false. Это исключает:
+//   - удаление уже принятого талона (статус 'accepted');
+//   - удаление уже обслуженного талона (статус 'served');
+//   - удаление свежего талона (комитент ещё может подойти);
+//   - гонку между параллельными запросами: PostgreSQL гарантирует
+//     атомарность DELETE в рамках одной транзакции.
+//
+// Математика очередей НЕ меняется:
+//   - позиция остальных талонов не пересчитывается (она вычисляется
+//     как COUNT(waiting)+1 при создании нового талона);
+//   - нумерация талонов не затрагивается;
+//   - частичный уникальный индекс idx_queue_tickets_number_active
+//     автоматически освобождает номер удалённого талона для
+//     повторного использования в циклической нумерации 001-999.
+//
+// @param ticketNumber - номер талона (например, "G001")
+// @param queueType    - тип очереди (general, extra_20, paid, expensive)
+// @return true если талон удалён, false иначе
+// =========================================================================
+    bool deleteWaitingTicket(const std::string& ticketNumber, const std::string& queueType) {
+        try {
+            pqxx::work txn{ *conn_ };
+            g_serverLogger.info("deleteWaitingTicket: attempting to delete ticket=" +
+                ticketNumber + ", queueType=" + queueType);
+            auto res = txn.exec(
+                "DELETE FROM queue_tickets "
+                "WHERE number = $1 AND queue_type = $2 "
+                "AND ( "
+                "    (status = 'waiting' AND created_at <= EXTRACT(EPOCH FROM NOW()) - 120) "
+                "    OR "
+                "    (status = 'accepted' AND COALESCE(accepted_at, created_at) <= EXTRACT(EPOCH FROM NOW()) - 120) "
+                ") "
+                "RETURNING id",
+                pqxx::params{ ticketNumber, queueType }
+            );
+            if (res.empty()) {
+                g_serverLogger.warning("deleteWaitingTicket: ticket NOT deleted. "
+                    "Possible reasons: not found, not in 'waiting' status, "
+                    "or less than 2 minutes old. ticketNumber=" + ticketNumber +
+                    ", queueType=" + queueType);
+                return false;
+            }
+            int deletedId = res[0]["id"].as<int>();
+            txn.commit();
+            g_serverLogger.info("deleteWaitingTicket: SUCCESS - deleted ticket=" +
+                ticketNumber + ", queueType=" + queueType +
+                ", deletedRowId=" + std::to_string(deletedId));
+            return true;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("deleteWaitingTicket error: " + std::string(e.what()));
+            return false;
+        }
+    }
+
+    // =========================================================================
+    // НОВЫЙ МЕТОД: УДАЛЕНИЕ ТАЛОНА ИЗ ОЧЕРЕДИ "ПЕРВЫЙ РАЗ"
+    // =========================================================================
+    //
+    // Аналогичен deleteWaitingTicket, но работает с таблицей
+    // first_time_tickets. Начальный статус талона в этой таблице = 'waiting'.
+    //
+    // @param ticketNumber - номер талона (например, "F005")
+    // @return true если талон удалён, false иначе
+    // =========================================================================
+    bool deleteFirstTimeTicket(const std::string& ticketNumber) {
+        try {
+            pqxx::work txn{ *conn_ };
+            g_serverLogger.info("deleteFirstTimeTicket: attempting to delete ticket=" +
+                ticketNumber);
+            auto res = txn.exec(
+                "DELETE FROM first_time_tickets "
+                "WHERE ticket_number = $1 "
+                "AND ( "
+                "    (status = 'waiting' AND created_at <= EXTRACT(EPOCH FROM NOW()) - 120) "
+                "    OR "
+                "    (status = 'accepted' AND COALESCE(accepted_at, created_at) <= EXTRACT(EPOCH FROM NOW()) - 120) "
+                ") "
+                "RETURNING id",
+                pqxx::params{ ticketNumber }
+            );
+            if (res.empty()) {
+                g_serverLogger.warning("deleteFirstTimeTicket: ticket NOT deleted. "
+                    "Possible reasons: not found, not in 'waiting' status, "
+                    "or less than 2 minutes old. ticketNumber=" + ticketNumber);
+                return false;
+            }
+            int deletedId = res[0]["id"].as<int>();
+            txn.commit();
+            g_serverLogger.info("deleteFirstTimeTicket: SUCCESS - deleted ticket=" +
+                ticketNumber + ", deletedRowId=" + std::to_string(deletedId));
+            return true;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("deleteFirstTimeTicket error: " + std::string(e.what()));
+            return false;
+        }
+    }
+
+    // =========================================================================
+    // НОВЫЙ МЕТОД: УДАЛЕНИЕ ТАЛОНА ИЗ ОЧЕРЕДИ "НА ДОВЕРИИ"
+    // =========================================================================
+    //
+    // Аналогичен deleteWaitingTicket, но работает с таблицей
+    // trust_acceptances. ВАЖНО: начальный статус талона в этой таблице
+    // = 'pending' (а не 'waiting'), что соответствует существующей
+    // бизнес-логике (см. getWaitingTrustTickets: WHERE status = 'pending').
+    //
+    // @param ticketNumber - номер талона (например, "T003")
+    // @return true если талон удалён, false иначе
+    // =========================================================================
+    bool deleteTrustTicket(const std::string& ticketNumber) {
+        try {
+            pqxx::work txn{ *conn_ };
+            g_serverLogger.info("deleteTrustTicket: attempting to delete ticket=" +
+                ticketNumber);
+            auto res = txn.exec(
+                "DELETE FROM trust_acceptances "
+                "WHERE ticket_number = $1 "
+                "AND ( "
+                "    (status = 'pending' AND created_at <= EXTRACT(EPOCH FROM NOW()) - 120) "
+                "    OR "
+                "    (status = 'accepted' AND COALESCE(accepted_at, created_at) <= EXTRACT(EPOCH FROM NOW()) - 120) "
+                ") "
+                "RETURNING id",
+                pqxx::params{ ticketNumber }
+            );
+            if (res.empty()) {
+                g_serverLogger.warning("deleteTrustTicket: ticket NOT deleted. "
+                    "Possible reasons: not found, not in 'pending' status, "
+                    "or less than 2 minutes old. ticketNumber=" + ticketNumber);
+                return false;
+            }
+            int deletedId = res[0]["id"].as<int>();
+            txn.commit();
+            g_serverLogger.info("deleteTrustTicket: SUCCESS - deleted ticket=" +
+                ticketNumber + ", deletedRowId=" + std::to_string(deletedId));
+            return true;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("deleteTrustTicket error: " + std::string(e.what()));
+            return false;
+        }
+    }
+
+    // =========================================================================
+    // НОВЫЙ МЕТОД: ПОЛНАЯ ИНФОРМАЦИЯ О КЛИЕНТЕ ПО ID
+    // =========================================================================
+    //
+    // Возвращает ВСЕ поля из таблицы clients для отображения в окне
+    // «Поиск комитента» у товароведа. В отличие от getClientById(),
+    // который возвращает только базовые поля (id, phone, name, email,
+    // birth_date), данный метод возвращает полный набор сведений:
+    // паспортные данные, адрес, счётчики, статус блокировки.
+    //
+    // Метод выполняет только SELECT (чтение). Данные не изменяет.
+    // Потокобезопасность: собственная транзакция, гонка исключена.
+    //
+    // @param clientId - ID клиента в таблице clients
+    // @return JSON-объект со всеми полями клиента, или {"error": "..."}
+    // =========================================================================
+    json getClientFullInfo(int clientId) {
+        try {
+            pqxx::work txn{ *conn_ };
+            g_serverLogger.info("getClientFullInfo: request for clientId=" +
+                std::to_string(clientId));
+
+            // ИСПРАВЛЕНИЕ: Динамическое вычисление сданных и проданных товаров из таблицы items
+            auto res = txn.exec(
+                "SELECT c.id, c.phone, c.last_name, c.first_name, c.middle_name, c.email, c.role, "
+                "c.birth_date, c.passport_type, c.passport_series, c.passport_number, c.address, "
+                "c.is_blocked, c.blocked_at, c.block_reason, c.created_at, "
+                "COALESCE(SUM(i.quantity), 0) AS items_submitted, "
+                "COALESCE(SUM(i.sold_quantity), 0) AS items_sold "
+                "FROM clients c "
+                "LEFT JOIN items i ON c.id = i.client_id "
+                "WHERE c.id = $1 "
+                "GROUP BY c.id, c.phone, c.last_name, c.first_name, c.middle_name, c.email, c.role, "
+                "c.birth_date, c.passport_type, c.passport_series, c.passport_number, c.address, "
+                "c.is_blocked, c.blocked_at, c.block_reason, c.created_at",
+                pqxx::params{ clientId }
+            );
+            if (res.empty()) {
+                g_serverLogger.warning("getClientFullInfo: client NOT found, id=" +
+                    std::to_string(clientId));
+                json err;
+                err["error"] = "Client not found";
+                return err;
+            }
+            const auto& row = res[0];
+            json client;
+            client["id"] = row["id"].as<int>();
+            client["phone"] = row["phone"].as<std::string>();
+            client["last_name"] = row["last_name"].as<std::string>();
+            client["first_name"] = row["first_name"].as<std::string>();
+            client["middle_name"] = row["middle_name"].is_null()
+                ? "" : row["middle_name"].as<std::string>();
+            client["email"] = row["email"].is_null()
+                ? "" : row["email"].as<std::string>();
+            client["role"] = row["role"].is_null()
+                ? "client" : row["role"].as<std::string>();
+            client["birth_date"] = row["birth_date"].is_null()
+                ? "" : row["birth_date"].as<std::string>();
+            client["passport_type"] = row["passport_type"].is_null()
+                ? "" : row["passport_type"].as<std::string>();
+            client["passport_series"] = row["passport_series"].is_null()
+                ? "" : row["passport_series"].as<std::string>();
+            client["passport_number"] = row["passport_number"].is_null()
+                ? "" : row["passport_number"].as<std::string>();
+            client["address"] = row["address"].is_null()
+                ? "" : row["address"].as<std::string>();
+            client["items_submitted"] = row["items_submitted"].as<int>();
+            client["items_sold"] = row["items_sold"].as<int>();
+            client["is_blocked"] = row["is_blocked"].as<bool>();
+            client["block_reason"] = row["block_reason"].is_null()
+                ? "" : row["block_reason"].as<std::string>();
+            if (!row["blocked_at"].is_null()) {
+                client["blocked_at"] = row["blocked_at"].as<int64_t>();
+            }
+            else {
+                client["blocked_at"] = nullptr;
+            }
+            client["created_at"] = row["created_at"].as<int64_t>();
+
+            // Формируем полное ФИО по тому же правилу, что и в getClientByPhone
+            std::string fullName = client["last_name"].get<std::string>() +
+                " " + client["first_name"].get<std::string>();
+            if (!client["middle_name"].get<std::string>().empty()) {
+                fullName += " " + client["middle_name"].get<std::string>();
+            }
+            client["full_name"] = fullName;
+
+            g_serverLogger.info("getClientFullInfo: found client id=" +
+                std::to_string(clientId) +
+                ", phone=" + client["phone"].get<std::string>() +
+                ", fullName=" + fullName +
+                ", role=" + client["role"].get<std::string>() +
+                ", isBlocked=" + std::to_string(client["is_blocked"].get<bool>()));
+            return client;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getClientFullInfo error: " + std::string(e.what()));
+            json err;
+            err["error"] = std::string("Database error: ") + e.what();
+            return err;
+        }
+    }
+
+    // =========================================================================
+    // НОВЫЙ МЕТОД: ПОИСК КЛИЕНТОВ ПО ФАМИЛИИ, ИМЕНИ И ОТЧЕСТВУ
+    // =========================================================================
+    //
+    // Ищет клиентов в таблице clients по полям last_name, first_name,
+    // middle_name через ILIKE (регистронезависимый поиск с шаблоном %...%).
+    // Каждое поле является необязательным: можно искать только по фамилии,
+    // или по фамилии и имени, или по полному ФИО.
+    //
+    // Ограничения:
+    //   - Ищутся только клиенты с ролью 'client' или NULL
+    //     (товароведы и директора не отображаются в результатах).
+    //   - Максимум 50 результатов (LIMIT 50) для защиты от перегрузки.
+    //   - Сортировка по last_name, first_name, middle_name.
+    //
+    // Метод выполняет только SELECT (чтение). Данные не изменяет.
+    // Потокобезопасность: собственная транзакция, гонка исключена.
+    //
+    // @param lastName   - фамилия (пустая строка = не фильтровать)
+    // @param firstName  - имя (пустая строка = не фильтровать)
+    // @param middleName - отчество (пустая строка = не фильтровать)
+    // @return JSON-массив найденных клиентов с полной информацией
+    // =========================================================================
+    json searchClientsByFio(const std::string& lastName,
+        const std::string& firstName,
+        const std::string& middleName) {
+        json result = json::array();
+        try {
+            pqxx::work txn{ *conn_ };
+            g_serverLogger.info("searchClientsByFio: lastName='" + lastName +
+                "', firstName='" + firstName +
+                "', middleName='" + middleName + "'");
+
+            // ИСПРАВЛЕНИЕ: Базовый запрос с LEFT JOIN и агрегацией
+            std::string query =
+                "SELECT c.id, c.phone, c.last_name, c.first_name, c.middle_name, c.email, c.role, "
+                "c.birth_date, c.passport_type, c.passport_series, c.passport_number, c.address, "
+                "c.is_blocked, c.blocked_at, c.block_reason, c.created_at, "
+                "COALESCE(SUM(i.quantity), 0) AS items_submitted, "
+                "COALESCE(SUM(i.sold_quantity), 0) AS items_sold "
+                "FROM clients c "
+                "LEFT JOIN items i ON c.id = i.client_id "
+                "WHERE (c.role = 'client' OR c.role IS NULL)";
+
+            pqxx::params params;
+            int paramIndex = 1;
+
+            // Добавляем условия ILIKE для каждого заполненного поля
+            if (!lastName.empty()) {
+                query += " AND c.last_name ILIKE $" + std::to_string(paramIndex);
+                params.append("%" + lastName + "%");
+                paramIndex++;
+            }
+            if (!firstName.empty()) {
+                query += " AND c.first_name ILIKE $" + std::to_string(paramIndex);
+                params.append("%" + firstName + "%");
+                paramIndex++;
+            }
+            if (!middleName.empty()) {
+                query += " AND c.middle_name ILIKE $" + std::to_string(paramIndex);
+                params.append("%" + middleName + "%");
+                paramIndex++;
+            }
+
+            // ИСПРАВЛЕНИЕ: Добавляем GROUP BY перед ORDER BY
+            query += " GROUP BY c.id, c.phone, c.last_name, c.first_name, c.middle_name, c.email, c.role, "
+                "c.birth_date, c.passport_type, c.passport_series, c.passport_number, c.address, "
+                "c.is_blocked, c.blocked_at, c.block_reason, c.created_at "
+                "ORDER BY c.last_name, c.first_name, c.middle_name LIMIT 50";
+
+            auto res = txn.exec(query, params);
+            g_serverLogger.info("searchClientsByFio: query returned " +
+                std::to_string(res.size()) + " rows");
+
+            for (const auto& row : res) {
+                json client;
+                client["id"] = row["id"].as<int>();
+                client["phone"] = row["phone"].as<std::string>();
+                client["last_name"] = row["last_name"].as<std::string>();
+                client["first_name"] = row["first_name"].as<std::string>();
+                client["middle_name"] = row["middle_name"].is_null()
+                    ? "" : row["middle_name"].as<std::string>();
+                client["email"] = row["email"].is_null()
+                    ? "" : row["email"].as<std::string>();
+                client["role"] = row["role"].is_null()
+                    ? "client" : row["role"].as<std::string>();
+                client["birth_date"] = row["birth_date"].is_null()
+                    ? "" : row["birth_date"].as<std::string>();
+                client["passport_type"] = row["passport_type"].is_null()
+                    ? "" : row["passport_type"].as<std::string>();
+                client["passport_series"] = row["passport_series"].is_null()
+                    ? "" : row["passport_series"].as<std::string>();
+                client["passport_number"] = row["passport_number"].is_null()
+                    ? "" : row["passport_number"].as<std::string>();
+                client["address"] = row["address"].is_null()
+                    ? "" : row["address"].as<std::string>();
+                client["items_submitted"] = row["items_submitted"].as<int>();
+                client["items_sold"] = row["items_sold"].as<int>();
+                client["is_blocked"] = row["is_blocked"].as<bool>();
+                client["block_reason"] = row["block_reason"].is_null()
+                    ? "" : row["block_reason"].as<std::string>();
+                if (!row["blocked_at"].is_null()) {
+                    client["blocked_at"] = row["blocked_at"].as<int64_t>();
+                }
+                else {
+                    client["blocked_at"] = nullptr;
+                }
+                client["created_at"] = row["created_at"].as<int64_t>();
+
+                std::string fullName = client["last_name"].get<std::string>() +
+                    " " + client["first_name"].get<std::string>();
+                if (!client["middle_name"].get<std::string>().empty()) {
+                    fullName += " " + client["middle_name"].get<std::string>();
+                }
+                client["full_name"] = fullName;
+
+                result.push_back(client);
+            }
+
+            g_serverLogger.info("searchClientsByFio: completed, found " +
+                std::to_string(result.size()) + " clients");
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("searchClientsByFio error: " + std::string(e.what()));
+        }
+        return result;
+    }
+
 };

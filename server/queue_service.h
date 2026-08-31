@@ -189,4 +189,44 @@ public:
         return db_->getAcceptedTrustTickets();
     }
 
+    // =========================================================================
+    // НОВЫЕ МЕТОДЫ: УДАЛЕНИЕ ТАЛОНОВ ИЗ ОЧЕРЕДЕЙ
+    // =========================================================================
+    //
+    // Обёртки над методами Database для удаления талонов, по которым
+    // комитент не пришёл к окну товароведа в течение 2 минут.
+    // Вызываются из server.cpp::handleQueueDeleteTicket().
+    //
+    // Потокобезопасность: каждый метод делегирует выполнение в Database,
+    // где удаление выполняется атомарно в одной транзакции.
+    // =========================================================================
+
+    /**
+     * @brief Удаляет талон из общих очередей (general, extra_20, paid, expensive)
+     * @param ticketNumber номер талона
+     * @param queueType тип очереди
+     * @return true если талон удалён
+     */
+    bool deleteWaitingTicket(const std::string& ticketNumber, const std::string& queueType) {
+        return db_->deleteWaitingTicket(ticketNumber, queueType);
+    }
+
+    /**
+     * @brief Удаляет талон из очереди "Первый раз"
+     * @param ticketNumber номер талона
+     * @return true если талон удалён
+     */
+    bool deleteFirstTimeTicket(const std::string& ticketNumber) {
+        return db_->deleteFirstTimeTicket(ticketNumber);
+    }
+
+    /**
+     * @brief Удаляет талон из очереди "На доверии"
+     * @param ticketNumber номер талона
+     * @return true если талон удалён
+     */
+    bool deleteTrustTicket(const std::string& ticketNumber) {
+        return db_->deleteTrustTicket(ticketNumber);
+    }
+
 };

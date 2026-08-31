@@ -205,6 +205,22 @@ private:
             else if (target == "/api/v1/queue/trust/serve" && method == http::verb::post) {
                 handleTrustServe(client_ip);
             }
+            // =========================================================================
+            // УДАЛЕНИЕ ТАЛОНА, ПО КОТОРОМУ КОМИТЕНТ НЕ ПРИШЁЛ
+            // Вызывается товароведом, когда комитент не подошёл к окну в течение
+            // 2 минут. Сервер проверяет возраст талона и его статус перед удалением.
+            // =========================================================================
+            else if (target == "/api/v1/queue/delete_ticket" && method == http::verb::post) {
+                handleQueueDeleteTicket(client_ip);
+            }
+            // =========================================================================
+            // ПОИСК КОМИТЕНТА ПО ИЛИ ИЛИ ФАМИЛИИ/ИМЕНИ/ОТЧЕСТВУ
+            // Вызывается товароведом из окна «Поиск комитента».
+            // Возвращает все сведения о найденном комитенте(ах) из БД сервера.
+            // =========================================================================
+            else if (target.find("/api/v1/clients/search") == 0 && method == http::verb::get) {
+                handleClientSearch(client_ip);
+            }
             else if (target == "/api/v1/onec/sync" && method == http::verb::post) {
                 handleOneCSync(client_ip);
             }
@@ -2530,6 +2546,385 @@ private:
             response_.body() = json{ {"error", "Queue display failed"} }.dump();
             response_.prepare_payload();
         }
+    }
+
+    // =========================================================================
+    // НОВЫЙ ОБРАБОТЧИК: УДАЛЕНИЕ ТАЛОНА, ПО КОТОРОМУ КОМИТЕНТ НЕ ПРИШЁЛ
+    // POST /api/v1/queue/delete_ticket
+    // =========================================================================
+    //
+    // Тело запроса (обязательные поля):
+    // {
+    //   "ticket_number": "G001",
+    //   "queue_type": "general"
+    // }
+    //
+    // Допустимые значения queue_type:
+    //   "general", "first_time", "extra_20", "trust", "paid", "expensive"
+    //
+    // Логика работы:
+    //   1. Проверка авторизации: JWT токен из заголовка Authorization.
+    //   2. Проверка роли: только 'worker' или 'director'.
+    //   3. Валидация тела запроса.
+    //   4. Делегирование удаления в QueueService -> Database.
+    //   5. Database выполняет атомарный DELETE с проверкой:
+    //      - статус = 'waiting' (или 'pending' для trust);
+    //      - возраст талона >= 120 секунд (2 минуты).
+    //   6. Возврат результата клиенту.
+    //
+    // Формат ответа при успехе:
+    // { "success": true, "deleted_ticket": "G001", "queue_type": "general" }
+    //
+    // Формат ответа при ошибке:
+    // { "error": "Ticket not found, already accepted/served, or less than 2 minutes old" }
+    //
+    // ПОТОКОБЕЗОПАСНОСТЬ:
+    // Удаление выполняется в одной транзакции БД. Проверка статуса и
+    // возраста талона в условии DELETE исключает удаление уже принятых,
+    // обслуженных или свежих талонов. Параллельные запросы на удаление
+    // одного и того же талона безопасны: первый DELETE удалит строку,
+    // второй вернёт 0 строк и метод вернёт false.
+    // =========================================================================
+    void handleQueueDeleteTicket(const std::string& client_ip) {
+        g_serverLogger.info("handleQueueDeleteTicket: request received from " + client_ip);
+
+        // =================================================================
+        // ШАГ 1: Проверка авторизации (JWT токен)
+        // =================================================================
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) {
+            authHeader = it->value();
+        }
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Missing or invalid Authorization header"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleQueueDeleteTicket: missing or invalid Authorization "
+                "header from " + client_ip);
+            return;
+        }
+        std::string token = authHeader.substr(7);
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid or expired token"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleQueueDeleteTicket: invalid or expired token from " +
+                client_ip);
+            return;
+        }
+
+        // =================================================================
+        // ШАГ 2: Проверка роли - только 'worker' или 'director'
+        // =================================================================
+        auto clientOpt = db_->getClientByPhone(*phoneOpt);
+        if (!clientOpt || (clientOpt->role != "worker" && clientOpt->role != "director")) {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Access denied: worker or director role required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleQueueDeleteTicket: access denied for phone=" +
+                *phoneOpt + ", role=" +
+                (clientOpt ? clientOpt->role : "unknown") +
+                " from " + client_ip);
+            return;
+        }
+
+        // =================================================================
+        // ШАГ 3: Разбор и валидация тела запроса
+        // =================================================================
+        json body;
+        try {
+            body = json::parse(request_.body());
+            g_serverLogger.info("handleQueueDeleteTicket: parsed body: " + body.dump());
+        }
+        catch (const json::parse_error& e) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleQueueDeleteTicket: JSON parse error from " +
+                client_ip + ": " + std::string(e.what()));
+            return;
+        }
+
+        if (!body.contains("ticket_number") || !body["ticket_number"].is_string()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "ticket_number is required and must be a string"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleQueueDeleteTicket: missing or invalid ticket_number "
+                "from " + client_ip);
+            return;
+        }
+        if (!body.contains("queue_type") || !body["queue_type"].is_string()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "queue_type is required and must be a string"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleQueueDeleteTicket: missing or invalid queue_type "
+                "from " + client_ip);
+            return;
+        }
+
+        std::string ticketNumber = body["ticket_number"].get<std::string>();
+        std::string queueType = body["queue_type"].get<std::string>();
+
+        g_serverLogger.info("handleQueueDeleteTicket: ticketNumber=" + ticketNumber +
+            ", queueType=" + queueType +
+            ", workerPhone=" + *phoneOpt +
+            ", workerId=" + std::to_string(clientOpt->id) +
+            ", from=" + client_ip);
+
+        // =================================================================
+        // ШАГ 4: Выполняем удаление в зависимости от типа очереди
+        // =================================================================
+        bool deleted = false;
+        if (queueType == "first_time") {
+            g_serverLogger.info("handleQueueDeleteTicket: delegating to "
+                "queue_->deleteFirstTimeTicket()");
+            deleted = queue_->deleteFirstTimeTicket(ticketNumber);
+        }
+        else if (queueType == "trust") {
+            g_serverLogger.info("handleQueueDeleteTicket: delegating to "
+                "queue_->deleteTrustTicket()");
+            deleted = queue_->deleteTrustTicket(ticketNumber);
+        }
+        else {
+            // general, extra_20, paid, expensive
+            g_serverLogger.info("handleQueueDeleteTicket: delegating to "
+                "queue_->deleteWaitingTicket()");
+            deleted = queue_->deleteWaitingTicket(ticketNumber, queueType);
+        }
+
+        // =================================================================
+        // ШАГ 5: Формируем ответ клиенту
+        // =================================================================
+        if (deleted) {
+            response_.result(http::status::ok);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"success", true},
+                {"deleted_ticket", ticketNumber},
+                {"queue_type", queueType}
+            }.dump();
+            response_.prepare_payload();
+            g_serverLogger.info("handleQueueDeleteTicket: SUCCESS - ticket " + ticketNumber +
+                " deleted from queue " + queueType +
+                " by worker " + *phoneOpt + " (id=" +
+                std::to_string(clientOpt->id) + ")");
+        }
+        else {
+            response_.result(http::status::not_found);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Ticket not found, already accepted/served, or less than 2 minutes old"}
+            }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleQueueDeleteTicket: FAILED - ticket " + ticketNumber +
+                " could NOT be deleted from queue " + queueType +
+                ". Possible reasons: not found, not in waiting status, "
+                "or less than 2 minutes old.");
+        }
+    }
+
+    // =========================================================================
+    // НОВЫЙ ОБРАБОТЧИК: ПОИСК КОМИТЕНТА ПО ИЛИ ИЛИ ФАМИЛИИ/ИМЕНИ/ОТЧЕСТВУ
+    // GET /api/v1/clients/search
+    // =========================================================================
+    //
+    // Параметры запроса (один из вариантов):
+    //
+    // Вариант 1 - поиск по:
+    //   GET /api/v1/clients/search?id=42
+    //
+    // Вариант 2 - поиск по (все три поля необязательные):
+    //   GET /api/v1/clients/search?last_name=Иванов&first_name=Иван&middle_name=Иванович
+    //
+    // Приоритет: если указан параметр 'id', поиск выполняется по.
+    // Параметры ФИО в этом случае игнорируются.
+    //
+    // Возвращает:
+    // {
+    //   "clients": [ { ...все поля клиента... }, ... ],
+    //   "count": 1
+    // }
+    //
+    // ДОСТУП: только для роли 'worker' или 'director'.
+    //
+    // ПОТОКОБЕЗОПАСНОСТЬ:
+    // Метод выполняет только SELECT (чтение) из БД. Данные не изменяет.
+    // Каждый запрос выполняется в собственной транзакции.
+    // =========================================================================
+    void handleClientSearch(const std::string& client_ip) {
+        g_serverLogger.info("handleClientSearch: request received from " + client_ip);
+
+        // =================================================================
+        // ШАГ 1: Проверка авторизации ( токен)
+        // =================================================================
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) {
+            authHeader = it->value();
+        }
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Missing or invalid Authorization header"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleClientSearch: missing or invalid Authorization "
+                "header from " + client_ip);
+            return;
+        }
+        std::string token = authHeader.substr(7);
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid or expired token"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleClientSearch: invalid or expired token from " +
+                client_ip);
+            return;
+        }
+
+        // =================================================================
+        // ШАГ 2: Проверка роли - только 'worker' или 'director'
+        // =================================================================
+        auto clientOpt = db_->getClientByPhone(*phoneOpt);
+        if (!clientOpt || (clientOpt->role != "worker" && clientOpt->role != "director")) {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Access denied: worker or director role required"} }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleClientSearch: access denied for phone=" +
+                *phoneOpt + ", role=" +
+                (clientOpt ? clientOpt->role : "unknown") +
+                " from " + client_ip);
+            return;
+        }
+
+        // =================================================================
+        // ШАГ 3: Извлечение параметров запроса из
+        // =================================================================
+        std::string query = request_.target();
+
+        // Лямбда для извлечения параметра из query string
+        auto extractParam = [&query](const std::string& paramName) -> std::string {
+            std::string searchStr = "?" + paramName + "=";
+            size_t pos = query.find(searchStr);
+            if (pos == std::string::npos) {
+                searchStr = "&" + paramName + "=";
+                pos = query.find(searchStr);
+            }
+            if (pos == std::string::npos) {
+                return "";
+            }
+            std::string value = query.substr(pos + searchStr.length());
+            size_t end = value.find('&');
+            if (end != std::string::npos) {
+                value = value.substr(0, end);
+            }
+            return value;
+            };
+
+        std::string idStr = extractParam("id");
+        std::string lastName = extractParam("last_name");
+        std::string firstName = extractParam("first_name");
+        std::string middleName = extractParam("middle_name");
+
+        g_serverLogger.info("handleClientSearch: params - id='" + idStr +
+            "', last_name='" + lastName +
+            "', first_name='" + firstName +
+            "', middle_name='" + middleName + "'");
+
+        json clientsArray = json::array();
+
+        // =================================================================
+        // ШАГ 4: Поиск по (приоритет над ФИО)
+        // =================================================================
+        if (!idStr.empty()) {
+            int clientId = 0;
+            try {
+                clientId = std::stoi(idStr);
+            }
+            catch (...) {
+                response_.result(http::status::bad_request);
+                response_.set(http::field::content_type, "application/json");
+                response_.body() = json{ {"error", "Invalid id parameter: must be an integer"} }.dump();
+                response_.prepare_payload();
+                g_serverLogger.warning("handleClientSearch: invalid id parameter '" +
+                    idStr + "' from " + client_ip);
+                return;
+            }
+
+            if (clientId <= 0) {
+                response_.result(http::status::bad_request);
+                response_.set(http::field::content_type, "application/json");
+                response_.body() = json{ {"error", "id must be a positive integer"} }.dump();
+                response_.prepare_payload();
+                g_serverLogger.warning("handleClientSearch: non-positive id=" +
+                    std::to_string(clientId) + " from " + client_ip);
+                return;
+            }
+
+            g_serverLogger.info("handleClientSearch: searching by id=" +
+                std::to_string(clientId));
+            json clientInfo = db_->getClientFullInfo(clientId);
+            if (!clientInfo.contains("error")) {
+                clientsArray.push_back(clientInfo);
+                g_serverLogger.info("handleClientSearch: client found by id=" +
+                    std::to_string(clientId));
+            }
+            else {
+                g_serverLogger.warning("handleClientSearch: client NOT found by id=" +
+                    std::to_string(clientId));
+            }
+        }
+        // =================================================================
+        // ШАГ 5: Поиск по фамилии, имени и отчеству
+        // =================================================================
+        else if (!lastName.empty() || !firstName.empty() || !middleName.empty()) {
+            g_serverLogger.info("handleClientSearch: searching by FIO - "
+                "lastName='" + lastName + "', firstName='" + firstName +
+                "', middleName='" + middleName + "'");
+            clientsArray = db_->searchClientsByFio(lastName, firstName, middleName);
+            g_serverLogger.info("handleClientSearch: FIO search returned " +
+                std::to_string(clientsArray.size()) + " clients");
+        }
+        // =================================================================
+        // ШАГ 6: Ни один параметр поиска не указан
+        // =================================================================
+        else {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Provide search parameters: id, or last_name/first_name/middle_name"}
+            }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleClientSearch: no search parameters provided "
+                "from " + client_ip);
+            return;
+        }
+
+        // =================================================================
+        // ШАГ 7: Формируем успешный ответ
+        // =================================================================
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{
+            {"clients", clientsArray},
+            {"count", clientsArray.size()}
+        }.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("handleClientSearch: SUCCESS - returned " +
+            std::to_string(clientsArray.size()) +
+            " client(s) to worker " + *phoneOpt +
+            " (id=" + std::to_string(clientOpt->id) + ")" +
+            " from " + client_ip);
     }
 
     void doWrite() {
