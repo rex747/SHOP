@@ -28,6 +28,8 @@ Logger g_logger(L"worker.log");
 HTTPSClient g_httpsClient(Config::SERVER_HOST, Config::SERVER_PORT);
 AuthManager g_authManager;
 
+#pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+
 //constexpr const wchar_t* DIRECTOR_PHONE = L"+79914869324"; // Телефон директора магазина 
 
 int WINAPI wWinMain(_In_ HINSTANCE hInstance,
@@ -42,7 +44,13 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance,
     icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
     icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES | ICC_TAB_CLASSES |
         ICC_LISTVIEW_CLASSES;  // Добавлены Tab и ListView
-    InitCommonControlsEx(&icex);
+
+    if (!InitCommonControlsEx(&icex)) {
+        g_logger.error(L"InitCommonControlsEx failed in main thread");
+        MessageBoxW(nullptr, L"Не удалось инициализировать общие элементы управления",
+            L"Ошибка", MB_ICONERROR);
+        return 1;
+    }
 
     g_logger.info(L"WorkerApp started");
     //g_logger.info(L"Director phone constant: " + std::wstring(DIRECTOR_PHONE));
@@ -87,13 +95,30 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance,
         return 0;
     }
 
-    // Обычный сценарий: товаровед или клиент.
     g_logger.info(L"WORKER/CLIENT DETECTED: role=" + userRole + L", phone=" + userPhone);
     g_logger.info(L"Starting WorkerWindow");
+
+    // =====================================================================
+    // ИСПРАВЛЕНИЕ: Инициализация общих элементов управления в дочернем потоке
+    // перед созданием WorkerWindow. Это гарантирует, что классы ListView,
+    // TabControl и др. будут зарегистрированы для данного потока.
+    // =====================================================================
     std::thread workerThread([]() {
+        // Повторная инициализация для потока (безопасна, если уже вызвана)
+        INITCOMMONCONTROLSEX icex = {};
+        icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
+        icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES | ICC_TAB_CLASSES |
+            ICC_LISTVIEW_CLASSES;
+        if (!InitCommonControlsEx(&icex)) {
+            g_logger.error(L"WorkerThread: InitCommonControlsEx failed");
+            return;
+        }
+        g_logger.info(L"WorkerThread: common controls initialized successfully");
+
         WorkerWindow workerWnd;
         workerWnd.show();
-        });
+    });
+
 	// Параллельно запускаем окно отображения очередей на втором мониторе
     QueueDisplayWindow displayWnd;
     displayWnd.show();

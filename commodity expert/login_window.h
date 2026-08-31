@@ -35,7 +35,7 @@ private:
         ID_KEY_F, ID_KEY_G, ID_KEY_H, ID_KEY_I, ID_KEY_J,
         ID_KEY_K, ID_KEY_L, ID_KEY_M, ID_KEY_N, ID_KEY_O,
         ID_KEY_P, ID_KEY_Q, ID_KEY_R, ID_KEY_S, ID_KEY_T,
-        ID_KEY_U, ID_KEY_V, ID_KEY_W, ID_KEY_X, ID_KEY_Y, ID_KEY_Z
+        ID_KEY_U, ID_KEY_V, ID_KEY_W, ID_KEY_X, ID_KEY_Y, ID_KEY_Z, ID_KEY_EYE = 1200   // кнопка-"глаз" (показать/скрыть пароль)
     };
 
     enum LoginResultCode {
@@ -49,6 +49,10 @@ private:
     HWND m_hWnd;
     HWND m_hPhoneEdit;
     HWND m_hPasswordEdit;  // поле для пароля
+
+    HWND  m_hEyeBtn;          // кнопка-"глаз" показа/скрытия пароля
+    bool  m_passwordVisible;  // true = пароль отображается открытым текстом
+    WCHAR m_passwordChar;     // исходный маскирующий символ поля (для точного восстановления)
     
     HWND m_hStatusLabel;
     HWND m_hSubmitBtn;
@@ -61,7 +65,7 @@ private:
     int m_clientId;
     std::wstring m_fullName;
     std::wstring m_normalizedPhone;
-    std::string m_enteredPassword;  // НОВОЕ: введенный пароль
+    std::string m_enteredPassword;  // введенный пароль
     bool m_loginSuccess;
     std::atomic<bool> m_isAuthenticating;
     bool m_passwordMode;  // режим ввода пароля (true) или телефона (false)
@@ -137,36 +141,56 @@ private:
         LoginWindow* pThis = nullptr;
         if (msg == WM_CREATE) {
             CREATESTRUCTW* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+			g_logger.info(L"LoginWindow: WM_CREATE received, lpCreateParams=" + std::to_wstring((LONG_PTR)cs->lpCreateParams));
             pThis = reinterpret_cast<LoginWindow*>(cs->lpCreateParams);
+			g_logger.info(L"LoginWindow: WM_CREATE, pThis=" + std::to_wstring((LONG_PTR)pThis));
             SetWindowLongPtrW(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
+			g_logger.info(L"LoginWindow: WM_CREATE, GWLP_USERDATA set to " + std::to_wstring((LONG_PTR)pThis));
             pThis->m_hWnd = hWnd;
+			g_logger.info(L"LoginWindow: WM_CREATE, m_hWnd set to " + std::to_wstring((LONG_PTR)pThis->m_hWnd));
             pThis->createControls();
+			g_logger.info(L"LoginWindow: createControls() completed");
             g_logger.info(L"LoginWindow: WM_CREATE processed");
             return 0;
         }
         pThis = reinterpret_cast<LoginWindow*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+		g_logger.info(L"LoginWindow: WndProc called, msg=" + std::to_wstring(msg) + L", pThis=" + std::to_wstring((LONG_PTR)pThis));
         if (!pThis) return DefWindowProcW(hWnd, msg, wParam, lParam);
+		g_logger.info(L"LoginWindow: WndProc, pThis is valid, processing message " + std::to_wstring(msg));
         switch (msg) {
-        case WM_COMMAND: pThis->onCommand(wParam); return 0;
-        case WM_CTLCOLORBTN: return pThis->onCtlColorBtn((HDC)wParam, (HWND)lParam);
-        case WM_CTLCOLORSTATIC: return pThis->onCtlColorStatic((HDC)wParam);
-        case WM_CTLCOLOREDIT: return pThis->onCtlColorEdit((HDC)wParam, (HWND)lParam);
-        case WM_LOGIN_RESULT: pThis->onLoginResult(); return 0;
-        case WM_TIMER:
-            if (wParam == TIMER_ID_CLOSE) {
-                KillTimer(hWnd, TIMER_ID_CLOSE);
-                g_logger.info(L"LoginWindow: timer fired, destroying window");
+			g_logger.info(L"LoginWindow: WndProc, processing message " + std::to_wstring(msg));
+            case WM_COMMAND: 
+                pThis->onCommand(wParam); 
+				g_logger.info(L"LoginWindow: WM_COMMAND processed");
+                return 0;
+            case WM_CTLCOLORBTN: 
+                return pThis->onCtlColorBtn((HDC)wParam, (HWND)lParam);
+				g_logger.log(LogLevel::DEBUG, L"LoginWindow: WM_CTLCOLORBTN processed");
+            case WM_CTLCOLORSTATIC: 
+                return pThis->onCtlColorStatic((HDC)wParam);
+				g_logger.log(LogLevel::DEBUG, L"LoginWindow: WM_CTLCOLORSTATIC processed");
+            case WM_CTLCOLOREDIT: 
+                return pThis->onCtlColorEdit((HDC)wParam, (HWND)lParam);
+				g_logger.log(LogLevel::DEBUG, L"LoginWindow: WM_CTLCOLOREDIT processed");
+            case WM_LOGIN_RESULT: 
+                pThis->onLoginResult(); 
+				g_logger.log(LogLevel::DEBUG, L"LoginWindow: WM_LOGIN_RESULT processed");
+                return 0;
+            case WM_TIMER:
+                if (wParam == TIMER_ID_CLOSE) {
+                    KillTimer(hWnd, TIMER_ID_CLOSE);
+                    g_logger.info(L"LoginWindow: timer fired, destroying window");
+                    DestroyWindow(hWnd);
+                }
+                return 0;
+            case WM_CLOSE:
+                g_logger.info(L"LoginWindow: WM_CLOSE received");
                 DestroyWindow(hWnd);
-            }
-            return 0;
-        case WM_CLOSE:
-            g_logger.info(L"LoginWindow: WM_CLOSE received");
-            DestroyWindow(hWnd);
-            return 0;
-        case WM_DESTROY:
-            g_logger.info(L"LoginWindow: WM_DESTROY, releasing resources");
-            pThis->releaseResources();
-            return 0;
+                return 0;
+            case WM_DESTROY:
+                g_logger.info(L"LoginWindow: WM_DESTROY, releasing resources");
+                pThis->releaseResources();
+                return 0;
         }
         return DefWindowProcW(hWnd, msg, wParam, lParam);
     }
@@ -177,7 +201,6 @@ private:
         int clientWidth = rc.right - rc.left;
         int centerX = clientWidth / 2;
         int startY = 20;
-
         // Шрифты и кисти — без изменений (создаются здесь же, как в текущей версии)
         m_hFontTitle = CreateFontW(36, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
         m_hFontButton = CreateFontW(24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
@@ -187,13 +210,11 @@ private:
         m_hRedBrush = CreateSolidBrush(Config::BACK_BUTTON_COLOR);
         m_hWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
         m_hGrayBrush = CreateSolidBrush(RGB(80, 80, 80));
-
         // 1) Заголовок (Y 20..70)
         HWND hTitle = CreateWindowExW(0, L"STATIC", L"Вход в систему", WS_VISIBLE | WS_CHILD | SS_CENTER,
             centerX - 150, startY, 300, 50, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(hTitle, WM_SETFONT, (WPARAM)m_hFontTitle, TRUE);
         startY += 60;                                   // = 80
-
         // 2) Телефон (Y 80..120)
         HWND hLabel = CreateWindowExW(0, L"STATIC", L"Номер телефона:", WS_VISIBLE | WS_CHILD | SS_RIGHT,
             centerX - 200, startY, 180, 40, m_hWnd, nullptr, g_hInstance, nullptr);
@@ -204,16 +225,27 @@ private:
         m_origEditProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(m_hPhoneEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(EditSubclassProc)));
         SetWindowLongPtrW(m_hPhoneEdit, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(m_origEditProc));
         startY += 50;                                   // = 130
-
         // 3) Пароль (Y 130..170)
         HWND hPwdLabel = CreateWindowExW(0, L"STATIC", L"Пароль:", WS_VISIBLE | WS_CHILD | SS_RIGHT,
             centerX - 200, startY, 180, 40, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(hPwdLabel, WM_SETFONT, (WPARAM)m_hFontLabel, TRUE);
         m_hPasswordEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL | ES_PASSWORD,
-            centerX + 20, startY, 200, 40, m_hWnd, nullptr, g_hInstance, nullptr);
+            centerX + 20, startY, 150, 40, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hPasswordEdit, WM_SETFONT, (WPARAM)m_hFontEdit, TRUE);
-        startY += 60;                                   // = 190: клавиатура ПОСЛЕ полей
+                
+        m_hEyeBtn = CreateWindowExW(0, L"BUTTON", L"👁",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_NOTIFY,
+            centerX + 175, startY, 45, 40, m_hWnd, (HMENU)(INT_PTR)ID_KEY_EYE, g_hInstance, nullptr);
+        SendMessageW(m_hEyeBtn, WM_SETFONT, (WPARAM)m_hFontEdit, TRUE);
+        // Запоминаем ИСХОДНЫЙ маскирующий символ ES_PASSWORD, чтобы при скрытии
+        // восстанавливать точно его, а не произвольный.
+        m_passwordChar = (wchar_t)SendMessageW(m_hPasswordEdit, EM_GETPASSWORDCHAR, 0, 0);
+        if (m_passwordChar == 0) m_passwordChar = L'*';
+        g_logger.info(L"LoginWindow: eye-button created at x=" + std::to_wstring(centerX + 175) +
+            L", y=" + std::to_wstring(startY) +
+            L" (same row as password field, right side), original password char saved");
 
+        startY += 60;                                   // = 190: клавиатура ПОСЛЕ полей
         // 4) Клавиатура на фиксированной Y; резервируем МАКСИМУМ 5 рядов
         //    (буквенная раскладка пароля = 5 рядов), чтобы статус и «Войти»
         //    не зависели от текущей раскладки.
@@ -230,7 +262,6 @@ private:
             centerX - 100, startY, 200, 50, m_hWnd, (HMENU)(INT_PTR)1, g_hInstance, nullptr);
         SendMessageW(m_hSubmitBtn, WM_SETFONT, (WPARAM)m_hFontButton, TRUE);
         startY += 50;                                                 // = 628 — низ последней кнопки
-
         g_logger.info(L"LoginWindow: layout complete, required client height=" + std::to_wstring(startY));
         if (startY > (rc.bottom - rc.top)) {
             g_logger.warning(L"LoginWindow: required height " + std::to_wstring(startY) +
@@ -340,8 +371,9 @@ private:
     }
 
     LRESULT onCtlColorStatic(HDC hdc) {
-        SetTextColor(hdc, RGB(0, 0, 0)); SetBkMode(hdc, TRANSPARENT);
-        return (LRESULT)GetStockObject(NULL_BRUSH);
+        SetTextColor(hdc, RGB(0, 0, 0));
+        SetBkMode(hdc, TRANSPARENT);
+        return (LRESULT)m_hWhiteBrush;   // ИСПРАВЛЕНИЕ: было GetStockObject(NULL_BRUSH)
     }
 
     LRESULT onCtlColorEdit(HDC hdc, HWND hEdit) {
@@ -361,6 +393,11 @@ private:
             g_logger.info(L"LoginWindow: onCommand ignored, authenticating in progress");
             return;
         }
+        // === кнопка-"глаз" — показать/скрыть пароль ===
+        if (cmd == ID_KEY_EYE) { 
+            onTogglePasswordVisibility(); 
+            return; 
+        }
         if ((cmd >= ID_KEY_1 && cmd <= ID_KEY_CLEAR) ||
             (cmd >= ID_KEY_A && cmd <= ID_KEY_Z) ||
             cmd == ID_KEY_MODE || cmd == ID_KEY_CASE || cmd == ID_KEY_DIGITS) {
@@ -369,13 +406,35 @@ private:
         if (cmd == 1) { onSubmit(); return; }
     }
 
+    void onTogglePasswordVisibility() {
+        m_passwordVisible = !m_passwordVisible;
+        g_logger.info(L"LoginWindow: eye-button pressed, password now " +
+            std::wstring(m_passwordVisible ? L"VISIBLE" : L"HIDDEN"));
+        // Показ открытым текстом (0) либо восстановление исходной маскировки
+        SendMessageW(m_hPasswordEdit, EM_SETPASSWORDCHAR,
+            m_passwordVisible ? 0 : (WPARAM)m_passwordChar, 0);
+        // Каретка — строго в конец введённого текста (см. раздел II)
+        const int len = GetWindowTextLengthW(m_hPasswordEdit);
+        SendMessageW(m_hPasswordEdit, EM_SETSEL, (WPARAM)len, (LPARAM)len);
+        InvalidateRect(m_hPasswordEdit, nullptr, TRUE);   // гарантированная перерисовка поля
+        SetFocus(m_hPasswordEdit);                        // фокус остаётся в поле пароля
+        // Смена пиктограммы: 👁 (скрыто) / 🙈 (показано)
+        SetWindowTextW(m_hEyeBtn, m_passwordVisible ? L"🙈" : L"👁");
+        g_logger.info(L"LoginWindow: eye-button icon updated, caret pinned to end (" +
+            std::to_wstring(len) + L")");
+    }
+
     void onKeyPress(int id) {
         if (id == ID_KEY_MODE) {
             // Смена ЦЕЛЕВОГО ПОЛЯ: телефон <-> пароль; фокус следует за целью
             m_passwordMode = !m_passwordMode;
             m_keyLayout = m_passwordMode ? 1 : 0;   // пароль стартует с букв, телефон с цифр
             rebuildKeyboard();
-            SetFocus(m_passwordMode ? m_hPasswordEdit : m_hPhoneEdit);
+            HWND hTarget = (GetFocus() == m_hPasswordEdit) ? m_hPasswordEdit : m_hPhoneEdit;
+            SetFocus(hTarget);
+            // === ИСПРАВЛЕНИЕ: каретка в конец текста после возврата фокуса ===
+            const int len = GetWindowTextLengthW(hTarget);
+            SendMessageW(hTarget, EM_SETSEL, (WPARAM)len, (LPARAM)len);
             SetWindowTextW(m_hStatusLabel, m_passwordMode ? L"Режим ввода пароля" : L"Режим ввода телефона");
             return;
         }
@@ -384,7 +443,11 @@ private:
             m_keyLayout = (m_keyLayout == 2) ? 1 : 2;
             rebuildKeyboard();
             SetFocus(m_hPasswordEdit);
-            g_logger.info(L"LoginWindow: case switched, layout=" + std::to_wstring(m_keyLayout));
+            // === ИСПРАВЛЕНИЕ: каретка в конец текста после возврата фокуса ===
+            const int len = GetWindowTextLengthW(m_hPasswordEdit);
+            SendMessageW(m_hPasswordEdit, EM_SETSEL, (WPARAM)len, (LPARAM)len);
+            g_logger.info(L"LoginWindow: case switched, layout=" + std::to_wstring(m_keyLayout) +
+                L", caret pinned to end (" + std::to_wstring(len) + L")");
             return;
         }
         // «123»/«abc» переключает РАСКЛАДКУ, а не целевое поле.
@@ -392,8 +455,13 @@ private:
         if (id == ID_KEY_DIGITS) {
             m_keyLayout = (m_keyLayout == 0) ? 1 : 0;
             rebuildKeyboard();
-            SetFocus(m_passwordMode ? m_hPasswordEdit : m_hPhoneEdit);
-            g_logger.info(L"LoginWindow: digits/letters switched, layout=" + std::to_wstring(m_keyLayout));
+            HWND hTarget = m_passwordMode ? m_hPasswordEdit : m_hPhoneEdit;
+            SetFocus(hTarget);
+            // === ИСПРАВЛЕНИЕ: каретка в конец текста после возврата фокуса ===
+            const int len = GetWindowTextLengthW(hTarget);
+            SendMessageW(hTarget, EM_SETSEL, (WPARAM)len, (LPARAM)len);
+            g_logger.info(L"LoginWindow: digits/letters switched, layout=" + std::to_wstring(m_keyLayout) +
+                L", caret pinned to end (" + std::to_wstring(len) + L")");
             return;
         }
         HWND targetEdit = m_passwordMode ? m_hPasswordEdit : m_hPhoneEdit;
@@ -401,37 +469,41 @@ private:
         GetWindowTextW(targetEdit, currentText, 64);
         std::wstring text = currentText;
         switch (id) {
-            case ID_KEY_BACKSPACE: 
-                if (!text.empty()) { 
-                    text.pop_back(); 
-                    SetWindowTextW(targetEdit, text.c_str()); 
-                } break;
-                case ID_KEY_CLEAR: 
-                    text.clear(); 
-                    SetWindowTextW(targetEdit, L""); 
-                    break;
-                case ID_KEY_PLUS: 
-                    if (!m_passwordMode && text.empty()) { 
-                        text = L"+"; 
-                        SetWindowTextW(targetEdit, text.c_str()); 
-                    } break;
-                default: {
-                    wchar_t ch = 0;
-                    if (id >= ID_KEY_1 && id <= ID_KEY_9) ch = L'0' + (id - ID_KEY_1 + 1);
-                    else if (id == ID_KEY_0) ch = L'0';
-                    else if (id >= ID_KEY_A && id <= ID_KEY_Z)
-                        // регистр берётся из раскладки (ранее всегда нижний)
-                        ch = (m_keyLayout == 2) ? L'A' + (id - ID_KEY_A) : L'a' + (id - ID_KEY_A);
-                else return;
-
-                    int maxLen = m_passwordMode ? 32 : 15;
-                    if (text.length() < maxLen) { 
-                        text += ch; 
-                        SetWindowTextW(targetEdit, text.c_str()); 
-                    }
-                break;
-                }
+        case ID_KEY_BACKSPACE:
+            if (!text.empty()) {
+                text.pop_back();
+                SetWindowTextW(targetEdit, text.c_str());
+            } break;
+        case ID_KEY_CLEAR:
+            text.clear();
+            SetWindowTextW(targetEdit, L"");
+            break;
+        case ID_KEY_PLUS:
+            if (!m_passwordMode && text.empty()) {
+                text = L"+";
+                SetWindowTextW(targetEdit, text.c_str());
+            } break;
+        default: {
+            wchar_t ch = 0;
+            if (id >= ID_KEY_1 && id <= ID_KEY_9) ch = L'0' + (id - ID_KEY_1 + 1);
+            else if (id == ID_KEY_0) ch = L'0';
+            else if (id >= ID_KEY_A && id <= ID_KEY_Z)
+                // регистр берётся из раскладки (ранее всегда нижний)
+                ch = (m_keyLayout == 2) ? L'A' + (id - ID_KEY_A) : L'a' + (id - ID_KEY_A);
+            else return;
+            int maxLen = m_passwordMode ? 32 : 15;
+            if (text.length() < maxLen) {
+                text += ch;
+                SetWindowTextW(targetEdit, text.c_str());
+            }
+            break;
         }
+        }
+        // === ИСПРАВЛЕНИЕ: после ЛЮБОЙ модификации текста фиксируем каретку
+        // === В КОНЦЕ текста, чтобы WM_SETTEXT не оставлял её в позиции 0.
+        // === Тогда при последующем SetFocus() пользователь видит курсор
+        // === в конце введённого пароля, а не в начале.
+        SendMessageW(targetEdit, EM_SETSEL, (WPARAM)text.length(), (LPARAM)text.length());
         SetWindowTextW(m_hStatusLabel, L"");
         InvalidateRect(targetEdit, nullptr, TRUE);
     }
@@ -805,7 +877,7 @@ public:
         m_hFontTitle(nullptr), m_hFontButton(nullptr), m_hFontLabel(nullptr), m_hFontEdit(nullptr),
         m_hGreenBrush(nullptr), m_hRedBrush(nullptr), m_hWhiteBrush(nullptr), m_hGrayBrush(nullptr), m_origEditProc(nullptr),
         m_origPhoneProc(nullptr), m_origPasswordProc(nullptr), m_resultCode(RESULT_NETWORK_ERROR), m_clientId(0),
-        m_loginSuccess(false), m_isAuthenticating(false), m_passwordMode(false), m_keyLayout(0) {
+        m_loginSuccess(false), m_isAuthenticating(false), m_passwordMode(false), m_keyLayout(0), m_hEyeBtn(nullptr), m_passwordVisible(false), m_passwordChar(L'*') {
         g_logger.info(L"LoginWindow: constructor");
     }
 

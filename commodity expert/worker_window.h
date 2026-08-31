@@ -23,6 +23,9 @@
 #include <utility>
 #include <cmath>
 #include <regex>
+#include <atomic>
+#include <mutex>
+
 #include "config.h"
 #include "logger.h"
 #include "https_client.h"
@@ -30,8 +33,11 @@
 #include "auth_manager.h"
 #include "receipt_printer.h"
 #include "price_tag_printer.h"
+
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "sapi.lib")
+#pragma comment(lib, "comctl32.lib")
+
 extern Logger g_logger;
 extern HTTPSClient g_httpsClient;
 extern HINSTANCE g_hInstance;
@@ -92,9 +98,537 @@ using json = nlohmann::json;
 #define ID_COMMIT_BIRTHDATE_DISPLAY_LABEL   1127
 #define ID_COMMIT_BIRTHDATE_DISPLAY_VALUE   1128
 
+// НОВЫЕ ИДЕНТИФИКАТОРЫ ДЛЯ КНОПКИ УДАЛЕНИЯ ТАЛОНА И ПОИСКА КОМИТЕНТА
+#define ID_DELETE_TICKET_BTN            4    // Кнопка "Удалить (не пришёл)"
+#define ID_SEARCH_CLIENT_BTN            5    // Кнопка "Поиск комитента"
+
 #define WM_RECEIPT_PRINT                (WM_APP + 4)
 #define WM_COMMIT_SAVED                 (WM_APP + 5)
 #define WM_CLIENT_DATA_LOADED           (WM_APP + 6)  // данные клиента загружены
+#define WM_DELETE_TICKET_RESULT         (WM_APP + 7)  // Результат удаления талона
+
+// =============================================================================
+// КЛАСС МОДАЛЬНОГО ОКНА «ПОИСК КОМИТЕНТА»
+// =============================================================================
+//
+// Модальное окно для товароведа с возможностью поиска комитента по
+// или по фамилии, имени и отчеству. Построено по паттерну класса
+// BlockReasonDialog из director_window.h: программное создание контролов
+// без использования . файлов, модальный цикл обработки сообщений,
+// отключение родительского окна на время работы.
+//
+// Поля ввода:
+//   - комитента (число)
+//   - Фамилия (текст)
+//   - Имя (текст)
+//   - Отчество (текст)
+//
+// При нажатии кнопки «Найти» выполняется асинхронный запрос к серверу:
+//   - Если заполнен → GET /api/v1/clients/search?id=...
+//   - Если заполнено ФИО → GET /api/v1/clients/search?last_name=...&first_name=...&middle_name=...
+//
+// Результаты отображаются в многострочном текстовом поле (только чтение).
+//
+// Потокобезопасность:
+//   - Сетевой запрос выполняется в фоновом потоке (паттерн из
+//     loadClientDataFromServer / blockClient).
+//   - Результат передаётся в -поток через PostMessageW с
+//     пользовательским сообщением WM_SEARCH_RESULT.
+//   - Дескриптор окна копируется в лямбду до запуска потока.
+// =============================================================================
+class ClientSearchDialog {
+private:
+    HWND m_hWnd;
+    HWND m_hIdEdit;
+    HWND m_hLastNameEdit;
+    HWND m_hFirstNameEdit;
+    HWND m_hMiddleNameEdit;
+    HWND m_hSearchBtn;
+    HWND m_hCloseBtn;
+    HWND m_hResultEdit;
+    HWND m_hStatusLabel;
+    HFONT m_hFont;
+    HFONT m_hFontBold;
+    bool m_isSearching;
+
+    // Сообщение для возврата результата поиска из фонового потока в -поток
+    static constexpr UINT WM_SEARCH_RESULT = WM_APP + 200;
+
+    static constexpr const wchar_t* CLASS_NAME = L"ClientSearchDialogClass";
+    static constexpr int DIALOG_WIDTH = 750;
+    static constexpr int DIALOG_HEIGHT = 680;
+
+    // =================================================================
+    // Освобождение ресурсов (шрифты)
+    // =================================================================
+    void releaseResources() {
+        if (m_hFont) { DeleteObject(m_hFont); m_hFont = nullptr; }
+        if (m_hFontBold) { DeleteObject(m_hFontBold); m_hFontBold = nullptr; }
+        g_logger.info(L"ClientSearchDialog: resources released");
+    }
+
+    // =================================================================
+    // Создание элементов управления диалога
+    // =================================================================
+    void createControls() {
+        g_logger.info(L"ClientSearchDialog: createControls started");
+
+        m_hFont = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
+        m_hFontBold = CreateFontW(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
+
+        int labelW = 180;
+        int editW = 350;
+        int editH = 28;
+        int rowH = 38;
+        int left = 20;
+        int top = 15;
+
+        // Заголовок
+        HWND hTitle = CreateWindowExW(0, L"STATIC",
+            L"Поиск комитента в базе данных",
+            WS_VISIBLE | WS_CHILD | SS_CENTER,
+            left, top, DIALOG_WIDTH - 40, 30,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hTitle, WM_SETFONT, (WPARAM)m_hFontBold, TRUE);
+        top += 40;
+
+        // Поле ввода
+        HWND hIdLabel = CreateWindowExW(0, L"STATIC",
+            L" комитента:",
+            WS_VISIBLE | WS_CHILD | SS_RIGHT,
+            left, top, labelW, editH,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hIdLabel, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+        m_hIdEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL | ES_NUMBER,
+            left + labelW + 10, top, editW, editH,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(m_hIdEdit, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+        SendMessageW(m_hIdEdit, EM_SETLIMITTEXT, 10, 0);
+        top += rowH;
+
+        // Поле ввода «Фамилия»
+        HWND hLastNameLabel = CreateWindowExW(0, L"STATIC",
+            L"Фамилия:",
+            WS_VISIBLE | WS_CHILD | SS_RIGHT,
+            left, top, labelW, editH,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hLastNameLabel, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+        m_hLastNameEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL,
+            left + labelW + 10, top, editW, editH,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(m_hLastNameEdit, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+        SendMessageW(m_hLastNameEdit, EM_SETLIMITTEXT, 64, 0);
+        top += rowH;
+
+        // Поле ввода «Имя»
+        HWND hFirstNameLabel = CreateWindowExW(0, L"STATIC",
+            L"Имя:",
+            WS_VISIBLE | WS_CHILD | SS_RIGHT,
+            left, top, labelW, editH,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hFirstNameLabel, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+        m_hFirstNameEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL,
+            left + labelW + 10, top, editW, editH,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(m_hFirstNameEdit, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+        SendMessageW(m_hFirstNameEdit, EM_SETLIMITTEXT, 64, 0);
+        top += rowH;
+
+        // Поле ввода «Отчество»
+        HWND hMiddleNameLabel = CreateWindowExW(0, L"STATIC",
+            L"Отчество:",
+            WS_VISIBLE | WS_CHILD | SS_RIGHT,
+            left, top, labelW, editH,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(hMiddleNameLabel, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+        m_hMiddleNameEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL,
+            left + labelW + 10, top, editW, editH,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(m_hMiddleNameEdit, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+        SendMessageW(m_hMiddleNameEdit, EM_SETLIMITTEXT, 64, 0);
+        top += rowH + 5;
+
+        // Кнопка «Найти»
+        m_hSearchBtn = CreateWindowExW(0, L"BUTTON", L"Найти",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            left, top, 150, 40,
+            m_hWnd, (HMENU)(INT_PTR)1, g_hInstance, nullptr);
+        SendMessageW(m_hSearchBtn, WM_SETFONT, (WPARAM)m_hFontBold, TRUE);
+
+        // Кнопка «Закрыть»
+        m_hCloseBtn = CreateWindowExW(0, L"BUTTON", L"Закрыть",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            left + 170, top, 150, 40,
+            m_hWnd, (HMENU)(INT_PTR)2, g_hInstance, nullptr);
+        SendMessageW(m_hCloseBtn, WM_SETFONT, (WPARAM)m_hFontBold, TRUE);
+        top += 50;
+
+        // Статусная строка
+        m_hStatusLabel = CreateWindowExW(0, L"STATIC",
+            L"Введите комитента или ФИО и нажмите «Найти»",
+            WS_VISIBLE | WS_CHILD | SS_LEFT,
+            left, top, DIALOG_WIDTH - 40, 25,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(m_hStatusLabel, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+        top += 30;
+
+        // Многострочное текстовое поле для отображения результатов
+        m_hResultEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_VISIBLE | WS_CHILD | ES_MULTILINE | ES_READONLY |
+            ES_AUTOVSCROLL | WS_VSCROLL,
+            left, top, DIALOG_WIDTH - 40, DIALOG_HEIGHT - top - 20,
+            m_hWnd, nullptr, g_hInstance, nullptr);
+        SendMessageW(m_hResultEdit, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
+        // Ограничение на количество текста в поле результатов
+        SendMessageW(m_hResultEdit, EM_SETLIMITTEXT, 65535, 0);
+
+        m_isSearching = false;
+
+        // Фокус на поле ввода
+        SetFocus(m_hIdEdit);
+
+        g_logger.info(L"ClientSearchDialog: all controls created successfully");
+    }
+
+    // =================================================================
+    // Выполнение поиска (асинхронно, в фоновом потоке)
+    // =================================================================
+    void onSearch() {
+        if (m_isSearching) {
+            g_logger.info(L"ClientSearchDialog: search already in progress, ignoring");
+            return;
+        }
+
+        // Читаем значения полей
+        wchar_t buf[256];
+        GetWindowTextW(m_hIdEdit, buf, 256);
+        std::wstring idText = buf;
+        GetWindowTextW(m_hLastNameEdit, buf, 256);
+        std::wstring lastName = buf;
+        GetWindowTextW(m_hFirstNameEdit, buf, 256);
+        std::wstring firstName = buf;
+        GetWindowTextW(m_hMiddleNameEdit, buf, 256);
+        std::wstring middleName = buf;
+
+        // Определяем тип поиска
+        bool hasId = !idText.empty();
+        bool hasFio = !lastName.empty() || !firstName.empty() || !middleName.empty();
+
+        if (!hasId && !hasFio) {
+            SetWindowTextW(m_hStatusLabel,
+                L"Введите комитента или хотя бы одно поле ФИО");
+            g_logger.warning(L"ClientSearchDialog: no search parameters entered");
+            return;
+        }
+
+        g_logger.info(L"ClientSearchDialog: search started - id='" + idText +
+            L"', lastName='" + lastName +
+            L"', firstName='" + firstName +
+            L"', middleName='" + middleName + L"'");
+
+        m_isSearching = true;
+        EnableWindow(m_hSearchBtn, FALSE);
+        SetWindowTextW(m_hStatusLabel, L"Поиск на сервере...");
+        SetWindowTextW(m_hResultEdit, L"");
+
+        // Формируем путь запроса
+        std::wstring path;
+        if (hasId) {
+            // Поиск по имеет приоритет
+            path = L"/api/v1/clients/search?id=" + idText;
+            g_logger.info(L"ClientSearchDialog: searching by id=" + idText);
+        }
+        else {
+            // Поиск по ФИО
+            path = L"/api/v1/clients/search?";
+            bool firstParam = true;
+            if (!lastName.empty()) {
+                if (!firstParam) path += L"&";
+                path += L"last_name=" + lastName;
+                firstParam = false;
+            }
+            if (!firstName.empty()) {
+                if (!firstParam) path += L"&";
+                path += L"first_name=" + firstName;
+                firstParam = false;
+            }
+            if (!middleName.empty()) {
+                if (!firstParam) path += L"&";
+                path += L"middle_name=" + middleName;
+            }
+            g_logger.info(L"ClientSearchDialog: searching by FIO, path=" + path);
+        }
+
+        // Получаем токен авторизации
+        std::wstring authToken = g_authManager.getAuthToken();
+        if (authToken.empty()) {
+            SetWindowTextW(m_hStatusLabel, L"Ошибка авторизации: токен отсутствует");
+            m_isSearching = false;
+            EnableWindow(m_hSearchBtn, TRUE);
+            g_logger.error(L"ClientSearchDialog: auth token is empty");
+            return;
+        }
+
+        // Копируем дескриптор окна для безопасного использования в потоке
+        HWND hWndCopy = m_hWnd;
+
+        // Запускаем фоновый поток для сетевого запроса
+        // (паттерн из loadClientDataFromServer / blockClient)
+        std::thread([hWndCopy, path, authToken]() {
+            g_logger.info(L"ClientSearchDialog: background thread started, path=" + path);
+
+            auto response = g_httpsClient.get(path, authToken);
+
+            // Формируем текстовый результат для отображения
+            std::wstring resultText;
+
+            if (response && response->contains("clients") &&
+                (*response)["clients"].is_array()) {
+
+                const auto& clients = (*response)["clients"];
+                int count = static_cast<int>(clients.size());
+                g_logger.info(L"ClientSearchDialog: server returned " +
+                    std::to_wstring(count) + L" client(s)");
+
+                if (count == 0) {
+                    resultText = L"Комитент не найден в базе данных.";
+                }
+                else {
+                    for (int i = 0; i < count; ++i) {
+                        const auto& c = clients[i];
+                        if (i > 0) {
+                            resultText += L"\r\n\r\n========================================\r\n\r\n";
+                        }
+                        resultText += L" комитента: " +
+                            std::to_wstring(c.value("id", 0)) + L"\r\n";
+                        resultText += L"ФИО: " +
+                            utf8_to_wstring(c.value("full_name", "")) + L"\r\n";
+                        resultText += L"Телефон: " +
+                            utf8_to_wstring(c.value("phone", "")) + L"\r\n";
+                        resultText += L"E-mail: " +
+                            utf8_to_wstring(c.value("email", "")) + L"\r\n";
+                        resultText += L"Дата рождения: " +
+                            utf8_to_wstring(c.value("birth_date", "")) + L"\r\n";
+                        resultText += L"Тип паспорта: " +
+                            utf8_to_wstring(c.value("passport_type", "")) + L"\r\n";
+                        resultText += L"Серия паспорта: " +
+                            utf8_to_wstring(c.value("passport_series", "")) + L"\r\n";
+                        resultText += L"Номер паспорта: " +
+                            utf8_to_wstring(c.value("passport_number", "")) + L"\r\n";
+                        resultText += L"Адрес: " +
+                            utf8_to_wstring(c.value("address", "")) + L"\r\n";
+                        resultText += L"Сдано товаров: " +
+                            std::to_wstring(c.value("items_submitted", 0)) + L" шт\r\n";
+                        resultText += L"Продано товаров: " +
+                            std::to_wstring(c.value("items_sold", 0)) + L" шт\r\n";
+
+                        bool isBlocked = c.value("is_blocked", false);
+                        resultText += L"Статус: " +
+                            std::wstring(isBlocked ? L"ЗАБЛОКИРОВАН" : L"Активен") + L"\r\n";
+                        if (isBlocked) {
+                            resultText += L"Причина блокировки: " +
+                                utf8_to_wstring(c.value("block_reason", "")) + L"\r\n";
+                        }
+                        resultText += L"Роль: " +
+                            utf8_to_wstring(c.value("role", "")) + L"\r\n";
+                    }
+                }
+            }
+            else {
+                std::wstring errorMsg = L"Ошибка поиска.";
+                if (response && response->contains("error")) {
+                    errorMsg += L"\n" + utf8_to_wstring(
+                        (*response)["error"].get<std::string>());
+                }
+                resultText = errorMsg;
+                g_logger.error(L"ClientSearchDialog: search failed - " + errorMsg);
+            }
+
+            // Передаём результат в -поток через
+            // Выделяем копию строки в куче (будет удалена в обработчике)
+            std::wstring* pResult = new std::wstring(resultText);
+            if (IsWindow(hWndCopy)) {
+                PostMessageW(hWndCopy, ClientSearchDialog::WM_SEARCH_RESULT,
+                    0, (LPARAM)pResult);
+                g_logger.info(L"ClientSearchDialog: WM_SEARCH_RESULT posted");
+            }
+            else {
+                delete pResult;
+                g_logger.warning(L"ClientSearchDialog: window destroyed before "
+                    L"result could be posted");
+            }
+            }).detach();
+    }
+
+    // =================================================================
+    // Оконная процедура диалога
+    // =================================================================
+    static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg,
+        WPARAM wParam, LPARAM lParam) {
+        ClientSearchDialog* pThis = nullptr;
+        if (msg == WM_CREATE) {
+            CREATESTRUCTW* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            pThis = reinterpret_cast<ClientSearchDialog*>(cs->lpCreateParams);
+            SetWindowLongPtrW(hWnd, GWLP_USERDATA,
+                reinterpret_cast<LONG_PTR>(pThis));
+            pThis->m_hWnd = hWnd;
+            pThis->createControls();
+            return 0;
+        }
+        pThis = reinterpret_cast<ClientSearchDialog*>(
+            GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+        if (!pThis) return DefWindowProcW(hWnd, msg, wParam, lParam);
+
+        switch (msg) {
+        case WM_COMMAND: {
+            WORD id = LOWORD(wParam);
+            WORD code = HIWORD(wParam);
+            if (code == BN_CLICKED) {
+                if (id == 1) {
+                    // Кнопка «Найти»
+                    pThis->onSearch();
+                    return 0;
+                }
+                if (id == 2) {
+                    // Кнопка «Закрыть»
+                    g_logger.info(L"ClientSearchDialog: Close button clicked");
+                    DestroyWindow(hWnd);
+                    return 0;
+                }
+            }
+            break;
+        }
+        case WM_SEARCH_RESULT: {
+            // Результат поиска из фонового потока
+            std::wstring* pResult = reinterpret_cast<std::wstring*>(lParam);
+            if (pResult) {
+                g_logger.info(L"ClientSearchDialog: WM_SEARCH_RESULT received, "
+                    L"result length=" + std::to_wstring(pResult->length()));
+                SetWindowTextW(pThis->m_hResultEdit, pResult->c_str());
+                int count = 0;
+                // Считаем количество найденных клиентов по разделителю
+                size_t pos = 0;
+                while ((pos = pResult->find(L" комитента:", pos)) !=
+                    std::wstring::npos) {
+                    count++;
+                    pos += 1;
+                }
+                std::wstring statusText = (count > 0)
+                    ? (L"Найдено комитентов: " + std::to_wstring(count))
+                    : L"Поиск завершён";
+                SetWindowTextW(pThis->m_hStatusLabel, statusText.c_str());
+                pThis->m_isSearching = false;
+                EnableWindow(pThis->m_hSearchBtn, TRUE);
+                delete pResult;
+            }
+            return 0;
+        }
+        case WM_CLOSE:
+            g_logger.info(L"ClientSearchDialog: WM_CLOSE received");
+            DestroyWindow(hWnd);
+            return 0;
+        case WM_DESTROY:
+            // Не вызываем - модальный диалог,
+            // родительский цикл обработки сообщений продолжается
+            return 0;
+        }
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+
+public:
+    ClientSearchDialog()
+        : m_hWnd(nullptr)
+        , m_hIdEdit(nullptr)
+        , m_hLastNameEdit(nullptr)
+        , m_hFirstNameEdit(nullptr)
+        , m_hMiddleNameEdit(nullptr)
+        , m_hSearchBtn(nullptr)
+        , m_hCloseBtn(nullptr)
+        , m_hResultEdit(nullptr)
+        , m_hStatusLabel(nullptr)
+        , m_hFont(nullptr)
+        , m_hFontBold(nullptr)
+        , m_isSearching(false) {
+        g_logger.info(L"ClientSearchDialog: constructor");
+    }
+
+    ~ClientSearchDialog() {
+        releaseResources();
+        g_logger.info(L"ClientSearchDialog: destructor");
+    }
+
+    // =================================================================
+    // Показать модальный диалог
+    // @param hParent родительское окно ( окно товароведа)
+    // =================================================================
+    void show(HWND hParent) {
+        g_logger.info(L"ClientSearchDialog: show() called");
+
+        static bool classRegistered = false;
+        if (!classRegistered) {
+            WNDCLASSEXW wcex = {};
+            wcex.cbSize = sizeof(WNDCLASSEX);
+            wcex.style = CS_HREDRAW | CS_VREDRAW;
+            wcex.lpfnWndProc = WndProc;
+            wcex.hInstance = g_hInstance;
+            wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
+            wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+            wcex.lpszClassName = CLASS_NAME;
+            wcex.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+            if (!RegisterClassExW(&wcex)) {
+                g_logger.error(L"ClientSearchDialog: RegisterClassExW failed");
+                return;
+            }
+            classRegistered = true;
+            g_logger.info(L"ClientSearchDialog: window class registered");
+        }
+
+        int screenW = GetSystemMetrics(SM_CXSCREEN);
+        int screenH = GetSystemMetrics(SM_CYSCREEN);
+        int x = (screenW - DIALOG_WIDTH) / 2;
+        int y = (screenH - DIALOG_HEIGHT) / 2;
+
+        m_hWnd = CreateWindowExW(
+            WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME,
+            CLASS_NAME,
+            L"Поиск комитента",
+            WS_POPUP | WS_CAPTION | WS_SYSMENU,
+            x, y, DIALOG_WIDTH, DIALOG_HEIGHT,
+            hParent, nullptr, g_hInstance, this
+        );
+        if (!m_hWnd) {
+            g_logger.error(L"ClientSearchDialog: CreateWindowExW failed");
+            return;
+        }
+
+        // Делаем родительское окно недоступным (модальность)
+        EnableWindow(hParent, FALSE);
+        ShowWindow(m_hWnd, SW_SHOW);
+        UpdateWindow(m_hWnd);
+        g_logger.info(L"ClientSearchDialog: window shown, entering modal loop");
+
+        // Модальный цикл обработки сообщений
+        MSG msg;
+        while (IsWindow(m_hWnd) && GetMessage(&msg, nullptr, 0, 0)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+
+        // Восстанавливаем родительское окно
+        EnableWindow(hParent, TRUE);
+        SetForegroundWindow(hParent);
+        g_logger.info(L"ClientSearchDialog: modal loop ended");
+    }
+};
 
 // =============================================================================
 // КЛАСС WorkerWindow
@@ -112,11 +646,12 @@ private:
     HBRUSH m_hBrush;
     std::vector<json> m_tickets;
     std::mutex m_mutex;
-    bool m_running;
+    std::atomic<bool> m_running;
     std::thread m_refreshThread;
     std::wstring m_currentQueueType;
     std::vector<std::wstring> m_queueTypeIds;
     ISpVoice* m_pVoice = nullptr;
+    bool m_comInitialized = false;
     static constexpr int REFRESH_INTERVAL_MS = 2000;
 
     // =================================================================
@@ -135,6 +670,12 @@ private:
     // ИСПРАВЛЕНИЕ: Заголовок блока данных комитента теперь является членом класса
     // для корректного уничтожения при пересоздании контролов
     HWND m_hCommitBlockTitle;
+    // =====================================================================
+    // ПРОКРУТКА ПРАВОЙ ПАНЕЛИ
+    // =====================================================================
+    std::vector<HWND> m_scrollableControls;   // контролы правой панели
+    int m_rightScrollPos = 0;                 // текущее смещение прокрутки
+    int m_rightContentHeight = 0;             // полная высота контента
 
     // =================================================================
     // ЭЛЕМЕНТЫ УПРАВЛЕНИЯ ДЛЯ ДАННЫХ КОМИТЕНТА (first_time)
@@ -158,10 +699,23 @@ private:
     // Отображение даты рождения комитента (для всех очередей)
     HWND m_hCommitBirthDateDisplayLabel, m_hCommitBirthDateDisplayValue;
 
+    // КНОПКА УДАЛЕНИЯ ТАЛОНА И КНОПКА ПОИСКА
+    HWND m_hDeleteTicketBtn;   // Кнопка "Удалить (не пришёл)"
+    HWND m_hSearchClientBtn;   // Кнопка "Поиск комитента"
+
     int m_currentClientId;
     std::wstring m_currentTicketNumber;
     std::wstring m_currentWindowNumber;
     std::wstring m_currentClientName;
+    // Время принятия/вызова текущего талона, секунды с эпохи
+    int64_t m_currentTicketAcceptedAt = 0;
+    // =====================================================================
+    // ХРАНЕНИЕ ПРИНЯТОГО ТАЛОНА ДО ЕГО ЗАВЕРШЕНИЯ:
+    // талон должен оставаться в списке до «Сохранить все»
+    // или «Удалить (не пришёл)»
+    // =====================================================================
+    json m_currentAcceptedTicket;
+    bool m_hasCurrentAcceptedTicket = false;
     std::vector<json> m_tempItems;
     bool m_isSaving;
     bool m_isCommitDataSaved;
@@ -305,6 +859,105 @@ private:
             }).detach();
     }
 
+    // =====================================================================
+// Проверка: есть ли незавершённый принятый талон
+// =====================================================================
+    bool hasCurrentAcceptedTicket() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_hasCurrentAcceptedTicket;
+    }
+
+    // =====================================================================
+    // Сохранить принятый талон до его завершения
+    // =====================================================================
+    void setCurrentAcceptedTicket(const json& ticket) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_currentAcceptedTicket = ticket;
+        m_hasCurrentAcceptedTicket = true;
+    }
+
+    // =====================================================================
+    // Удалить принятый талон из локального списка и очистить его хранение
+    // =====================================================================
+    void removeCurrentAcceptedTicketFromLocalList() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        if (!m_hasCurrentAcceptedTicket || !m_currentAcceptedTicket.is_object()) {
+            return;
+        }
+
+        std::string acceptedNumber =
+            m_currentAcceptedTicket.value("ticket_number", std::string(""));
+
+        if (!acceptedNumber.empty()) {
+            for (auto it = m_tickets.begin(); it != m_tickets.end(); ++it) {
+                if (it->value("ticket_number", std::string("")) == acceptedNumber) {
+                    m_tickets.erase(it);
+                    break;
+                }
+            }
+        }
+
+        if (m_selectedIndex >= (int)m_tickets.size()) {
+            m_selectedIndex = (int)m_tickets.size() - 1;
+        }
+
+        m_currentAcceptedTicket = nullptr;
+        m_hasCurrentAcceptedTicket = false;
+
+        g_logger.info(L"removeCurrentAcceptedTicketFromLocalList: accepted ticket removed, remaining tickets=" +
+            std::to_wstring(m_tickets.size()));
+    }
+
+    // =====================================================================
+// Настройка вертикальной полосы прокрутки правой панели
+// =====================================================================
+    void setupRightPanelScrollBar() {
+        RECT rc; GetClientRect(m_hWnd, &rc);
+        int clientH = rc.bottom - rc.top;
+
+        SCROLLINFO si = { 0 };
+        si.cbSize = sizeof(si);
+        si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+        si.nMin = 0;
+        si.nMax = m_rightContentHeight;
+        si.nPage = clientH;
+        si.nPos = 0;
+        SetScrollInfo(m_hWnd, SB_VERT, &si, TRUE);
+
+        bool needScroll = (m_currentMode == Mode::ITEM_INPUT) &&
+            (m_rightContentHeight > clientH);
+        ShowScrollBar(m_hWnd, SB_VERT, needScroll ? TRUE : FALSE);
+        m_rightScrollPos = 0;
+    }
+
+    // =====================================================================
+    // Прокрутка правой панели на newPos (пиксели)
+    // =====================================================================
+    void scrollRightPanel(int newPos) {
+        RECT rc; GetClientRect(m_hWnd, &rc);
+        int clientH = rc.bottom - rc.top;
+        int maxScroll = m_rightContentHeight - clientH;
+        if (maxScroll < 0) maxScroll = 0;
+        if (newPos < 0) newPos = 0;
+        if (newPos > maxScroll) newPos = maxScroll;
+        if (newPos == m_rightScrollPos) return;
+
+        int delta = m_rightScrollPos - newPos;
+
+        for (HWND h : m_scrollableControls) {
+            if (!h) continue;
+            RECT wr; GetWindowRect(h, &wr);
+            POINT pt{ wr.left, wr.top };
+            ScreenToClient(m_hWnd, &pt);
+            SetWindowPos(h, NULL, pt.x, pt.y + delta, 0, 0,
+                SWP_NOSIZE | SWP_NOZORDER);
+        }
+
+        m_rightScrollPos = newPos;
+        SetScrollPos(m_hWnd, SB_VERT, newPos, TRUE);
+    }
+
     void updateUI() {
         std::vector<json> ticketsCopy;
         int selectedIndex = -1;
@@ -344,8 +997,40 @@ private:
         SetWindowTextW(m_hStatusLabel, status.c_str());
 
         bool isInputMode = (m_currentMode == Mode::ITEM_INPUT);
-        EnableWindow(m_hAcceptBtn, (count > 0) && !isInputMode);
-        EnableWindow(m_hServeBtn, (count > 0) && !isInputMode);
+        bool hasActiveAccepted = hasCurrentAcceptedTicket();
+
+        // =====================================================================
+        // «Принять» и «Обслужен (Следующий)» запрещены, пока есть незавершённый
+        // принятый талон.
+        // =====================================================================
+        EnableWindow(m_hAcceptBtn, (count > 0) && !isInputMode && !hasActiveAccepted);
+        EnableWindow(m_hServeBtn, (count > 0) && !isInputMode && !hasActiveAccepted);
+
+        // =====================================================================
+        // Кнопка «Удалить (не пришёл)»:
+        // - если есть текущий принятый талон, она становится активной через
+        //   120 секунд после принятия/вызова;
+        // - если текущего принятого талона нет, она активна в режиме списка,
+        //   если есть талоны в списке.
+        // =====================================================================
+        bool deleteTicketEnabled = false;
+
+        if (hasActiveAccepted) {
+            if (!m_currentTicketNumber.empty() && m_currentTicketAcceptedAt > 0) {
+                auto now = std::chrono::system_clock::now();
+                int64_t nowSec =
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        now.time_since_epoch()
+                    ).count();
+
+                deleteTicketEnabled = (nowSec - m_currentTicketAcceptedAt >= 120);
+            }
+        }
+        else {
+            deleteTicketEnabled = (count > 0) && !isInputMode;
+        }
+
+        EnableWindow(m_hDeleteTicketBtn, deleteTicketEnabled);
     }
 
     void refreshList() {
@@ -358,14 +1043,67 @@ private:
         }
 
         auto newTickets = fetchTicketsFromServer(queueType);
+
         {
             std::lock_guard<std::mutex> lock(m_mutex);
+
             if (m_currentQueueType != queueType) return;
+
+            // =====================================================================
+            // Если есть незавершённый принятый талон, его нужно сохранить
+            // в локальном списке даже в том случае, если сервер уже не вернул
+            // его в списке ожидающих.
+            // =====================================================================
+            if (m_hasCurrentAcceptedTicket && m_currentAcceptedTicket.is_object()) {
+                std::string acceptedNumber =
+                    m_currentAcceptedTicket.value("ticket_number", std::string(""));
+
+                if (!acceptedNumber.empty()) {
+                    int oldAcceptedIndex = -1;
+
+                    for (int i = 0; i < (int)m_tickets.size(); ++i) {
+                        if (m_tickets[i].value("ticket_number", std::string("")) == acceptedNumber) {
+                            oldAcceptedIndex = i;
+                            break;
+                        }
+                    }
+
+                    bool presentInNewTickets = false;
+
+                    for (const auto& t : newTickets) {
+                        if (t.value("ticket_number", std::string("")) == acceptedNumber) {
+                            presentInNewTickets = true;
+                            break;
+                        }
+                    }
+
+                    if (!presentInNewTickets) {
+                        int insertPos = oldAcceptedIndex;
+
+                        if (insertPos < 0 || insertPos >(int)newTickets.size()) {
+                            insertPos = (int)newTickets.size();
+                        }
+
+                        newTickets.insert(newTickets.begin() + insertPos, m_currentAcceptedTicket);
+                    }
+                }
+            }
+
             m_tickets = std::move(newTickets);
+
             if (selectedIndex >= (int)m_tickets.size()) selectedIndex = -1;
             m_selectedIndex = selectedIndex;
         }
-        PostMessageW(m_hWnd, WM_APP + 1, 0, 0);
+        // =====================================================================
+        // Отправляем сообщение UI-потоку только если окно ещё существует.
+        // Это защищает от попытки отправить сообщение уже уничтоженному окну.
+        // =====================================================================
+        if (m_running.load() && IsWindow(m_hWnd)) {
+            PostMessageW(m_hWnd, WM_APP + 1, 0, 0);
+        }
+        else {
+            g_logger.warning(L"WorkerWindow: refreshList skipped PostMessage, window is closing");
+        }
     }
 
     void repositionItemInputControls() {
@@ -567,46 +1305,47 @@ private:
                     left + 230, top, 150, 35, m_hWnd, (HMENU)ID_COMMIT_CANCEL_BTN, g_hInstance, nullptr);
                 SendMessageW(m_hCommitCancelBtn, WM_SETFONT, (WPARAM)m_hSmallFont, TRUE);
                 top += 50;
+
             }
 
             // =================================================================
-            // БЛОК ОТОБРАЖЕНИЯ СОХРАНЕННЫХ ДАННЫХ КОМИТЕНТА
-            // =================================================================
+           // БЛОК ОТОБРАЖЕНИЯ СОХРАНЕННЫХ ДАННЫХ КОМИТЕНТА
+           // ИСПРАВЛЕНИЕ: скрытый блок больше НЕ резервирует место,
+           // поэтому пустая полоса между блоками исчезает.
+           // =================================================================
+            int dispTop = top;
+
             m_hCommitFioLabel = CreateWindowExW(0, L"STATIC", L"ФИО комитента:",
                 WS_CHILD | SS_RIGHT,
-                left, top, labelW, editH, m_hWnd, (HMENU)ID_COMMIT_FIO_LABEL, g_hInstance, nullptr);
+                left, dispTop, labelW, editH, m_hWnd, (HMENU)ID_COMMIT_FIO_LABEL, g_hInstance, nullptr);
             SendMessageW(m_hCommitFioLabel, WM_SETFONT, (WPARAM)m_hSmallFont, TRUE);
-
             m_hCommitFioValue = CreateWindowExW(0, L"STATIC", L"",
                 WS_CHILD | SS_LEFT,
-                left + labelW + 5, top, editW, editH, m_hWnd, (HMENU)ID_COMMIT_FIO_VALUE, g_hInstance, nullptr);
+                left + labelW + 5, dispTop, editW, editH, m_hWnd, (HMENU)ID_COMMIT_FIO_VALUE, g_hInstance, nullptr);
             SendMessageW(m_hCommitFioValue, WM_SETFONT, (WPARAM)m_hSmallFont, TRUE);
-            top += rowH;
 
             m_hCommitIdLabel = CreateWindowExW(0, L"STATIC", L"ID комитента:",
                 WS_CHILD | SS_RIGHT,
-                left, top, labelW, editH, m_hWnd, (HMENU)ID_COMMIT_ID_LABEL, g_hInstance, nullptr);
+                left, dispTop + rowH, labelW, editH, m_hWnd, (HMENU)ID_COMMIT_ID_LABEL, g_hInstance, nullptr);
             SendMessageW(m_hCommitIdLabel, WM_SETFONT, (WPARAM)m_hSmallFont, TRUE);
-
             m_hCommitIdValue = CreateWindowExW(0, L"STATIC", L"",
                 WS_CHILD | SS_LEFT,
-                left + labelW + 5, top, editW, editH, m_hWnd, (HMENU)ID_COMMIT_ID_VALUE, g_hInstance, nullptr);
+                left + labelW + 5, dispTop + rowH, editW, editH, m_hWnd, (HMENU)ID_COMMIT_ID_VALUE, g_hInstance, nullptr);
             SendMessageW(m_hCommitIdValue, WM_SETFONT, (WPARAM)m_hSmallFont, TRUE);
-            top += rowH;
 
             m_hCommitPhoneDisplayLabel = CreateWindowExW(0, L"STATIC", L"Телефон:",
                 WS_CHILD | SS_RIGHT,
-                left, top, labelW, editH, m_hWnd, (HMENU)ID_COMMIT_PHONE_DISPLAY_LABEL, g_hInstance, nullptr);
+                left, dispTop + 2 * rowH, labelW, editH, m_hWnd, (HMENU)ID_COMMIT_PHONE_DISPLAY_LABEL, g_hInstance, nullptr);
             SendMessageW(m_hCommitPhoneDisplayLabel, WM_SETFONT, (WPARAM)m_hSmallFont, TRUE);
-
             m_hCommitPhoneDisplayValue = CreateWindowExW(0, L"STATIC", L"",
                 WS_CHILD | SS_LEFT,
-                left + labelW + 5, top, editW, editH, m_hWnd, (HMENU)ID_COMMIT_PHONE_DISPLAY_VALUE, g_hInstance, nullptr);
+                left + labelW + 5, dispTop + 2 * rowH, editW, editH, m_hWnd, (HMENU)ID_COMMIT_PHONE_DISPLAY_VALUE, g_hInstance, nullptr);
             SendMessageW(m_hCommitPhoneDisplayValue, WM_SETFONT, (WPARAM)m_hSmallFont, TRUE);
-            top += rowH + 10;
 
-            // Управление видимостью блока отображения
+            // Управление видимостью блока отображения.
+            // Место в разметке блок занимает ТОЛЬКО когда он видим.
             if (m_isCommitDataSaved) {
+                top += 3 * rowH + 10;
                 ShowWindow(m_hCommitFioLabel, SW_SHOW);
                 ShowWindow(m_hCommitFioValue, SW_SHOW);
                 ShowWindow(m_hCommitIdLabel, SW_SHOW);
@@ -848,6 +1587,61 @@ private:
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             left + 400, top, 120, 40, m_hWnd, (HMENU)ID_ITEM_BACK_BTN, g_hInstance, nullptr);
         SendMessageW(m_hItemBackBtn, WM_SETFONT, (WPARAM)m_hSmallFont, TRUE);
+
+        // =====================================================================
+        // ИСПРАВЛЕНИЕ ИНТЕРФЕЙСА:
+        // Кнопка «Удалить (не пришёл)» размещается под кнопкой «Сохранить все»
+        // =====================================================================
+        if (!m_hDeleteTicketBtn) {
+            m_hDeleteTicketBtn = CreateWindowExW(0, L"BUTTON",
+                L"Удалить (не пришёл)",
+                WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+                left, top + 45, 180, 40,
+                m_hWnd, (HMENU)ID_DELETE_TICKET_BTN, g_hInstance, nullptr);
+            SendMessageW(m_hDeleteTicketBtn, WM_SETFONT, (WPARAM)m_hSmallFont, TRUE);
+        }
+        else {
+            SetWindowPos(m_hDeleteTicketBtn, NULL,
+                left, top + 45, 180, 40,
+                SWP_NOZORDER);
+        }
+
+        // =====================================================================
+        // РЕЕСТР ПРОКРУЧИВАЕМЫХ КОНТРОЛОВ ПРАВОЙ ПАНЕЛИ И РАСЧЁТ ВЫСОТЫ
+        // =====================================================================
+        HWND scrollables[] = {
+            m_hCommitBlockTitle,
+            m_hCommitLastNameLabel, m_hCommitLastNameEdit,
+            m_hCommitFirstNameLabel, m_hCommitFirstNameEdit,
+            m_hCommitMiddleNameLabel, m_hCommitMiddleNameEdit,
+            m_hCommitBirthDateLabel, m_hCommitBirthDateEdit,
+            m_hCommitPassTypeLabel, m_hCommitPassTypeCombo,
+            m_hCommitPassSeriesLabel, m_hCommitPassSeriesEdit,
+            m_hCommitPassNumberLabel, m_hCommitPassNumberEdit,
+            m_hCommitPhoneLabel, m_hCommitPhoneEdit,
+            m_hCommitAddressLabel, m_hCommitAddressEdit,
+            m_hCommitSaveBtn, m_hCommitCancelBtn,
+            m_hCommitFioLabel, m_hCommitFioValue,
+            m_hCommitIdLabel, m_hCommitIdValue,
+            m_hCommitPhoneDisplayLabel, m_hCommitPhoneDisplayValue,
+            m_hCommitBirthDateDisplayLabel, m_hCommitBirthDateDisplayValue,
+            m_hTitle, m_hLabelDate, m_hLabelNumber, m_hLabelDesc, m_hLabelPrice,
+            m_hLabelQty, m_hLabelCondition, m_hLabelNote,
+            m_hItemDateLabel, m_hItemNumberEdit, m_hItemDescEdit, m_hItemPriceEdit,
+            m_hItemQtyEdit, m_hItemConditionEdit, m_hItemNoteEdit, m_hItemAddBtn,
+            m_hItemListView, m_hItemTotalQtyLabel, m_hItemTotalPriceLabel,
+            m_hItemTotalClientAmountLabel, m_hItemTotalStoreAmountLabel,
+            m_hEditRecordBtn, m_hCancelInputBtn,
+            m_hItemSaveBtn, m_hItemCancelBtn, m_hItemBackBtn,
+            m_hDeleteTicketBtn
+        };
+        m_scrollableControls.clear();
+        for (HWND h : scrollables) if (h) m_scrollableControls.push_back(h);
+
+        // Полная высота контента: нижний ряд кнопок (40) + кнопка удаления (45+40)
+        m_rightContentHeight = top + 85;
+
+        setupRightPanelScrollBar();
 
         g_logger.info(L"createItemInputControls: all controls created successfully");
     }
@@ -1221,6 +2015,8 @@ private:
         g_logger.info(L"returnToQueueList: switching to QUEUE_LIST mode");
         m_currentMode = Mode::QUEUE_LIST;
         showItemInputControls(false);
+        scrollRightPanel(0);
+        ShowScrollBar(m_hWnd, SB_VERT, FALSE);
         PostMessageW(m_hWnd, WM_APP + 1, 0, 0);
     }
 
@@ -1291,19 +2087,41 @@ private:
         // Извлекаем данные талона из локального списка (потокобезопасно)
         std::string ticketNumberUtf8;
         int clientId = -1;
+        json acceptedTicket;
+
         {
             std::lock_guard<std::mutex> lock(m_mutex);
+
+            if (itemData >= (LRESULT)m_tickets.size()) {
+                MessageBoxW(m_hWnd, L"Ошибка идентификации", L"Ошибка", MB_OK);
+                return;
+            }
+
             const json& ticket = m_tickets[itemData];
-            ticketNumberUtf8 = ticket["ticket_number"].get<std::string>();
-            if (ticket.contains("client_id")) {
+
+            acceptedTicket = ticket;
+            ticketNumberUtf8 = ticket.value("ticket_number", std::string(""));
+
+            if (ticket.contains("client_id") && ticket["client_id"].is_number()) {
                 clientId = ticket["client_id"].get<int>();
             }
+        }
+
+        if (ticketNumberUtf8.empty()) {
+            MessageBoxW(m_hWnd, L"Ошибка идентификации талона", L"Ошибка", MB_OK);
+            return;
         }
         std::wstring ticketNumber = utf8_to_wstring(ticketNumberUtf8);
 
         g_logger.info(L"onAccept: ticketNumber=" + ticketNumber +
             L", queueType=" + m_currentQueueType +
             L", clientId=" + std::to_wstring(clientId));
+
+        // =====================================================================
+        // ЗАПОМИНАЕМ ПРИНЯТЫЙ ТАЛОН.
+        // ОН НЕ ДОЛЖЕН УДАЛЯТЬСЯ ИЗ ОЧЕРЕДИ СРАЗУ ПОСЛЕ «Принять».
+        // =====================================================================
+        setCurrentAcceptedTicket(acceptedTicket);
 
         // =====================================================================
         // ОПРЕДЕЛЯЕМ НОМЕР ОКНА ТОВАРОВЕДА ПО ЕГО ТЕЛЕФОНУ
@@ -1353,6 +2171,18 @@ private:
                 L", window=" + windowW);
 
             // =====================================================================
+            // ФИКСИРУЕМ МОМЕНТ ПРИНЯТИЯ/ВЫЗОВА ТАЛОНА К ОКНУ
+            // =====================================================================
+            auto nowAccept = std::chrono::system_clock::now();
+            m_currentTicketAcceptedAt =
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    nowAccept.time_since_epoch()
+                ).count();
+
+            g_logger.info(L"onAccept: accepted timestamp stored, ticket=" + ticketNumber +
+                L", acceptedAt=" + std::to_wstring(m_currentTicketAcceptedAt));
+
+            // =====================================================================
             // ГОЛОСОВОЕ ПРИГЛАШЕНИЕ С РЕАЛЬНЫМ НОМЕРОМ ОКНА ТОВАРОВЕДА
             // =====================================================================
             if (m_currentQueueType == L"first_time") {
@@ -1381,19 +2211,7 @@ private:
                 showItemInputForm(clientId, ticketNumber, windowW,
                     L"Клиент #" + std::to_wstring(clientId));
             }
-
-            // =====================================================================
-            // УДАЛЯЕМ ТАЛОН ИЗ ЛОКАЛЬНОГО СПИСКА (потокобезопасно)
-            // =====================================================================
-            {
-                std::lock_guard<std::mutex> lock(m_mutex);
-                if (itemData < (LRESULT)m_tickets.size()) {
-                    m_tickets.erase(m_tickets.begin() + itemData);
-                }
-                if (m_selectedIndex >= (int)m_tickets.size()) {
-                    m_selectedIndex = (int)m_tickets.size() - 1;
-                }
-            }
+                        
             updateUI();
 
             g_logger.info(L"onAccept: completed successfully for ticket=" + ticketNumber);
@@ -1502,13 +2320,12 @@ private:
                 // =============================================================
                 printReceiptForServedClient(clientId);
 
-                // =============================================================
-                // Очищаем данные текущего талона, чтобы при повторном
-                // нажатии «Обслужен (Следующий)» не пытаться обслуживать
-                // тот же талон повторно.
-                // =============================================================
                 m_currentTicketNumber.clear();
                 m_currentClientId = 0;
+                m_currentTicketAcceptedAt = 0;
+
+                removeCurrentAcceptedTicketFromLocalList();
+
                 g_logger.info(L"onServe: current ticket data cleared after successful serve");
             }
             else {
@@ -1583,6 +2400,246 @@ private:
         }
     }
 
+    // =========================================================================
+// НОВЫЙ МЕТОД: УДАЛЕНИЕ ТАЛОНА, ПО КОТОРОМУ КОМИТЕНТ НЕ ПРИШЁЛ
+// =========================================================================
+//
+// НАЗНАЧЕНИЕ:
+// Позволяет товароведу удалить из любой очереди талон, по которому
+// комитент не подошёл к окну в течение 2 минут.
+//
+// ЛОГИКА РАБОТЫ:
+// 1. Проверяется, что выбран талон в списке (m_hListBox).
+// 2. Из локального списка извлекаются
+//    данные талона (номер, время создания, ).
+// 3. На клиенте выполняется предварительная проверка: с момента
+//    создания талона должно пройти не менее 120 секунд (2 минуты).
+//    Это предотвращает отправку заведомо неверных запросов на сервер
+//    и улучшает пользовательский опыт.
+// 4. Отправляется запрос POST /api/v1/queue/delete_ticket на сервер.
+// 5. Сервер выполняет атомарный с проверкой статуса и возраста.
+// 6. При успешном удалении талон удаляется из локального списка
+//    и обновляется.
+// 7. При ошибке сервера показывается сообщение об ошибке.
+//
+// ПОТОКОБЕЗОПАСНОСТЬ:
+// Метод вызывается ТОЛЬКО из - потока (обработчик, идентификатор кнопки 4).
+// Доступ к защищён мьютексом.
+// Поля и читаются только в -потоке.
+// Сетевой запрос выполняется синхронно (как в и),
+// что блокирует интерфейс на время запроса, но это приемлемо,
+// так как пользователь нажал кнопку и ждёт результата.
+// Гонка потоков исключена.
+// =========================================================================
+    void onDeleteTicket() {
+        g_logger.info(L"onDeleteTicket: entered, currentQueueType=" + m_currentQueueType);
+
+        std::string ticketNumberUtf8;
+        int clientId = -1;
+        int64_t baseTime = 0;
+        LRESULT itemData = LB_ERR;
+        bool deleteCurrentAccepted = false;
+
+        // =====================================================================
+        // ЕСЛИ ЕСТЬ ТЕКУЩИЙ ПРИНЯТЫЙ ТАЛОН — УДАЛЯЕМ ЕГО
+        // =====================================================================
+        if (hasCurrentAcceptedTicket() && !m_currentTicketNumber.empty()) {
+            deleteCurrentAccepted = true;
+
+            ticketNumberUtf8 = wstring_to_utf8(m_currentTicketNumber);
+            clientId = m_currentClientId;
+            baseTime = m_currentTicketAcceptedAt;
+
+            g_logger.info(L"onDeleteTicket: deleting CURRENT ACCEPTED ticket=" +
+                m_currentTicketNumber +
+                L", acceptedAt=" + std::to_wstring(baseTime));
+        }
+        // =====================================================================
+        // ИНАЧЕ РАБОТАЕМ С ВЫБРАННЫМ ТАЛОНОМ ИЗ СПИСКА
+        // =====================================================================
+        else {
+            int sel = (int)SendMessageW(m_hListBox, LB_GETCURSEL, 0, 0);
+            if (sel == LB_ERR) {
+                MessageBoxW(m_hWnd, L"Выберите талон для удаления",
+                    L"Внимание", MB_OK);
+                g_logger.warning(L"onDeleteTicket: no ticket selected");
+                return;
+            }
+
+            itemData = SendMessageW(m_hListBox, LB_GETITEMDATA, sel, 0);
+            if (itemData == LB_ERR || itemData < 0 ||
+                itemData >= (LRESULT)m_tickets.size()) {
+                MessageBoxW(m_hWnd, L"Ошибка идентификации талона",
+                    L"Ошибка", MB_OK);
+                g_logger.error(L"onDeleteTicket: invalid itemData=" +
+                    std::to_wstring(itemData));
+                return;
+            }
+
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            if (itemData >= (LRESULT)m_tickets.size()) {
+                g_logger.error(L"onDeleteTicket: itemData out of range after lock");
+                return;
+            }
+
+            const json& ticket = m_tickets[itemData];
+
+            ticketNumberUtf8 = ticket.value("ticket_number", std::string(""));
+
+            if (ticket.contains("client_id") && ticket["client_id"].is_number()) {
+                clientId = ticket["client_id"].get<int>();
+            }
+
+            baseTime = ticket.value("created_at", (int64_t)0);
+        }
+
+        if (ticketNumberUtf8.empty()) {
+            MessageBoxW(m_hWnd, L"Не определён номер талона для удаления",
+                L"Ошибка", MB_OK);
+            g_logger.error(L"onDeleteTicket: empty ticket number");
+            return;
+        }
+
+        if (baseTime <= 0) {
+            MessageBoxW(m_hWnd, L"Не определено время талона",
+                L"Ошибка", MB_OK);
+            g_logger.error(L"onDeleteTicket: invalid baseTime");
+            return;
+        }
+
+        std::wstring ticketNumber = utf8_to_wstring(ticketNumberUtf8);
+
+        g_logger.info(L"onDeleteTicket: ticketNumber=" + ticketNumber +
+            L", queueType=" + m_currentQueueType +
+            L", clientId=" + std::to_wstring(clientId) +
+            L", baseTime=" + std::to_wstring(baseTime));
+
+        // =================================================================
+        // ШАГ 3: Предварительная проверка на клиенте (>= 2 минуты)
+        // =================================================================
+        // Вычисляем текущее время в секундах ( )
+        auto now = std::chrono::system_clock::now();
+        int64_t nowSec = std::chrono::duration_cast<std::chrono::seconds>(
+            now.time_since_epoch()).count();
+        int64_t ageSeconds = nowSec - baseTime;
+
+        g_logger.info(L"onDeleteTicket: ticket age=" +
+            std::to_wstring(ageSeconds) + L" seconds (threshold=120)");
+
+        if (ageSeconds < 120) {
+            int remainingSeconds = 120 - static_cast<int>(ageSeconds);
+            std::wstring msg = L"Талон можно удалить только после 2 минут ожидания.\n"
+                L"Осталось: " + std::to_wstring(remainingSeconds) + L" сек.";
+            MessageBoxW(m_hWnd, msg.c_str(), L"Внимание", MB_OK);
+            g_logger.info(L"onDeleteTicket: ticket " + ticketNumber +
+                L" is too young (age=" + std::to_wstring(ageSeconds) +
+                L"s < 120s), deletion rejected on client side");
+            return;
+        }
+
+        // =================================================================
+        // ШАГ 4: Подтверждение удаления
+        // =================================================================
+        std::wstring confirmMsg = L"Удалить талон " + ticketNumber +
+            L" из очереди «" + m_currentQueueType + L"»?\n\n"
+            L"Комитент не подошёл к окну в течение 2 минут.";
+        int confirmResult = MessageBoxW(m_hWnd, confirmMsg.c_str(),
+            L"Подтверждение удаления", MB_YESNO | MB_ICONQUESTION);
+        if (confirmResult != IDYES) {
+            g_logger.info(L"onDeleteTicket: deletion cancelled by user for ticket " +
+                ticketNumber);
+            return;
+        }
+
+        // =================================================================
+        // ШАГ 5: Отправляем запрос на сервер
+        // =================================================================
+        json request;
+        request["ticket_number"] = ticketNumberUtf8;
+        request["queue_type"] = wstring_to_utf8(m_currentQueueType);
+
+        g_logger.info(L"onDeleteTicket: sending delete request to server, "
+            L"ticket=" + ticketNumber +
+            L", queueType=" + m_currentQueueType);
+
+        std::wstring authToken = g_authManager.getAuthToken();
+        auto response = g_httpsClient.post(
+            L"/api/v1/queue/delete_ticket", request, authToken);
+
+        // =================================================================
+        // ШАГ 6: Обрабатываем ответ сервера
+        // =================================================================
+        if (response && response->contains("success") &&
+            (*response)["success"].get<bool>()) {
+
+            g_logger.info(L"onDeleteTicket: server confirmed deletion of ticket " +
+                ticketNumber + L" from queue " + m_currentQueueType);
+
+            // =================================================================
+            // ЕСЛИ УДАЛЯЛИ ТЕКУЩИЙ ПРИНЯТЫЙ ТАЛОН
+            // =================================================================
+            if (deleteCurrentAccepted) {
+                removeCurrentAcceptedTicketFromLocalList();
+
+                m_currentTicketNumber.clear();
+                m_currentClientId = 0;
+                m_currentTicketAcceptedAt = 0;
+
+                g_logger.info(L"onDeleteTicket: current accepted ticket data cleared");
+
+                returnToQueueList();
+            }
+            // =================================================================
+            // ЕСЛИ УДАЛЯЛИ ТАЛОН ИЗ СПИСКА ОЖИДАНИЯ
+            // =================================================================
+            else {
+                std::lock_guard<std::mutex> lock(m_mutex);
+
+                if (itemData != LB_ERR && itemData < (LRESULT)m_tickets.size()) {
+                    m_tickets.erase(m_tickets.begin() + itemData);
+
+                    g_logger.info(L"onDeleteTicket: ticket " + ticketNumber +
+                        L" removed from local list, remaining tickets=" +
+                        std::to_wstring(m_tickets.size()));
+                }
+
+                if (m_selectedIndex >= (int)m_tickets.size()) {
+                    m_selectedIndex = (int)m_tickets.size() - 1;
+                }
+
+                updateUI();
+            }
+
+            MessageBoxW(m_hWnd,
+                (L"Талон " + ticketNumber + L" удалён из очереди.").c_str(),
+                L"Успех", MB_OK);
+        }
+    }
+
+    // =========================================================================
+// НОВЫЙ МЕТОД: ОТКРЫТИЕ ОКНА «ПОИСК КОМИТЕНТА»
+// =========================================================================
+//
+// НАЗНАЧЕНИЕ:
+// Открывает модальное окно для поиска комитента по
+// или по фамилии, имени и отчеству.
+//
+// Реализация аналогична вызову в
+// ( там используется для ввода причины блокировки).
+//
+// ПОТОКОБЕЗОПАСНОСТЬ:
+// Метод вызывается ТОЛЬКО из - потока (обработчик, идентификатор кнопки 5).
+// Модальное окно блокирует родительское окно до закрытия.
+// Сетевые запросы внутри диалога выполняются в фоновых потоках.
+// =========================================================================
+    void onSearchClient() {
+        g_logger.info(L"onSearchClient: opening ClientSearchDialog");
+        ClientSearchDialog dialog;
+        dialog.show(m_hWnd);
+        g_logger.info(L"onSearchClient: ClientSearchDialog closed");
+    }
+
     static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         WorkerWindow* pThis = nullptr;
         if (msg == WM_CREATE) {
@@ -1598,12 +2655,52 @@ private:
                 pThis->m_tickets = pThis->fetchTicketsFromServer(pThis->m_currentQueueType);
             }
             pThis->updateUI();
-            pThis->m_running = true;
+            // =====================================================================
+            // ЗАПУСК ФОНОВОГО ПОТОКА ОБНОВЛЕНИЯ СПИСКА ТАЛОНОВ
+            // =====================================================================
+            // Поток работает только пока окно живо и флаг m_running == true.
+            //
+            // Требования потокобезопасности:
+            // 1. Флаг читается через atomic.
+            // 2. Спать короткими интервалами, чтобы быстро остановиться при закрытии.
+            // 3. Обернуть рабочую часть в try/catch, чтобы любое исключение
+            //    не приводило к немедленному std::terminate().
+            // 4. Никогда не выходить из потока с не-joined состоянием объекта.
+            // =====================================================================
+            pThis->m_running.store(true);
+
             pThis->m_refreshThread = std::thread([pThis]() {
-                while (pThis->m_running) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(REFRESH_INTERVAL_MS));
-                    if (pThis->m_running) pThis->refreshList();
+                g_logger.info(L"WorkerWindow: refresh thread started");
+
+                while (pThis->m_running.load()) {
+                    // =================================================================
+                    // Спим суммарно REFRESH_INTERVAL_MS, но короткими кусками по 100 мс.
+                    // Это нужно, чтобы при закрытии окна не ждать полный интервал,
+                    // а быстро увидеть, что флаг уже сброшен.
+                    // =================================================================
+                    for (int waitedMs = 0;
+                        waitedMs < REFRESH_INTERVAL_MS && pThis->m_running.load();
+                        waitedMs += 100) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
+
+                    if (!pThis->m_running.load()) {
+                        break;
+                    }
+
+                    try {
+                        pThis->refreshList();
+                    }
+                    catch (const std::exception& ex) {
+                        g_logger.error(L"WorkerWindow: refresh thread exception: " +
+                            utf8_to_wstring(ex.what()));
+                    }
+                    catch (...) {
+                        g_logger.error(L"WorkerWindow: refresh thread unknown exception");
+                    }
                 }
+
+                g_logger.info(L"WorkerWindow: refresh thread stopped");
                 });
             return 0;
         }
@@ -1627,7 +2724,36 @@ private:
                 int btnW = (leftListWidth - 40 - 10) / 2;
                 SetWindowPos(pThis->m_hAcceptBtn, NULL, 20, height - 80, btnW, 50, SWP_NOZORDER);
                 SetWindowPos(pThis->m_hServeBtn, NULL, 20 + btnW + 10, height - 80, btnW, 50, SWP_NOZORDER);
+                SetWindowPos(pThis->m_hSearchClientBtn, NULL,
+                    width - 320, 10, 180, 40, SWP_NOZORDER);
             }
+            return 0;
+        }
+
+        if (msg == WM_VSCROLL) {
+            RECT rc; GetClientRect(hWnd, &rc);
+            int clientH = rc.bottom - rc.top;
+            int maxScroll = pThis->m_rightContentHeight - clientH;
+            if (maxScroll < 0) maxScroll = 0;
+            int pos = pThis->m_rightScrollPos;
+
+            switch (LOWORD(wParam)) {
+            case SB_LINEUP:        pos -= 35; break;
+            case SB_LINEDOWN:      pos += 35; break;
+            case SB_PAGEUP:        pos -= clientH; break;
+            case SB_PAGEDOWN:      pos += clientH; break;
+            case SB_THUMBTRACK:
+            case SB_THUMBPOSITION: pos = (short)HIWORD(wParam); break;
+            case SB_TOP:           pos = 0; break;
+            case SB_BOTTOM:        pos = maxScroll; break;
+            }
+            pThis->scrollRightPanel(pos);
+            return 0;
+        }
+
+        if (msg == WM_MOUSEWHEEL) {
+            int wheelDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+            pThis->scrollRightPanel(pThis->m_rightScrollPos - (wheelDelta / 120) * 60);
             return 0;
         }
 
@@ -1673,34 +2799,62 @@ private:
                     L", clientId=" + std::to_wstring(pThis->m_currentClientId) +
                     L", queueType=" + pThis->m_currentQueueType);
 
-                if (pThis->m_currentQueueType == L"first_time") {
-                    std::wstring ticketNumber = pThis->m_currentTicketNumber;
-                    int clientId = pThis->m_currentClientId;
-                    g_logger.info(L"WM_APP+3: first_time queue detected, auto-serving ticket: " + ticketNumber);
-                    std::thread([pThis, ticketNumber, clientId]() {
-                        json request;
-                        request["ticket_number"] = wstring_to_utf8(ticketNumber);
-                        auto response = g_httpsClient.post(L"/api/v1/queue/first_time/serve", request, L"");
-                        if (response && response->contains("success") && (*response)["success"].get<bool>()) {
-                            g_logger.info(L"WM_APP+3: first_time ticket served successfully, printing receipt for clientId=" + std::to_wstring(clientId));
-                            pThis->printReceiptForServedClient(clientId);
+                // =============================================================
+                // ПОСЛЕ УСПЕШНОГО «Сохранить все» ПРИНЯТЫЙ ТАЛОН ДОЛЖЕН
+                // БЫТЬ УДАЛЁН ИЗ ОЧЕРЕДИ.
+                //
+                // Для серверного завершения талона используется существующий
+                // эндпоинт serve. Ранее он вызывался только для first_time.
+                // Теперь вызывается для любой очереди после сохранения товаров.
+                // =============================================================
+                std::wstring savedTicketNumber = pThis->m_currentTicketNumber;
+                int savedClientId = pThis->m_currentClientId;
+                std::wstring savedQueueType = pThis->m_currentQueueType;
+
+                if (!savedTicketNumber.empty()) {
+                    std::thread([pThis, savedTicketNumber, savedClientId, savedQueueType]() {
+                        std::wstring endpoint;
+
+                        if (savedQueueType == L"first_time") {
+                            endpoint = L"/api/v1/queue/first_time/serve";
+                        }
+                        else if (savedQueueType == L"trust") {
+                            endpoint = L"/api/v1/queue/trust/serve";
                         }
                         else {
-                            g_logger.error(L"WM_APP+3: failed to serve first_time ticket: " + ticketNumber);
+                            endpoint = L"/api/v1/queue/serve";
                         }
-                    }).detach();
-                    // =========================================================
-                    // ИСПРАВЛЕНИЕ: Очищаем данные текущего талона после
-                    // автоматического обслуживания. Фоновый поток уже
-                    // захватил ticketNumber и clientId как копии, поэтому
-                    // очистка не повлияет на его работу.
-                    // Это предотвращает повторное обслуживание того же
-                    // талона при нажатии кнопки «Обслужен (Следующий)».
-                    // =========================================================
-                    pThis->m_currentTicketNumber.clear();
-                    pThis->m_currentClientId = 0;
-                    g_logger.info(L"WM_APP+3: first_time current ticket data cleared after auto-serve");
+
+                        json request;
+                        request["ticket_number"] = wstring_to_utf8(savedTicketNumber);
+
+                        auto response = g_httpsClient.post(endpoint, request, L"");
+
+                        if (response && response->contains("success") &&
+                            (*response)["success"].get<bool>()) {
+                            g_logger.info(L"WM_APP+3: ticket served after Save all, ticket=" +
+                                savedTicketNumber);
+
+                            pThis->printReceiptForServedClient(savedClientId);
+                        }
+                        else {
+                            g_logger.error(L"WM_APP+3: failed to serve ticket after Save all, ticket=" +
+                                savedTicketNumber);
+                        }
+                        }).detach();
                 }
+
+                // =============================================================
+                // УДАЛЯЕМ ТАЛОН ИЗ ЛОКАЛЬНОГО СПИСКА И ОЧИЩАЕМ ЕГО ДАННЫЕ
+                // =============================================================
+                pThis->removeCurrentAcceptedTicketFromLocalList();
+
+                pThis->m_currentTicketNumber.clear();
+                pThis->m_currentClientId = 0;
+                pThis->m_currentTicketAcceptedAt = 0;
+
+                g_logger.info(L"WM_APP+3: current accepted ticket cleared after Save all");
+
                 MessageBoxW(pThis->m_hWnd, L"Товары успешно сохранены!", L"Успех", MB_OK);
                 pThis->returnToQueueList();
             }
@@ -1735,6 +2889,22 @@ private:
 
                 pThis->repositionItemInputControls();
                 pThis->showItemInputControls(true);
+
+                pThis->setCurrentDateTime();
+                g_logger.info(L"WM_COMMIT_SAVED: [FIX] setCurrentDateTime() called after repositionItemInputControls()");
+
+                // === Загружаем товары клиента и обновляем поле «Номер приложения» ===
+                // Используем существующий паттерн из showItemInputForm():
+                // фоновый поток вызывает loadClientItems(), затем отправляет
+                // WM_APP + 2, обработчик которого вызывает updateNextItemNumber().
+                HWND hWndCopy = pThis->m_hWnd;
+                std::thread([pThis, clientId, hWndCopy]() {
+                    g_logger.info(L"WM_COMMIT_SAVED: [FIX] background thread started for loadClientItems, clientId=" + std::to_wstring(clientId));
+                    pThis->loadClientItems(clientId);
+                    g_logger.info(L"WM_COMMIT_SAVED: [FIX] loadClientItems completed, posting WM_APP+2");
+                    PostMessageW(hWndCopy, WM_APP + 2, 0, 0);
+                    }).detach();
+                g_logger.info(L"WM_COMMIT_SAVED: [FIX] background thread for loadClientItems launched successfully");
 
                 SetWindowTextW(pThis->m_hCommitFioValue, fio.c_str());
                 SetWindowTextW(pThis->m_hCommitIdValue, std::to_wstring(clientId).c_str());
@@ -1810,11 +2980,17 @@ private:
                 return 0;
             }
             if (id == 200 && code == CBN_SELCHANGE) {
+                if (pThis->hasCurrentAcceptedTicket()) {
+                    MessageBoxW(pThis->m_hWnd,
+                        L"Сначала завершите текущий талон: «Сохранить все» или «Удалить (не пришёл)».",
+                        L"Внимание", MB_OK);
+                    return 0;
+                }
+
                 if (pThis->m_currentMode == Mode::ITEM_INPUT) {
                     MessageBoxW(pThis->m_hWnd, L"Сначала завершите ввод товаров", L"Внимание", MB_OK);
                     return 0;
-                }
-                LRESULT idx = SendMessageW(pThis->m_hComboQueue, CB_GETCURSEL, 0, 0);
+                }                LRESULT idx = SendMessageW(pThis->m_hComboQueue, CB_GETCURSEL, 0, 0);
                 if (idx != CB_ERR && idx < (LRESULT)pThis->m_queueTypeIds.size()) {
                     std::lock_guard<std::mutex> lock(pThis->m_mutex);
                     pThis->m_currentQueueType = pThis->m_queueTypeIds[static_cast<int>(idx)];
@@ -1865,20 +3041,27 @@ private:
                 return 0;
             }
             if (id == ID_ITEM_BACK_BTN && code == BN_CLICKED) {
+                if (pThis->hasCurrentAcceptedTicket()) {
+                    MessageBoxW(pThis->m_hWnd,
+                        L"Нельзя вернуться до завершения талона.\n"
+                        L"Нажмите «Сохранить все» или «Удалить (не пришёл)».",
+                        L"Внимание", MB_OK);
+                    return 0;
+                }
+
                 if (MessageBoxW(pThis->m_hWnd, L"Вернуться? Несохранённые данные будут потеряны.", L"Подтверждение", MB_YESNO) == IDYES) {
-                    // =========================================================
-                    // ИСПРАВЛЕНИЕ: Очищаем данные текущего талона при
-                    // возврате в список очереди через «Назад». Товары не
-                    // были сохранены, поэтому талон не должен обслуживаться
-                    // при нажатии «Обслужен (Следующий)».
-                    // =========================================================
                     pThis->m_currentTicketNumber.clear();
                     pThis->m_currentClientId = 0;
+                    pThis->m_currentTicketAcceptedAt = 0;
+
+                    pThis->removeCurrentAcceptedTicketFromLocalList();
+
                     g_logger.info(L"Back button: current ticket data cleared (items not saved)");
                     pThis->returnToQueueList();
                 }
                 return 0;
-            }            if (id == ID_ITEM_EDIT_RECORD_BTN && code == BN_CLICKED) {
+            }
+            if (id == ID_ITEM_EDIT_RECORD_BTN && code == BN_CLICKED) {
                 pThis->onEditRecord();
                 return 0;
             }
@@ -1903,23 +3086,63 @@ private:
                     pThis->onServe();
                     break;
                 case 3:
-                    PostQuitMessage(0);
+                    DestroyWindow(pThis->m_hWnd);
+                    break;
+                    // =============================================================
+                    // НОВОЕ: Кнопка «Удалить (не пришёл)»
+                    // Удаляет выбранный талон, по которому комитент не подошёл
+                    // к окну в течение 2 минут.
+                    // =============================================================
+                case ID_DELETE_TICKET_BTN:
+                    pThis->onDeleteTicket();
+                    break;
+                    // =============================================================
+                    // НОВОЕ: Кнопка «Поиск комитента»
+                    // Открывает модальное окно поиска комитента по
+                    // или по фамилии, имени и отчеству.
+                    // =============================================================
+                case ID_SEARCH_CLIENT_BTN:
+                    pThis->onSearchClient();
                     break;
                 }
                 return 0;
             }
             break;
         }
+        
         case WM_DESTROY:
-            pThis->m_running = false;
-            if (pThis->m_refreshThread.joinable()) pThis->m_refreshThread.join();
+            // =====================================================================
+            // КОРРЕКТНОЕ УНИЧТОЖЕНИЕ ОКНА ТОВАРОВЕДА
+            // =====================================================================
+            // Здесь обязательно:
+            // 1. Остановить флаг фонового потока.
+            // 2. Дождаться завершения фонового потока через join().
+            // 3. Освободить TTS.
+            // 4. Только после этого вызвать PostQuitMessage(0).
+            //
+            // Это исключает уничтожение объекта с живым потоком и предотвращает
+            // вызов std::terminate() в деструкторе std::thread.
+            // =====================================================================
+            g_logger.info(L"WorkerWindow: WM_DESTROY received, stopping refresh thread");
+
+            pThis->m_running.store(false);
+
+            if (pThis->m_refreshThread.joinable()) {
+                g_logger.info(L"WorkerWindow: WM_DESTROY is joining refresh thread");
+                pThis->m_refreshThread.join();
+                g_logger.info(L"WorkerWindow: WM_DESTROY refresh thread joined successfully");
+            }
             if (pThis->m_pVoice) {
                 pThis->m_pVoice->Release();
                 pThis->m_pVoice = nullptr;
+                g_logger.info(L"WorkerWindow: TTS voice released");
             }
             CoUninitialize();
+            g_logger.info(L"WorkerWindow: COM uninitialized");
+
             PostQuitMessage(0);
-            return 0;
+            g_logger.info(L"WorkerWindow: WM_DESTROY completed");
+            return 0;       
         }
         return DefWindowProc(hWnd, msg, wParam, lParam);
     }
@@ -1974,7 +3197,22 @@ private:
         m_hServeBtn = CreateWindowExW(0, L"BUTTON", L"Обслужен (Следующий)", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 20 + btnW + 10, height - 80, btnW, 50, m_hWnd, (HMENU)2, g_hInstance, nullptr);
         SendMessageW(m_hServeBtn, WM_SETFONT, (WPARAM)m_hSmallFont, TRUE);
 
-        HWND hCloseBtn = CreateWindowExW(0, L"BUTTON", L"Закрыть", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, width - 120, 10, 100, 40, m_hWnd, (HMENU)3, g_hInstance, nullptr);
+        // =====================================================================
+        // НОВАЯ КНОПКА: «Поиск комитента»
+        // Размещается в верхнем правом углу, рядом с кнопкой «Закрыть».
+        // Идентификатор = 5 ( 5).
+        // =====================================================================
+        m_hSearchClientBtn = CreateWindowExW(0, L"BUTTON",
+            L"Поиск комитента",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            width - 320, 10, 180, 40,
+            m_hWnd, (HMENU)ID_SEARCH_CLIENT_BTN, g_hInstance, nullptr);
+        SendMessageW(m_hSearchClientBtn, WM_SETFONT, (WPARAM)m_hFont, TRUE);
+
+        HWND hCloseBtn = CreateWindowExW(0, L"BUTTON", L"Закрыть",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            width - 120, 10, 100, 40,
+            m_hWnd, (HMENU)3, g_hInstance, nullptr);
         SendMessageW(hCloseBtn, WM_SETFONT, (WPARAM)m_hFont, TRUE);
 
         int rightStart = leftListWidth + 20, rightWidth = width - rightStart - 20; if (rightWidth < 400) rightWidth = 400;
@@ -2068,40 +3306,138 @@ public:
         m_hCommitPhoneDisplayValue(nullptr),
         m_hCommitBirthDateDisplayLabel(nullptr),
         m_hCommitBirthDateDisplayValue(nullptr),
+        m_hDeleteTicketBtn(nullptr),
+        m_hSearchClientBtn(nullptr),
         m_isCommitDataSaved(false),
+        m_comInitialized(false),
         m_editingItemIndex(-1) {
         initializeTTS();
     }
 
     ~WorkerWindow() {
-        if (m_hFont) DeleteObject(m_hFont);
-        if (m_hSmallFont) DeleteObject(m_hSmallFont);
-        if (m_hBrush) DeleteObject(m_hBrush);
+
+        g_logger.info(L"WorkerWindow: destructor entered");
+
+        m_running.store(false);
+
+        if (m_refreshThread.joinable()) {
+            g_logger.info(L"WorkerWindow: destructor is joining refresh thread");
+            m_refreshThread.join();
+            g_logger.info(L"WorkerWindow: destructor refresh thread joined successfully");
+        }
+
+        if (m_hFont) {
+            DeleteObject(m_hFont);
+            m_hFont = nullptr;
+        }
+
+        if (m_hSmallFont) {
+            DeleteObject(m_hSmallFont);
+            m_hSmallFont = nullptr;
+        }
+
+        if (m_hBrush) {
+            DeleteObject(m_hBrush);
+            m_hBrush = nullptr;
+        }
+
+        g_logger.info(L"WorkerWindow: destructor completed");
     }
 
-    void show() {
-        WNDCLASSEXW wc = {};
-        wc.cbSize = sizeof(WNDCLASSEX);
-        wc.style = CS_HREDRAW | CS_VREDRAW;
-        wc.lpfnWndProc = WndProc;
-        wc.hInstance = g_hInstance;
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-        wc.lpszClassName = L"WorkerWindowClass";
-        wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-        RegisterClassExW(&wc);
+    // =============================================================================
+    // ПОКАЗ ОКНА ТОВАРОВЕДА
+    // =============================================================================
+    // ИСПРАВЛЕНИЯ:
+    // 1. Регистрация класса выполняется один раз.
+    // 2. Ошибка CreateWindowExW логируется с GetLastError.
+    // 3. Цикл сообщений использует GetMessage(...) > 0.
+    //    Ранее значение -1 ошибочно воспринималось как продолжение цикла.
+    // =============================================================================
+    void show()
+    {
+        g_logger.info(L"WorkerWindow::show() entered");
 
-        int screenW = GetSystemMetrics(SM_CXSCREEN), screenH = GetSystemMetrics(SM_CYSCREEN);
-        m_hWnd = CreateWindowExW(0, L"WorkerWindowClass", L"Товаровед - Управление очередями", WS_OVERLAPPEDWINDOW, 0, 0, screenW, screenH, nullptr, nullptr, g_hInstance, this);
-        if (!m_hWnd) return;
+        static bool classRegistered = false;
+
+        if (!classRegistered)
+        {
+            WNDCLASSEXW wc = {};
+            wc.cbSize = sizeof(WNDCLASSEXW);
+            wc.style = CS_HREDRAW | CS_VREDRAW;
+            wc.lpfnWndProc = WndProc;
+            wc.hInstance = g_hInstance;
+            wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+            wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+            wc.lpszClassName = L"WorkerWindowClass";
+            wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+
+            if (!RegisterClassExW(&wc))
+            {
+                DWORD err = GetLastError();
+                g_logger.error(L"WorkerWindow: RegisterClassExW failed, error=" +
+                    std::to_wstring(err));
+                return;
+            }
+
+            classRegistered = true;
+            g_logger.info(L"WorkerWindow: window class registered");
+        }
+
+        int screenW = GetSystemMetrics(SM_CXSCREEN);
+        int screenH = GetSystemMetrics(SM_CYSCREEN);
+
+        m_hWnd = CreateWindowExW(0,
+            L"WorkerWindowClass",
+            L"Товаровед - Управление очередями",
+            WS_OVERLAPPEDWINDOW,
+            0,
+            0,
+            screenW,
+            screenH,
+            nullptr,
+            nullptr,
+            g_hInstance,
+            this);
+
+        if (!m_hWnd)
+        {
+            DWORD err = GetLastError();
+            g_logger.error(L"WorkerWindow: CreateWindowExW failed, error=" +
+                std::to_wstring(err));
+            return;
+        }
+
+        g_logger.info(L"WorkerWindow: window created");
 
         ShowWindow(m_hWnd, SW_SHOW);
         UpdateWindow(m_hWnd);
 
+        g_logger.info(L"WorkerWindow: entering message loop");
+
         MSG msg;
-        while (GetMessage(&msg, nullptr, 0, 0)) {
+        BOOL getMessageResult = GetMessage(&msg, nullptr, 0, 0);
+
+        while (getMessageResult > 0)
+        {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
+
+            if (!IsWindow(m_hWnd))
+            {
+                g_logger.info(L"WorkerWindow: window no longer exists, breaking message loop");
+                break;
+            }
+
+            getMessageResult = GetMessage(&msg, nullptr, 0, 0);
         }
+
+        if (getMessageResult == -1)
+        {
+            DWORD err = GetLastError();
+            g_logger.error(L"WorkerWindow: GetMessage returned -1, error=" +
+                std::to_wstring(err));
+        }
+
+        g_logger.info(L"WorkerWindow: message loop ended");
     }
 };

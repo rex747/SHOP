@@ -161,33 +161,62 @@ private:
         }
     }
 
-    // =========================================================================
-    // ПОТОК ОПРОСА СЕРВЕРА
-    // =========================================================================
     void pollLoop() {
+        // =====================================================================
+        // ФОНОВЫЙ ПОТОК ОПРОСА СЕРВЕРА ДЛЯ ТВ-МОНИТОРА
+        // =====================================================================
+        // Требования потокобезопасности:
+        // 1. Использовать atomic-флаг m_running.
+        // 2. Обернуть сетевой запрос и парсинг в try/catch.
+        // 3. Не отправлять сообщения, если окно уже не существует.
+        // 4. Спать короткими интервалами для быстрого завершения потока.
+        // =====================================================================
         g_logger.info(L"QueueDisplayWindow: poll loop started, interval=" +
             std::to_wstring(DisplayConfig::POLL_INTERVAL_MS) + L" ms");
+
         while (m_running.load()) {
-            auto response = g_httpsClient.get(L"/api/v1/queue/display", L"");
-            if (response && response->contains("queues")) {
-                DisplaySnapshot snapshot = parseDisplayResponse(*response);
-                {
-                    std::lock_guard<std::mutex> lock(m_dataMutex);
-                    m_snapshot = std::move(snapshot);
+            try {
+                auto response = g_httpsClient.get(L"/api/v1/queue/display", L"");
+
+                if (response && response->contains("queues")) {
+                    DisplaySnapshot snapshot = parseDisplayResponse(*response);
+
+                    {
+                        std::lock_guard<std::mutex> lock(m_dataMutex);
+                        m_snapshot = std::move(snapshot);
+                    }
+
+                    if (m_running.load() && IsWindow(m_hWnd)) {
+                        PostMessageW(m_hWnd, WM_DISPLAY_DATA_READY, 0, 0);
+                    }
                 }
-                if (IsWindow(m_hWnd)) {
-                    PostMessageW(m_hWnd, WM_DISPLAY_DATA_READY, 0, 0);
+                else {
+                    g_logger.warning(L"QueueDisplayWindow: failed to fetch display data");
+
+                    if (m_running.load() && IsWindow(m_hWnd)) {
+                        PostMessageW(m_hWnd, WM_DISPLAY_ERROR, 0, 0);
+                    }
                 }
             }
-            else {
-                g_logger.warning(L"QueueDisplayWindow: failed to fetch display data");
-                if (IsWindow(m_hWnd)) {
-                    PostMessageW(m_hWnd, WM_DISPLAY_ERROR, 0, 0);
-                }
+            catch (const std::exception& ex) {
+                g_logger.error(L"QueueDisplayWindow: poll loop exception: " +
+                    utf8_to_wstring(ex.what()));
             }
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(DisplayConfig::POLL_INTERVAL_MS));
+            catch (...) {
+                g_logger.error(L"QueueDisplayWindow: poll loop unknown exception");
+            }
+
+            // =================================================================
+            // Спим полный интервал опроса, но короткими кусками по 100 мс.
+            // Это позволяет быстро завершить поток при закрытии окна.
+            // =================================================================
+            for (int waitedMs = 0;
+                waitedMs < DisplayConfig::POLL_INTERVAL_MS && m_running.load();
+                waitedMs += 100) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
         }
+
         g_logger.info(L"QueueDisplayWindow: poll loop stopped");
     }
 
@@ -654,9 +683,31 @@ public:
         g_logger.info(L"QueueDisplayWindow: constructor");
     }
     ~QueueDisplayWindow() {
-        g_logger.info(L"QueueDisplayWindow: destructor");
-    }
+        // =====================================================================
+        // ПРОДАКШН-ЗАЩИТА ДЕСТРУКТОРА
+        // =====================================================================
+        // Деструктор обязан гарантировать, что поток опроса сервера
+        // остановлен и выполнен join().
+        //
+        // Обычно поток уже будет остановлен в WM_DESTROY, но если окно
+        // завершится нестандартно, защитный join здесь предотвратит
+        // std::terminate() в деструкторе std::thread.
+        // =====================================================================
+        g_logger.info(L"QueueDisplayWindow: destructor entered");
 
+        m_running.store(false);
+
+        if (m_pollThread.joinable()) {
+            g_logger.info(L"QueueDisplayWindow: destructor is joining poll thread");
+            m_pollThread.join();
+            g_logger.info(L"QueueDisplayWindow: destructor poll thread joined successfully");
+        }
+
+        // Повторный вызов безопасен: внутри все указатели проверяются на null.
+        releaseResources();
+
+        g_logger.info(L"QueueDisplayWindow: destructor completed");
+    }
     void show() {
         g_logger.info(L"QueueDisplayWindow::show() called, DEBUG_MODE=" +
             std::wstring(DisplayConfig::DEBUG_MODE ? L"true" : L"false"));
@@ -741,13 +792,37 @@ public:
 
         g_logger.info(L"QueueDisplayWindow: window shown");
 
+        // =====================================================================
+        // ЦИКЛ СООБЩЕНИЙ ОКНА ТВ-МОНИТОРА
+        // =====================================================================
+        // GetMessage возвращает:
+        //  > 0 — получено обычное сообщение;
+        //    0 — получен WM_QUIT;
+        //   -1 — ошибка получения сообщения.
+        //
+        // Старый вариант while (GetMessage(...)) ошибочно продолжал цикл при -1.
+        // Для продакшн-версии необходимо явно обрабатывать только > 0.
+        // =====================================================================
         MSG msg;
-        while (GetMessage(&msg, nullptr, 0, 0)) {
+        BOOL getMessageResult = GetMessage(&msg, nullptr, 0, 0);
+
+        while (getMessageResult > 0) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
-            if (!IsWindow(m_hWnd)) break;
+
+            if (!IsWindow(m_hWnd)) {
+                g_logger.info(L"QueueDisplayWindow: window no longer exists, breaking message loop");
+                break;
+            }
+
+            getMessageResult = GetMessage(&msg, nullptr, 0, 0);
         }
 
+        if (getMessageResult == -1) {
+            DWORD err = GetLastError();
+            g_logger.error(L"QueueDisplayWindow: GetMessage returned -1, error=" +
+                std::to_wstring(err));
+        }
         if (!DisplayConfig::DEBUG_MODE) {
             ShowCursor(TRUE);
         }
