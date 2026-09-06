@@ -11,6 +11,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "commodity expert", "..\comm
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "WorkerApp.Tests", "..\WorkerApp.Tests\WorkerApp.Tests.vcxproj", "{D698E035-A8F2-4E49-900A-9427E505D956}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "cashier_client", "..\cashier_client\cashier_client.vcxproj", "{350AA8BD-0F0A-4FED-B6D3-411CFDA74687}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -51,6 +53,14 @@ Global
 		{D698E035-A8F2-4E49-900A-9427E505D956}.Release|x64.Build.0 = Release|x64
 		{D698E035-A8F2-4E49-900A-9427E505D956}.Release|x86.ActiveCfg = Release|Win32
 		{D698E035-A8F2-4E49-900A-9427E505D956}.Release|x86.Build.0 = Release|Win32
+		{350AA8BD-0F0A-4FED-B6D3-411CFDA74687}.Debug|x64.ActiveCfg = Debug|x64
+		{350AA8BD-0F0A-4FED-B6D3-411CFDA74687}.Debug|x64.Build.0 = Debug|x64
+		{350AA8BD-0F0A-4FED-B6D3-411CFDA74687}.Debug|x86.ActiveCfg = Debug|Win32
+		{350AA8BD-0F0A-4FED-B6D3-411CFDA74687}.Debug|x86.Build.0 = Debug|Win32
+		{350AA8BD-0F0A-4FED-B6D3-411CFDA74687}.Release|x64.ActiveCfg = Release|x64
+		{350AA8BD-0F0A-4FED-B6D3-411CFDA74687}.Release|x64.Build.0 = Release|x64
+		{350AA8BD-0F0A-4FED-B6D3-411CFDA74687}.Release|x86.ActiveCfg = Release|Win32
+		{350AA8BD-0F0A-4FED-B6D3-411CFDA74687}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
