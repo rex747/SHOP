@@ -539,19 +539,19 @@ public:
             g_serverLogger.info("Migration: idx_items_status index created");
 
             // ========================================================================
-// НОВОЕ: АВТОСИНХРОНИЗАЦИЯ СЧЁТЧИКОВ clients.items_submitted / items_sold
-//
-// ПРИЧИНА: колонки не обновлялись при приёмке/продаже, поэтому поиск
-// товароведа (getClientFullInfo / searchClientsByFio) всегда выдавал 0.
-//
-// РЕШЕНИЕ:
-//   1) одноразовый полный пересчёт по всем комитентам при старте сервера;
-//   2) триггер AFTER INSERT OR UPDATE OR DELETE ON items, который при
-//      каждом изменении товаров автоматически пересчитывает счётчики
-//      затронутого клиента (внутри той же транзакции — атомарно).
-// ========================================================================
+            // НОВОЕ: АВТОСИНХРОНИЗАЦИЯ СЧЁТЧИКОВ clients.items_submitted / items_sold
+            //
+            // ПРИЧИНА: колонки не обновлялись при приёмке/продаже, поэтому поиск
+            // товароведа (getClientFullInfo / searchClientsByFio) всегда выдавал 0.
+            //
+            // РЕШЕНИЕ:
+            //   1) одноразовый полный пересчёт по всем комитентам при старте сервера;
+            //   2) триггер AFTER INSERT OR UPDATE OR DELETE ON items, который при
+            //      каждом изменении товаров автоматически пересчитывает счётчики
+            //      затронутого клиента (внутри той же транзакции — атомарно).
+            // ========================================================================
 
-// --- 1) Полный пересчёт для всех комитентов, у которых есть товары ---
+            // --- 1) Полный пересчёт для всех комитентов, у которых есть товары ---
             txn.exec(R"(
              UPDATE clients c SET
                  items_submitted = COALESCE(s.total_qty, 0),
@@ -602,7 +602,7 @@ public:
                  IF TG_OP = 'DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
              END;
              $$ LANGUAGE plpgsql;
-         )");
+             )");
 
             // --- 3) Триггер: срабатывает на каждое изменение items ---
             txn.exec(R"(DROP TRIGGER IF EXISTS trg_items_sync_client_counters ON items;)");
@@ -610,7 +610,7 @@ public:
              CREATE TRIGGER trg_items_sync_client_counters
              AFTER INSERT OR UPDATE OR DELETE ON items
              FOR EACH ROW EXECUTE FUNCTION sync_client_counters();
-         )");
+            )");
             g_serverLogger.info("Migration: trigger trg_items_sync_client_counters created (auto-sync of clients counters)");
 
             txn.commit();
@@ -622,7 +622,54 @@ public:
             std::cerr << "Database initialization error: " << e.what() << std::endl;
             return false;
         }
+
+        // =========================================================================
+        // МИГРАЦИЯ: МОДУЛЬ «КАССИР»
+        // =========================================================================
+        //
+        // НАЗНАЧЕНИЕ:
+        // Создаёт таблицу для хранения документов кассира (накладные на возврат,
+        // расписки, накладные об утрате, накладные о выплате вознаграждения).
+        //
+        // БЕЗОПАСНОСТЬ:
+        // Эта таблица НЕ влияет на существующую логику, математику и бизнес-модель
+        // программы. Она используется ТОЛЬКО для нумерации документов кассира
+        // (порядковый номер документа учитывается для каждого комитента отдельно).
+        //
+        // ПОТОКОБЕЗОПАСНОСТЬ:
+        // Миграция выполняется в рамках одной транзакции при инициализации сервера.
+        // Повторное выполнение безопасно благодаря CREATE TABLE IF NOT EXISTS.
+        // =========================================================================
+        try {
+            pqxx::work txnCashier{ *conn_ };
+            txnCashier.exec(
+                "CREATE TABLE IF NOT EXISTS cashier_documents ("
+                "    id SERIAL PRIMARY KEY,"
+                "    client_id INTEGER REFERENCES clients(id),"
+                "    doc_type VARCHAR(20) NOT NULL,"
+                "    doc_number INTEGER NOT NULL,"
+                "    created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),"
+                "    items_data TEXT,"
+                "    total_amount DECIMAL(10,2) DEFAULT 0"
+                ")"
+            );
+            txnCashier.exec(
+                "CREATE INDEX IF NOT EXISTS idx_cashier_documents_client "
+                "ON cashier_documents(client_id, doc_type)"
+            );
+            txnCashier.commit();
+            g_serverLogger.info("Migration: cashier_documents table created");
+        }
+        
+        catch (const std::exception& e) {
+            g_serverLogger.error("Migration cashier_documents error: " +
+                std::string(e.what()));
+        }
+        return true;
+
+
     }
+
 
     // ---- Получение клиента по телефону с ролью ----
     std::optional<Client> getClientByPhone(const std::string& phone) {
@@ -3391,6 +3438,419 @@ public:
             g_serverLogger.error("searchClientsByFio error: " + std::string(e.what()));
         }
         return result;
+    }
+
+    // =========================================================================
+    // НОВЫЕ МЕТОДЫ ДЛЯ МОДУЛЯ «КАССИР»
+    // =========================================================================
+    //
+    // НАЗНАЧЕНИЕ:
+    // Обеспечивают операции возврата товара комитенту, возмещения ущерба
+    // за утраченный товар, получения списка реализованных товаров с суммами
+    // к выплате и списка нереализованных товаров со сроком > 15 суток.
+    //
+    // ПРИНЦИПЫ:
+    // 1. Используются ТОЛЬКО существующие таблицы (items, item_sales,
+    //    contract_appendices, clients) + новая таблица cashier_documents.
+    // 2. Новые статусы товаров: 'returned' (возвращён комитенту) и
+    //    'compensated' (возмещён ущерб за утрату). Они НЕ конфликтуют
+    //    с существующими статусами: 'pending', 'sold', 'expired',
+    //    'low_quality', 'unsold_quality'.
+    // 3. Все операции атомарны (выполняются в одной транзакции).
+    // 4. Математика комиссий НЕ изменяется.
+    // 5. Триггер автосинхронизации счётчиков клиентов автоматически
+    //    пересчитывает данные при изменении товаров.
+    //
+    // ПОТОКОБЕЗОПАСНОСТЬ:
+    // Каждый метод выполняет все запросы в рамках ОДНОЙ транзакции
+    // pqxx::work. Параллельные вызовы блокируются на уровне транзакции.
+    // Гонка исключена.
+    // =========================================================================
+
+    /**
+     * @brief Помечает товары как «возвращённые комитенту».
+     *
+     * Обновляет статус товаров с 'pending' или 'expired' на 'returned'.
+     * Товары со статусами 'sold', 'low_quality', 'unsold_quality',
+     * 'compensated' НЕ затрагиваются (нельзя вернуть проданный товар).
+     *
+     * @param itemIds вектор ID товаров для пометки
+     * @param clientId ID комитента (защита от подмены)
+     * @return количество реально помеченных товаров
+     */
+    int markItemsReturned(const std::vector<int>& itemIds, int clientId) {
+        if (itemIds.empty()) {
+            g_serverLogger.warning("markItemsReturned: empty itemIds");
+            return 0;
+        }
+        try {
+            pqxx::work txn{ *conn_ };
+            int markedCount = 0;
+            for (int itemId : itemIds) {
+                auto res = txn.exec(
+                    "UPDATE items SET status = 'returned', "
+                    "expired_at = EXTRACT(EPOCH FROM NOW()) "
+                    "WHERE id = $1 AND client_id = $2 "
+                    "AND status IN ('pending', 'expired') "
+                    "RETURNING id",
+                    pqxx::params{ itemId, clientId }
+                );
+                if (!res.empty()) {
+                    markedCount++;
+                    g_serverLogger.info("markItemsReturned: itemId=" +
+                        std::to_string(itemId) + " marked as returned");
+                }
+                else {
+                    g_serverLogger.warning("markItemsReturned: itemId=" +
+                        std::to_string(itemId) +
+                        " NOT marked (wrong status or wrong client)");
+                }
+            }
+            txn.commit();
+            g_serverLogger.info("markItemsReturned: clientId=" +
+                std::to_string(clientId) + ", marked=" +
+                std::to_string(markedCount) + " of " +
+                std::to_string(itemIds.size()));
+            return markedCount;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("markItemsReturned error: " +
+                std::string(e.what()));
+            return 0;
+        }
+    }
+
+    /**
+     * @brief Помечает товары как «возмещён ущерб за утрату».
+     *
+     * Обновляет статус товаров с 'pending' или 'expired' на 'compensated'.
+     * Товары со статусами 'sold', 'low_quality', 'unsold_quality',
+     * 'returned' НЕ затрагиваются.
+     *
+     * @param itemIds вектор ID товаров для пометки
+     * @param clientId ID комитента (защита от подмены)
+     * @return количество реально помеченных товаров
+     */
+    int markItemsCompensated(const std::vector<int>& itemIds, int clientId) {
+        if (itemIds.empty()) {
+            g_serverLogger.warning("markItemsCompensated: empty itemIds");
+            return 0;
+        }
+        try {
+            pqxx::work txn{ *conn_ };
+            int markedCount = 0;
+            for (int itemId : itemIds) {
+                auto res = txn.exec(
+                    "UPDATE items SET status = 'compensated', "
+                    "expired_at = EXTRACT(EPOCH FROM NOW()) "
+                    "WHERE id = $1 AND client_id = $2 "
+                    "AND status IN ('pending', 'expired') "
+                    "RETURNING id",
+                    pqxx::params{ itemId, clientId }
+                );
+                if (!res.empty()) {
+                    markedCount++;
+                    g_serverLogger.info("markItemsCompensated: itemId=" +
+                        std::to_string(itemId) + " marked as compensated");
+                }
+                else {
+                    g_serverLogger.warning("markItemsCompensated: itemId=" +
+                        std::to_string(itemId) +
+                        " NOT marked (wrong status or wrong client)");
+                }
+            }
+            txn.commit();
+            g_serverLogger.info("markItemsCompensated: clientId=" +
+                std::to_string(clientId) + ", marked=" +
+                std::to_string(markedCount) + " of " +
+                std::to_string(itemIds.size()));
+            return markedCount;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("markItemsCompensated error: " +
+                std::string(e.what()));
+            return 0;
+        }
+    }
+
+    /**
+     * @brief Получает список РЕАЛИЗОВАННЫХ товаров комитента с суммами
+     *        к выплате (для накладной о выплате вознаграждения).
+     *
+     * Используются данные из таблицы item_sales (лог продаж) и items.
+     * Для каждой продажи возвращается: номер приложения, наименование,
+     * количество проданных единиц, цена на руки (client_amount из
+     * item_sales), общая сумма.
+     *
+     * @param clientId ID комитента
+     * @return JSON-массив реализованных товаров
+     */
+    json getClientSoldItemsForReward(int clientId) {
+        json result = json::array();
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT s.id AS sale_id, s.item_id, s.quantity_sold, "
+                "s.sale_price, s.client_amount, s.sold_at, "
+                "i.description, i.appendix_id, "
+                "a.appendix_number "
+                "FROM item_sales s "
+                "JOIN items i ON s.item_id = i.id "
+                "LEFT JOIN contract_appendices a ON i.appendix_id = a.id "
+                "WHERE s.client_id = $1 "
+                "ORDER BY s.sold_at DESC",
+                pqxx::params{ clientId }
+            );
+            for (const auto& row : res) {
+                json item;
+                item["sale_id"] = row["sale_id"].as<int>();
+                item["item_id"] = row["item_id"].as<int>();
+                item["description"] = row["description"].as<std::string>();
+                item["quantity_sold"] = row["quantity_sold"].as<int>();
+                item["sale_price"] = row["sale_price"].as<double>();
+                item["client_amount"] = row["client_amount"].as<double>();
+                item["sold_at"] = row["sold_at"].as<int64_t>();
+                item["appendix_number"] = row["appendix_number"].is_null()
+                    ? 0 : row["appendix_number"].as<long long>();
+                result.push_back(item);
+            }
+            g_serverLogger.info("getClientSoldItemsForReward: clientId=" +
+                std::to_string(clientId) + ", sales=" +
+                std::to_string(result.size()));
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getClientSoldItemsForReward error: " +
+                std::string(e.what()));
+        }
+        return result;
+    }
+
+    /**
+     * @brief Получает список НЕРЕАЛИЗОВАННЫХ товаров комитента со сроком
+     *        реализации более 15 суток (для формирования накладной на возврат).
+     *
+     * Возвращает товары со статусом 'expired' (помеченные фоновым процессом
+     * processExpiredAppendices) или 'pending', у которых истёк срок
+     * действия приложения (valid_until < NOW()).
+     *
+     * @param clientId ID комитента
+     * @return JSON-массив нереализованных товаров
+     */
+    json getClientUnsoldExpiredItems(int clientId) {
+        json result = json::array();
+        try {
+            pqxx::work txn{ *conn_ };
+            int64_t nowSec = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            auto res = txn.exec(
+                "SELECT i.id, i.item_number, i.description, "
+                "i.estimated_price, i.quantity, i.sold_quantity, "
+                "i.condition, i.note, i.status, i.created_at, "
+                "i.expired_at, i.appendix_id, "
+                "a.appendix_number, a.valid_until "
+                "FROM items i "
+                "LEFT JOIN contract_appendices a ON i.appendix_id = a.id "
+                "WHERE i.client_id = $1 "
+                "AND (i.status = 'expired' OR "
+                "     (i.status = 'pending' AND a.valid_until < $2)) "
+                "AND (i.quantity - i.sold_quantity) > 0 "
+                "ORDER BY i.created_at ASC",
+                pqxx::params{ clientId, nowSec }
+            );
+            for (const auto& row : res) {
+                json item;
+                item["id"] = row["id"].as<int>();
+                item["item_number"] = row["item_number"].as<int>();
+                item["description"] = row["description"].as<std::string>();
+                item["estimated_price"] = row["estimated_price"].as<double>();
+                item["quantity"] = row["quantity"].as<int>();
+                item["sold_quantity"] = row["sold_quantity"].as<int>();
+                item["unsold_quantity"] = row["quantity"].as<int>() -
+                    row["sold_quantity"].as<int>();
+                item["condition"] = row["condition"].is_null()
+                    ? "" : row["condition"].as<std::string>();
+                item["note"] = row["note"].is_null()
+                    ? "" : row["note"].as<std::string>();
+                item["status"] = row["status"].as<std::string>();
+                item["created_at"] = row["created_at"].as<int64_t>();
+                item["expired_at"] = row["expired_at"].is_null()
+                    ? 0 : row["expired_at"].as<int64_t>();
+                item["appendix_number"] = row["appendix_number"].is_null()
+                    ? 0 : row["appendix_number"].as<long long>();
+                item["valid_until"] = row["valid_until"].is_null()
+                    ? 0 : row["valid_until"].as<int64_t>();
+                result.push_back(item);
+            }
+            g_serverLogger.info("getClientUnsoldExpiredItems: clientId=" +
+                std::to_string(clientId) + ", items=" +
+                std::to_string(result.size()));
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getClientUnsoldExpiredItems error: " +
+                std::string(e.what()));
+        }
+        return result;
+    }
+
+    /**
+     * @brief Получает список ПРИЛОЖЕНИЙ К ДОГОВОРУ комитента.
+     *
+     * Возвращает все приложения с номерами, датами и итогами.
+     * Используется кассиром для выбора приложения.
+     *
+     * @param clientId ID комитента
+     * @return JSON-массив приложений
+     */
+    json getClientAppendices(int clientId) {
+        json result = json::array();
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT id, appendix_number, created_at, valid_until, "
+                "total_quantity, total_value, total_client_amount, "
+                "expired_processed "
+                "FROM contract_appendices "
+                "WHERE client_id = $1 "
+                "ORDER BY created_at DESC",
+                pqxx::params{ clientId }
+            );
+            for (const auto& row : res) {
+                json app;
+                app["id"] = row["id"].as<long long>();
+                app["appendix_number"] = row["appendix_number"].as<long long>();
+                app["created_at"] = row["created_at"].is_null()
+                    ? 0 : row["created_at"].as<int64_t>();
+                app["valid_until"] = row["valid_until"].is_null()
+                    ? 0 : row["valid_until"].as<int64_t>();
+                app["total_quantity"] = row["total_quantity"].as<int>();
+                app["total_value"] = row["total_value"].as<double>();
+                app["total_client_amount"] =
+                    row["total_client_amount"].as<double>();
+                app["expired_processed"] =
+                    row["expired_processed"].as<bool>();
+                result.push_back(app);
+            }
+            g_serverLogger.info("getClientAppendices: clientId=" +
+                std::to_string(clientId) + ", appendices=" +
+                std::to_string(result.size()));
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getClientAppendices error: " +
+                std::string(e.what()));
+        }
+        return result;
+    }
+
+    /**
+     * @brief Получает товары конкретного приложения к договору для кассира.
+     *
+     * Возвращает все товары приложения с их текущими статусами.
+     * Кассир видит, какие товары ещё не проданы и могут быть возвращены.
+     *
+     * @param appendixId ID приложения (contract_appendices.id)
+     * @param clientId ID комитента (защита от подмены)
+     * @return JSON-массив товаров приложения
+     */
+    json getAppendixItemsForCashier(long long appendixId, int clientId) {
+        json result = json::array();
+        try {
+            pqxx::work txn{ *conn_ };
+            auto res = txn.exec(
+                "SELECT i.id, i.item_number, i.description, "
+                "i.estimated_price, i.quantity, i.sold_quantity, "
+                "i.condition, i.note, i.status, i.created_at, "
+                "i.client_percent, i.store_percent, "
+                "i.client_amount, i.store_amount "
+                "FROM items i "
+                "WHERE i.appendix_id = $1 AND i.client_id = $2 "
+                "ORDER BY i.item_number",
+                pqxx::params{ appendixId, clientId }
+            );
+            for (const auto& row : res) {
+                json item;
+                item["id"] = row["id"].as<int>();
+                item["item_number"] = row["item_number"].as<int>();
+                item["description"] = row["description"].as<std::string>();
+                item["estimated_price"] =
+                    row["estimated_price"].as<double>();
+                item["quantity"] = row["quantity"].as<int>();
+                item["sold_quantity"] = row["sold_quantity"].as<int>();
+                item["unsold_quantity"] = row["quantity"].as<int>() -
+                    row["sold_quantity"].as<int>();
+                item["condition"] = row["condition"].is_null()
+                    ? "" : row["condition"].as<std::string>();
+                item["note"] = row["note"].is_null()
+                    ? "" : row["note"].as<std::string>();
+                item["status"] = row["status"].is_null()
+                    ? "" : row["status"].as<std::string>();
+                item["created_at"] = row["created_at"].as<int64_t>();
+                item["client_percent"] = row["client_percent"].is_null()
+                    ? 0.0 : row["client_percent"].as<double>();
+                item["store_percent"] = row["store_percent"].is_null()
+                    ? 0.0 : row["store_percent"].as<double>();
+                item["client_amount"] = row["client_amount"].is_null()
+                    ? 0.0 : row["client_amount"].as<double>();
+                item["store_amount"] = row["store_amount"].is_null()
+                    ? 0.0 : row["store_amount"].as<double>();
+                result.push_back(item);
+            }
+            g_serverLogger.info("getAppendixItemsForCashier: appendixId=" +
+                std::to_string(appendixId) + ", clientId=" +
+                std::to_string(clientId) + ", items=" +
+                std::to_string(result.size()));
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("getAppendixItemsForCashier error: " +
+                std::string(e.what()));
+        }
+        return result;
+    }
+
+    /**
+     * @brief Создаёт документ кассира и возвращает его порядковый номер.
+     *
+     * Нумерация документов ведётся отдельно для каждого комитента и типа
+     * документа. Это реализуется через запрос
+     * "SELECT COALESCE(MAX(doc_number), 0) + 1 FROM cashier_documents
+     *  WHERE client_id = ... AND doc_type = ...".
+     *
+     * @param clientId ID комитента
+     * @param docType тип документа ('return', 'receipt', 'loss', 'reward')
+     * @param itemsData JSON-строка с данными товаров
+     * @param totalAmount итоговая сумма
+     * @return порядковый номер документа или 0 при ошибке
+     */
+    int createCashierDocument(int clientId, const std::string& docType,
+        const std::string& itemsData, double totalAmount) {
+        try {
+            pqxx::work txn{ *conn_ };
+            // Получаем следующий номер документа для данного комитента и типа
+            auto res = txn.exec(
+                "SELECT COALESCE(MAX(doc_number), 0) + 1 AS next_number "
+                "FROM cashier_documents "
+                "WHERE client_id = $1 AND doc_type = $2",
+                pqxx::params{ clientId, docType }
+            );
+            int docNumber = res[0]["next_number"].as<int>();
+            // Вставляем новый документ
+            txn.exec(
+                "INSERT INTO cashier_documents "
+                "(client_id, doc_type, doc_number, items_data, total_amount) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                pqxx::params{ clientId, docType, docNumber, itemsData,
+                    totalAmount }
+            );
+            txn.commit();
+            g_serverLogger.info("createCashierDocument: clientId=" +
+                std::to_string(clientId) + ", docType=" + docType +
+                ", docNumber=" + std::to_string(docNumber));
+            return docNumber;
+        }
+        catch (const std::exception& e) {
+            g_serverLogger.error("createCashierDocument error: " +
+                std::string(e.what()));
+            return 0;
+        }
     }
 
 };

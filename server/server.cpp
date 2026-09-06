@@ -297,6 +297,46 @@ private:
             else if (target == "/api/v1/queue/display" && method == http::verb::get) {
                 handleQueueDisplay(client_ip);
             }
+
+            // =========================================================================
+            // НОВЫЕ РОУТЫ ДЛЯ МОДУЛЯ «КАССИР»
+            // =========================================================================
+            // Получение списка приложений к договору комитента
+            else if (target.find("/api/v1/cashier/appendices") == 0 &&
+                method == http::verb::get) {
+                handleCashierGetAppendices(client_ip);
+                }
+                // Получение товаров приложения к договору
+            else if (target.find("/api/v1/cashier/appendix_items") == 0 &&
+                method == http::verb::get) {
+                handleCashierGetAppendixItems(client_ip);
+                }
+                // Пометка товаров как «возвращённые комитенту»
+            else if (target == "/api/v1/cashier/mark_returned" &&
+                method == http::verb::post) {
+                handleCashierMarkReturned(client_ip);
+                }
+                // Пометка товаров как «возмещён ущерб за утрату»
+            else if (target == "/api/v1/cashier/mark_compensated" &&
+                method == http::verb::post) {
+                handleCashierMarkCompensated(client_ip);
+                }
+                // Получение реализованных товаров для выплаты вознаграждения
+            else if (target.find("/api/v1/cashier/sold_items") == 0 &&
+                method == http::verb::get) {
+                handleCashierGetSoldItems(client_ip);
+                }
+                // Получение нереализованных товаров со сроком > 15 суток
+            else if (target.find("/api/v1/cashier/unsold_items") == 0 &&
+                method == http::verb::get) {
+                handleCashierGetUnsoldItems(client_ip);
+                }
+                // Создание документа кассира (возврат, расписка, утрата, вознаграждение)
+            else if (target == "/api/v1/cashier/create_document" &&
+                method == http::verb::post) {
+                handleCashierCreateDocument(client_ip);
+                }
+
             else {
                 g_serverLogger.warning("Routing request: " + std::string(http::to_string(method)) + " " + std::string(target) + " -> Not found");
                 response_.result(http::status::not_found);
@@ -313,6 +353,8 @@ private:
             response_.body() = json{ {"error", "Internal server error"} }.dump();
             response_.prepare_payload();
         }
+
+
 
         doWrite();
     }
@@ -384,7 +426,7 @@ private:
         }
 
         // =========================================================================
-        // НОВОЕ: ГЕНЕРАЦИЯ И СОХРАНЕНИЕ ПАРОЛЯ ДЛЯ ТОВАРОВЕДА/ДИРЕКТОРА.
+        // НОВОЕ: ГЕНЕРАЦИЯ И СОХРАНЕНИЕ ПАРОЛЯ ДЛЯ ТОВАРОВЕДА/ДИРЕКТОРА/КАССИРА.
         // Для роли "client" пароль НЕ генерируется (клиенты входят по телефону).
         //
         // СХЕМА:
@@ -401,7 +443,7 @@ private:
         // пароля возвращаем ошибку, чтобы администратор повторил регистрацию.
         // =========================================================================
         std::string generatedPassword;
-        if (role == "worker" || role == "director") {
+        if (role == "worker" || role == "director" || role == "cashier") {
             try {
                 generatedPassword = auth_->generateRandomPassword();
                 std::string passwordHash = auth_->hashString(generatedPassword);
@@ -520,7 +562,7 @@ private:
         }
 
         // =========================================================================
-        // НОВОЕ: ПРОВЕРКА ПАРОЛЯ ДЛЯ РОЛЕЙ worker И director.
+        // НОВОЕ: ПРОВЕРКА ПАРОЛЯ ДЛЯ РОЛЕЙ worker И director И cashier.
         // Для роли client этот блок пропускается (сохраняется прежний вход).
         //
         // ВАЛИДАЦИЯ ПОРЯДКА: сначала проверяем наличие пароля, затем его
@@ -532,7 +574,8 @@ private:
         // Потокобезопасность: verifyPassword выполняет только чтение из БД
         // через потокобезопасный getTOTPSecret. Состояние сессии не меняет.
         // =========================================================================
-        if (clientOpt->role == "worker" || clientOpt->role == "director") {
+        if (clientOpt->role == "worker" || clientOpt->role == "director" ||
+            clientOpt->role == "cashier") {
             if (password.empty()) {
                 response_.result(http::status::unauthorized);
                 response_.set(http::field::content_type, "application/json");
@@ -566,7 +609,8 @@ private:
         // проходит через этот эндпоинт, но его доступ к директорским эндпоинтам
         // контролируется отдельно по роли (см. примечание ниже).
         // =========================================================================
-        if (clientOpt->role != "worker" && clientOpt->role != "client" && clientOpt->role != "director") {
+        if (clientOpt->role != "worker" && clientOpt->role != "client" && clientOpt->role != "director" &&
+            clientOpt->role != "cashier") {
             response_.result(http::status::forbidden);
             response_.body() = json{ {"error", "Access denied: not a worker"} }.dump();
             response_.prepare_payload();
@@ -2795,7 +2839,7 @@ private:
         // ШАГ 2: Проверка роли - только 'worker' или 'director'
         // =================================================================
         auto clientOpt = db_->getClientByPhone(*phoneOpt);
-        if (!clientOpt || (clientOpt->role != "worker" && clientOpt->role != "director")) {
+        if (!clientOpt || (clientOpt->role != "worker" && clientOpt->role != "director" && clientOpt->role !="cashier")) {
             response_.result(http::status::forbidden);
             response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Access denied: worker or director role required"} }.dump();
@@ -2925,6 +2969,470 @@ private:
             " client(s) to worker " + *phoneOpt +
             " (id=" + std::to_string(clientOpt->id) + ")" +
             " from " + client_ip);
+    }
+
+    // =========================================================================
+    // ОБРАБОТЧИКИ МОДУЛЯ «КАССИР»
+    // =========================================================================
+    //
+    // ДОСТУП: только роль 'cashier' или 'director'.
+    // Проверка выполняется через JWT → getClientByPhone → role.
+    //
+    // ПОТОКОБЕЗОПАСНОСТЬ:
+    // Все обработчики выполняют операции в рамках одной транзакции БД.
+    // Параллельные запросы на пометку одного и того же товара безопасны:
+    // первый UPDATE изменит статус, второй вернёт 0 строк.
+    // =========================================================================
+
+    /**
+     * @brief Проверка роли кассира или директора.
+     * @return ID пользователя или 0 при отказе.
+     */
+    int verifyCashierRole(const std::string& client_ip,
+        const std::string& handlerName) {
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) authHeader = it->value();
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Missing or invalid Authorization header"}
+            }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning(handlerName +
+                ": missing auth from " + client_ip);
+            return 0;
+        }
+        std::string token = authHeader.substr(7);
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Invalid or expired token"}
+            }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning(handlerName +
+                ": invalid token from " + client_ip);
+            return 0;
+        }
+        auto userOpt = db_->getClientByPhone(*phoneOpt);
+        if (!userOpt ||
+            (userOpt->role != "cashier" && userOpt->role != "director")) {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Access denied: cashier or director role required"}
+            }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning(handlerName +
+                ": access denied for phone=" + *phoneOpt +
+                " from " + client_ip);
+            return 0;
+        }
+        return userOpt->id;
+    }
+
+    /**
+     * @brief Извлечение параметра из query string для кассира.
+     */
+    std::string extractCashierQueryParam(const std::string& paramName) {
+        std::string query = request_.target();
+        std::string searchStr = "?" + paramName + "=";
+        size_t pos = query.find(searchStr);
+        if (pos == std::string::npos) {
+            searchStr = "&" + paramName + "=";
+            pos = query.find(searchStr);
+        }
+        if (pos == std::string::npos) return "";
+        std::string value = query.substr(pos + searchStr.length());
+        size_t end = value.find('&');
+        if (end != std::string::npos) value = value.substr(0, end);
+        return value;
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /api/v1/cashier/appendices?client_id=...
+    // Возвращает список приложений к договору комитента.
+    // -------------------------------------------------------------------------
+    void handleCashierGetAppendices(const std::string& client_ip) {
+        g_serverLogger.info("handleCashierGetAppendices: from " + client_ip);
+        int userId = verifyCashierRole(client_ip,
+            "handleCashierGetAppendices");
+        if (userId == 0) return;
+
+        std::string clientIdStr = extractCashierQueryParam("client_id");
+        if (clientIdStr.empty()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "client_id parameter required"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        int clientId = 0;
+        try { clientId = std::stoi(clientIdStr); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Invalid client_id"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        json appendices = db_->getClientAppendices(clientId);
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{
+            {"appendices", appendices},
+            {"count", appendices.size()}
+        }.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("handleCashierGetAppendices: returned " +
+            std::to_string(appendices.size()) +
+            " appendices for clientId=" + std::to_string(clientId));
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /api/v1/cashier/appendix_items?appendix_id=...&client_id=...
+    // Возвращает товары конкретного приложения.
+    // -------------------------------------------------------------------------
+    void handleCashierGetAppendixItems(const std::string& client_ip) {
+        g_serverLogger.info("handleCashierGetAppendixItems: from " +
+            client_ip);
+        int userId = verifyCashierRole(client_ip,
+            "handleCashierGetAppendixItems");
+        if (userId == 0) return;
+
+        std::string appendixIdStr = extractCashierQueryParam("appendix_id");
+        std::string clientIdStr = extractCashierQueryParam("client_id");
+        if (appendixIdStr.empty() || clientIdStr.empty()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "appendix_id and client_id required"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        long long appendixId = 0;
+        int clientId = 0;
+        try {
+            appendixId = std::stoll(appendixIdStr);
+            clientId = std::stoi(clientIdStr);
+        }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Invalid appendix_id or client_id"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        json items = db_->getAppendixItemsForCashier(appendixId, clientId);
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{
+            {"items", items},
+            {"count", items.size()}
+        }.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("handleCashierGetAppendixItems: returned " +
+            std::to_string(items.size()) + " items for appendixId=" +
+            std::to_string(appendixId));
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /api/v1/cashier/mark_returned
+    // Тело: {"client_id": 42, "item_ids": [1, 2, 3]}
+    // Помечает товары как «возвращённые комитенту».
+    // -------------------------------------------------------------------------
+    void handleCashierMarkReturned(const std::string& client_ip) {
+        g_serverLogger.info("handleCashierMarkReturned: from " + client_ip);
+        int userId = verifyCashierRole(client_ip,
+            "handleCashierMarkReturned");
+        if (userId == 0) return;
+
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Invalid JSON payload"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        if (!body.contains("client_id") || !body["client_id"].is_number() ||
+            !body.contains("item_ids") || !body["item_ids"].is_array()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "client_id and item_ids array required"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        int clientId = body["client_id"].get<int>();
+        std::vector<int> itemIds;
+        for (const auto& id : body["item_ids"]) {
+            if (id.is_number()) itemIds.push_back(id.get<int>());
+        }
+        if (itemIds.empty()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "item_ids array is empty"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        int markedCount = db_->markItemsReturned(itemIds, clientId);
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{
+            {"success", true},
+            {"marked_count", markedCount},
+            {"requested_count", static_cast<int>(itemIds.size())}
+        }.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("handleCashierMarkReturned: clientId=" +
+            std::to_string(clientId) + ", marked=" +
+            std::to_string(markedCount) + " by cashier=" +
+            std::to_string(userId));
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /api/v1/cashier/mark_compensated
+    // Тело: {"client_id": 42, "item_ids": [1, 2, 3]}
+    // Помечает товары как «возмещён ущерб за утрату».
+    // -------------------------------------------------------------------------
+    void handleCashierMarkCompensated(const std::string& client_ip) {
+        g_serverLogger.info("handleCashierMarkCompensated: from " +
+            client_ip);
+        int userId = verifyCashierRole(client_ip,
+            "handleCashierMarkCompensated");
+        if (userId == 0) return;
+
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Invalid JSON payload"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        if (!body.contains("client_id") || !body["client_id"].is_number() ||
+            !body.contains("item_ids") || !body["item_ids"].is_array()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "client_id and item_ids array required"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        int clientId = body["client_id"].get<int>();
+        std::vector<int> itemIds;
+        for (const auto& id : body["item_ids"]) {
+            if (id.is_number()) itemIds.push_back(id.get<int>());
+        }
+        if (itemIds.empty()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "item_ids array is empty"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        int markedCount = db_->markItemsCompensated(itemIds, clientId);
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{
+            {"success", true},
+            {"marked_count", markedCount},
+            {"requested_count", static_cast<int>(itemIds.size())}
+        }.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("handleCashierMarkCompensated: clientId=" +
+            std::to_string(clientId) + ", marked=" +
+            std::to_string(markedCount) + " by cashier=" +
+            std::to_string(userId));
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /api/v1/cashier/sold_items?client_id=...
+    // Возвращает реализованные товары для выплаты вознаграждения.
+    // -------------------------------------------------------------------------
+    void handleCashierGetSoldItems(const std::string& client_ip) {
+        g_serverLogger.info("handleCashierGetSoldItems: from " + client_ip);
+        int userId = verifyCashierRole(client_ip,
+            "handleCashierGetSoldItems");
+        if (userId == 0) return;
+
+        std::string clientIdStr = extractCashierQueryParam("client_id");
+        if (clientIdStr.empty()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "client_id parameter required"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        int clientId = 0;
+        try { clientId = std::stoi(clientIdStr); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Invalid client_id"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        json soldItems = db_->getClientSoldItemsForReward(clientId);
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{
+            {"sold_items", soldItems},
+            {"count", soldItems.size()}
+        }.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("handleCashierGetSoldItems: returned " +
+            std::to_string(soldItems.size()) +
+            " sold items for clientId=" + std::to_string(clientId));
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /api/v1/cashier/unsold_items?client_id=...
+    // Возвращает нереализованные товары со сроком > 15 суток.
+    // -------------------------------------------------------------------------
+    void handleCashierGetUnsoldItems(const std::string& client_ip) {
+        g_serverLogger.info("handleCashierGetUnsoldItems: from " +
+            client_ip);
+        int userId = verifyCashierRole(client_ip,
+            "handleCashierGetUnsoldItems");
+        if (userId == 0) return;
+
+        std::string clientIdStr = extractCashierQueryParam("client_id");
+        if (clientIdStr.empty()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "client_id parameter required"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        int clientId = 0;
+        try { clientId = std::stoi(clientIdStr); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Invalid client_id"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        json unsoldItems = db_->getClientUnsoldExpiredItems(clientId);
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{
+            {"unsold_items", unsoldItems},
+            {"count", unsoldItems.size()}
+        }.dump();
+        response_.prepare_payload();
+        g_serverLogger.info("handleCashierGetUnsoldItems: returned " +
+            std::to_string(unsoldItems.size()) +
+            " unsold items for clientId=" + std::to_string(clientId));
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /api/v1/cashier/create_document
+    // Тело: {"client_id": 42, "doc_type": "return", "items_data": "...",
+    //        "total_amount": 5000.0}
+    // Создаёт документ кассира и возвращает его порядковый номер.
+    // -------------------------------------------------------------------------
+    void handleCashierCreateDocument(const std::string& client_ip) {
+        g_serverLogger.info("handleCashierCreateDocument: from " + client_ip);
+        int userId = verifyCashierRole(client_ip,
+            "handleCashierCreateDocument");
+        if (userId == 0) return;
+
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Invalid JSON payload"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        if (!body.contains("client_id") || !body["client_id"].is_number() ||
+            !body.contains("doc_type") || !body["doc_type"].is_string()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "client_id and doc_type required"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        int clientId = body["client_id"].get<int>();
+        std::string docType = body["doc_type"].get<std::string>();
+        std::string itemsData = body.value("items_data", std::string(""));
+        double totalAmount = body.value("total_amount", 0.0);
+
+        // Валидация типа документа
+        if (docType != "return" && docType != "receipt" &&
+            docType != "loss" && docType != "reward") {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Invalid doc_type: must be return, receipt, loss, or reward"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        int docNumber = db_->createCashierDocument(clientId, docType,
+            itemsData, totalAmount);
+        if (docNumber > 0) {
+            response_.result(http::status::ok);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"success", true},
+                {"doc_number", docNumber},
+                {"doc_type", docType},
+                {"client_id", clientId}
+            }.dump();
+            g_serverLogger.info("handleCashierCreateDocument: created doc #" +
+                std::to_string(docNumber) + " type=" + docType +
+                " for clientId=" + std::to_string(clientId));
+        }
+        else {
+            response_.result(http::status::internal_server_error);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Failed to create document"}
+            }.dump();
+            g_serverLogger.error("handleCashierCreateDocument: failed for clientId=" +
+                std::to_string(clientId));
+        }
+        response_.prepare_payload();
     }
 
     void doWrite() {
