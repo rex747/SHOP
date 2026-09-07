@@ -12,6 +12,7 @@
 #include "config_server.h"
 #include "crypto_utils.h"
 #include "logger_server.h"
+#include "shop_barcode.h"
 
 using json = nlohmann::json;
 
@@ -391,6 +392,37 @@ public:
                 )
             )");
 
+            txn.exec(R"(
+                DO $$
+                BEGIN
+                    ALTER TABLE item_sales
+                        ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(128);
+
+                    ALTER TABLE item_sales
+                        ADD COLUMN IF NOT EXISTS fiscal_document_number VARCHAR(128);
+
+                    ALTER TABLE item_sales
+                        ADD COLUMN IF NOT EXISTS fiscal_document_uuid VARCHAR(128);
+
+                    ALTER TABLE item_sales
+                        ADD COLUMN IF NOT EXISTS fiscal_sign VARCHAR(128);
+
+                    ALTER TABLE item_sales
+                        ADD COLUMN IF NOT EXISTS fiscalized_at BIGINT;
+
+                EXCEPTION WHEN duplicate_column THEN
+                    NULL;
+                END $$;
+            )");
+
+            txn.exec(R"(
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_item_sales_idempotency
+                ON item_sales(idempotency_key)
+                WHERE idempotency_key IS NOT NULL
+                    AND idempotency_key <> '';
+            )");
+
             // ========================================================================
             // НОВАЯ МИГРАЦИЯ: ПОЛЕ expired_at В items
             // Фиксирует момент, когда товар был помечен как "выбывший из продажи"
@@ -497,6 +529,74 @@ public:
                 END $$;
             )");
             g_serverLogger.info("Migration: clients.block_reason added successfully");
+
+            // ========================================================================
+            // МИГРАЦИЯ: стабильный штрих-код товара.
+            //
+            // Формат:
+            //     SHOP + items.id
+            //
+            // Пример:
+            //     items.id = 123
+            //     barcode = SHOP123
+            //
+            // barcode является постоянным идентификатором товара.
+            // Цена, ФИО комитента и описание в barcode НЕ записываются.
+            // ========================================================================
+            txn.exec(R"(
+                DO $$
+                BEGIN
+                    ALTER TABLE items
+                        ADD COLUMN IF NOT EXISTS barcode VARCHAR(64);
+
+                    ALTER TABLE items
+                        ADD COLUMN IF NOT EXISTS onec_ref VARCHAR(128);
+
+                    ALTER TABLE items
+                        ADD COLUMN IF NOT EXISTS sync_status VARCHAR(32)
+                            DEFAULT 'pending';
+
+                    ALTER TABLE items
+                        ADD COLUMN IF NOT EXISTS sync_error TEXT;
+
+                    ALTER TABLE items
+                        ADD COLUMN IF NOT EXISTS synced_at BIGINT;
+
+                EXCEPTION WHEN duplicate_column THEN
+                    NULL;
+                END $$;
+            )");
+
+
+            // Заполняем barcode старых товаров.
+            txn.exec(R"(
+                UPDATE items
+                SET barcode = 'SHOP' || id::text
+                WHERE barcode IS NULL
+                   OR barcode = '';
+            )");
+
+
+            // Уникальность barcode.
+            txn.exec(R"(
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_items_barcode_unique
+                ON items(barcode);
+            )");
+
+
+            // Быстрый поиск по 1С external ID.
+            txn.exec(R"(
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_items_onec_ref_unique
+                ON items(onec_ref)
+                WHERE onec_ref IS NOT NULL
+                    AND onec_ref <> '';
+            )");
+
+            g_serverLogger.info(
+                "Migration: items barcode and 1C synchronization fields ensured"
+            );
 
             // Создаём частичные уникальные индексы для активных талонов
             txn.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_tickets_number_active ON queue_tickets(number) WHERE status IN ('waiting', 'accepted')");
@@ -1788,7 +1888,7 @@ public:
         try {
             pqxx::work txn{ *conn_ };
             auto res = txn.exec(
-                "SELECT id, item_number, description, estimated_price, quantity, "
+                "SELECT id, item_number, barcode, description, estimated_price, quantity, "
                 "sale_date, condition, note, created_at, status, "
                 "client_percent, store_percent, client_amount, store_amount "
                 "FROM items WHERE client_id = $1 ORDER BY item_number",
@@ -1798,6 +1898,10 @@ public:
                 json item;
                 item["id"] = row["id"].as<int>();
                 item["item_number"] = row["item_number"].as<int>();
+                item["barcode"] =
+                    row["barcode"].is_null()
+                    ? ""
+                    : row["barcode"].as<std::string>();
                 item["description"] = row["description"].as<std::string>();
                 item["estimated_price"] = row["estimated_price"].as<double>();
                 item["quantity"] = row["quantity"].as<int>();
@@ -1992,16 +2096,80 @@ public:
                     ", storeAmount=" + std::to_string(storeAmount) +
                     ", appendixId=" + std::to_string(appendixId));
                 // ВСТАВКА ТОВАРА + ссылка на приложение (13-й параметр)
+                auto itemRes = txn.exec(
+                    "INSERT INTO items ("
+                    "client_id, "
+                    "item_number, "
+                    "description, "
+                    "estimated_price, "
+                    "quantity, "
+                    "condition, "
+                    "note, "
+                    "worker_id, "
+                    "client_percent, "
+                    "store_percent, "
+                    "client_amount, "
+                    "store_amount, "
+                    "appendix_id, "
+                    "barcode, "
+                    "sync_status"
+                    ") "
+                    "VALUES ("
+                    "$1, $2, $3, $4, $5, $6, $7, $8, "
+                    "$9, $10, $11, $12, $13, NULL, 'pending'"
+                    ") "
+                    "RETURNING id",
+                    pqxx::params{
+                        clientId,
+                        nextNumber++,
+                        desc,
+                        price,
+                        quantity,
+                        condition.empty()
+                            ? std::optional<std::string>{}
+                            : condition,
+                        note.empty()
+                            ? std::optional<std::string>{}
+                            : note,
+                        workerIdOpt,
+                        clientPercent,
+                        storePercent,
+                        clientAmount,
+                        storeAmount,
+                        appendixId
+                    }
+                );
+
+                const int itemId =
+                    itemRes.at(0).at("id").as<int>();
+
+                const std::string barcode = ShopBarcode::make(itemId);
+
+                if (barcode.empty()) {
+                    throw std::runtime_error(
+                        "Failed to generate barcode for item id=" +
+                        std::to_string(itemId)
+                    );
+                }
+
                 txn.exec(
-                    "INSERT INTO items (client_id, item_number, description, estimated_price, "
-                    "quantity, condition, note, worker_id, client_percent, store_percent, "
-                    "client_amount, store_amount, appendix_id) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-                    pqxx::params{ clientId, nextNumber++, desc, price, quantity,
-                                  condition.empty() ? std::optional<std::string>{} : condition,
-                                  note.empty() ? std::optional<std::string>{} : note,
-                                  workerIdOpt, clientPercent, storePercent,
-                                  clientAmount, storeAmount, appendixId });
+                    "UPDATE items "
+                    "SET barcode = $1 "
+                    "WHERE id = $2",
+                    pqxx::params{
+                        barcode,
+                        itemId
+                    }
+                );
+
+                g_serverLogger.info(
+                    "addItemsBatch: created item id=" +
+                    std::to_string(itemId) +
+                    ", barcode=" +
+                    barcode +
+                    ", clientId=" +
+                    std::to_string(clientId)
+                );
             }
             txn.commit();
             if (outAppendixNumber) *outAppendixNumber = appendixNumber;
@@ -2028,13 +2196,17 @@ public:
         try {
             pqxx::work txn{ *conn_ };
             auto res = txn.exec(
-                "SELECT item_number, description, quantity, estimated_price, "
+                "SELECT item_number, barcode, description, quantity, estimated_price, "
                 "condition, note, status, client_amount "
                 "FROM items WHERE appendix_id = $1 ORDER BY item_number",
                 pqxx::params{ appendixId });
             for (const auto& row : res) {
                 json it;
                 it["item_number"] = row["item_number"].as<int>();
+                it["barcode"] =
+                    row["barcode"].is_null()
+                    ? ""
+                    : row["barcode"].as<std::string>();
                 it["description"] = row["description"].as<std::string>();
                 it["quantity"] = row["quantity"].as<int>();
                 it["estimated_price"] = row["estimated_price"].as<double>();
@@ -2580,177 +2752,595 @@ public:
     // @param barcodePayload — содержимое штрих-кода (для аудита)
     // @return true при успешной регистрации продажи
     // =========================================================================
-    bool registerItemSale(int itemId, double salePrice, const std::string& source,
-        const std::string& receiptNumber, const std::string& barcodePayload) {
+    json registerItemSale(
+        int itemId,
+        double salePrice,
+        const std::string& source,
+        const std::string& receiptNumber,
+        const std::string& barcodePayload,
+        const std::string& idempotencyKey,
+        const std::string& fiscalDocumentNumber = "",
+        const std::string& fiscalDocumentUuid = "",
+        const std::string& fiscalSign = "")
+    {
+        json result;
+
         try {
+
+            if (itemId <= 0) {
+                result["success"] = false;
+                result["error"] = "Invalid item_id";
+                return result;
+            }
+
+            if (salePrice < 0.0) {
+                result["success"] = false;
+                result["error"] = "Invalid sale price";
+                return result;
+            }
+
+            if (idempotencyKey.empty()) {
+                result["success"] = false;
+                result["error"] =
+                    "idempotency_key is required";
+                return result;
+            }
+
             pqxx::work txn{ *conn_ };
 
-            // =================================================================
-            // ШАГ 1: Блокируем строку товара для атомарного обновления.
-            // FOR UPDATE предотвращает гонку при одновременных продажах.
-            // =================================================================
+            // =============================================================
+            // 1. Повторный запрос.
+            //
+            // Если предыдущая операция уже была успешно записана,
+            // ничего второй раз не продаём.
+            // =============================================================
+
+            auto existing = txn.exec(
+                "SELECT "
+                "id, "
+                "item_id, "
+                "client_id, "
+                "quantity_sold, "
+                "sale_price, "
+                "receipt_number "
+                "FROM item_sales "
+                "WHERE idempotency_key = $1 "
+                "LIMIT 1",
+                pqxx::params{ idempotencyKey }
+            );
+
+            if (!existing.empty()) {
+
+                result["success"] =
+                    true;
+
+                result["duplicate"] =
+                    true;
+
+                result["sale_id"] =
+                    existing[0]["id"].as<int>();
+
+                result["item_id"] =
+                    existing[0]["item_id"].as<int>();
+
+                result["client_id"] =
+                    existing[0]["client_id"].as<int>();
+
+                result["sale_price"] =
+                    existing[0]["sale_price"].as<double>();
+
+                result["quantity_sold"] =
+                    existing[0]["quantity_sold"].as<int>();
+
+                result["receipt_number"] =
+                    existing[0]["receipt_number"].is_null()
+                    ? ""
+                    : existing[0]["receipt_number"].as<std::string>();
+
+                txn.commit();
+
+                return result;
+            }
+
+            // =============================================================
+            // 2. Блокируем товар.
+            //
+            // ЭТО НЕЛЬЗЯ УБИРАТЬ.
+            //
+            // Именно FOR UPDATE защищает:
+            //
+            //     quantity - sold_quantity
+            //
+            // от одновременной продажи двумя кассирами.
+            // =============================================================
+
             auto itemRes = txn.exec(
-                "SELECT id, client_id, quantity, sold_quantity, estimated_price, "
-                "client_percent, store_percent, status "
-                "FROM items WHERE id = $1 FOR UPDATE",
+                "SELECT "
+                "id, "
+                "client_id, "
+                "quantity, "
+                "sold_quantity, "
+                "estimated_price, "
+                "client_percent, "
+                "store_percent, "
+                "status, "
+                "barcode "
+                "FROM items "
+                "WHERE id = $1 "
+                "FOR UPDATE",
                 pqxx::params{ itemId }
             );
 
             if (itemRes.empty()) {
-                g_serverLogger.error("registerItemSale: item not found, id=" + std::to_string(itemId));
-                return false;
+
+                result["success"] = false;
+                result["error"] =
+                    "Item not found";
+
+                return result;
             }
 
-            int currentQty = itemRes[0]["quantity"].as<int>();
-            int currentSold = itemRes[0]["sold_quantity"].as<int>();
-            int clientId = itemRes[0]["client_id"].as<int>();
-            double estimatedPrice = itemRes[0]["estimated_price"].as<double>();
-            double clientPercent = itemRes[0]["client_percent"].is_null() ? 0.0 :
-                itemRes[0]["client_percent"].as<double>();
-            double storePercent = itemRes[0]["store_percent"].is_null() ? 0.0 :
-                itemRes[0]["store_percent"].as<double>();
-            std::string currentStatus = itemRes[0]["status"].is_null() ? "pending" :
-                itemRes[0]["status"].as<std::string>();
+            const auto& row =
+                itemRes.at(0);
 
-            int availableQty = currentQty - currentSold;
+            const int clientId =
+                row["client_id"].as<int>();
 
-            g_serverLogger.info("registerItemSale: itemId=" + std::to_string(itemId) +
-                ", clientId=" + std::to_string(clientId) +
-                ", qty=" + std::to_string(currentQty) +
-                ", sold=" + std::to_string(currentSold) +
-                ", available=" + std::to_string(availableQty) +
-                ", price=" + std::to_string(salePrice) +
-                ", source=" + source);
+            const int quantity =
+                row["quantity"].as<int>();
 
-            // =================================================================
-            // ШАГ 2: Проверка — есть ли доступные единицы для продажи.
-            // =================================================================
-            if (availableQty <= 0) {
-                g_serverLogger.warning("registerItemSale: no available units for item " +
-                    std::to_string(itemId) + ", available=" + std::to_string(availableQty));
-                return false;
+            const int soldQuantity =
+                row["sold_quantity"].as<int>();
+
+            const int available =
+                quantity - soldQuantity;
+
+            const std::string status =
+                row["status"].is_null()
+                ? "pending"
+                : row["status"].as<std::string>();
+
+            const std::string storedBarcode =
+                row["barcode"].is_null()
+                ? ""
+                : row["barcode"].as<std::string>();
+
+            // =============================================================
+            // 3. Проверяем barcode.
+            // =============================================================
+
+            if (!storedBarcode.empty() &&
+                !barcodePayload.empty() &&
+                storedBarcode != barcodePayload) {
+
+                result["success"] = false;
+                result["error"] =
+                    "Barcode does not match item";
+
+                result["expected_barcode"] =
+                    storedBarcode;
+
+                result["received_barcode"] =
+                    barcodePayload;
+
+                return result;
             }
 
-            // =================================================================
-            // ШАГ 3: Проверка статуса — нельзя продавать expired/sold товары.
-            // =================================================================
-            if (currentStatus == "expired" || currentStatus == "sold" ||
-                currentStatus == "low_quality" || currentStatus == "unsold_quality") {
-                g_serverLogger.warning("registerItemSale: item " + std::to_string(itemId) +
-                    " has status '" + currentStatus + "', sale REJECTED");
-                return false;
-            }
+            // =============================================================
+            // 4. Проверяем блокировку комитента.
+            // =============================================================
 
-            // =================================================================
-            // ШАГ 4: Вычисление сумм распределения выручки.
-            // Математика: client_amount = price * client_percent / 100
-            //             store_amount  = price * store_percent / 100
-            // Это ЕДИНИЧНАЯ сумма (за 1 штуку), не за всю партию.
-            // =================================================================
-            double unitClientAmount = salePrice * clientPercent / 100.0;
-            double unitStoreAmount = salePrice * storePercent / 100.0;
-
-            // =================================================================
-            // ШАГ 5: Увеличиваем sold_quantity на 1.
-            // =================================================================
-            int newSoldQty = currentSold + 1;
-            std::string newStatus = (newSoldQty >= currentQty) ? "sold" : "pending";
-
-            txn.exec(
-                "UPDATE items SET sold_quantity = $2, status = $3, "
-                "sale_date = CASE WHEN $3 = 'sold' THEN EXTRACT(EPOCH FROM NOW()) ELSE sale_date END "
+            auto clientRes = txn.exec(
+                "SELECT is_blocked "
+                "FROM clients "
                 "WHERE id = $1",
-                pqxx::params{ itemId, newSoldQty, newStatus }
+                pqxx::params{ clientId }
             );
 
-            g_serverLogger.info("registerItemSale: item " + std::to_string(itemId) +
-                " updated: sold_quantity=" + std::to_string(newSoldQty) +
-                ", newStatus=" + newStatus);
+            if (!clientRes.empty() &&
+                clientRes[0]["is_blocked"].as<bool>()) {
 
-            // =================================================================
-            // ШАГ 6: Создаём запись в логе продаж item_sales.
-            // =================================================================
+                result["success"] = false;
+                result["error"] =
+                    "Client is blocked";
+
+                result["client_id"] =
+                    clientId;
+
+                return result;
+            }
+
+            // =============================================================
+            // 5. Проверяем остаток.
+            // =============================================================
+
+            if (available <= 0) {
+
+                result["success"] = false;
+                result["error"] =
+                    "No available units";
+
+                result["item_id"] =
+                    itemId;
+
+                result["available"] =
+                    0;
+
+                return result;
+            }
+
+            // =============================================================
+            // 6. Проверяем статус.
+            // =============================================================
+
+            if (status == "expired" ||
+                status == "sold" ||
+                status == "low_quality" ||
+                status == "unsold_quality") {
+
+                result["success"] = false;
+
+                result["error"] =
+                    "Item is not available for sale";
+
+                result["status"] =
+                    status;
+
+                return result;
+            }
+
+            // =============================================================
+            // 7. Проценты берём ИЗ БД.
+            // Не доверяем данным кассы.
+            // =============================================================
+
+            const double clientPercent =
+                row["client_percent"].is_null()
+                ? 0.0
+                : row["client_percent"].as<double>();
+
+            const double storePercent =
+                row["store_percent"].is_null()
+                ? 0.0
+                : row["store_percent"].as<double>();
+
+            const double clientAmount =
+                salePrice *
+                clientPercent /
+                100.0;
+
+            const double storeAmount =
+                salePrice *
+                storePercent /
+                100.0;
+
+            const int newSoldQuantity =
+                soldQuantity + 1;
+
+            const std::string newStatus =
+                (newSoldQuantity >= quantity)
+                ? "sold"
+                : "pending";
+
+            // =============================================================
+            // 8. Обновляем остаток.
+            // =============================================================
+
             txn.exec(
-                "INSERT INTO item_sales (item_id, client_id, quantity_sold, sale_price, "
-                "client_amount, store_amount, source, receipt_number, barcode_payload) "
-                "VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8)",
-                pqxx::params{ itemId, clientId, salePrice, unitClientAmount,
-                              unitStoreAmount, source,
-                              receiptNumber.empty() ? std::optional<std::string>{} : receiptNumber,
-                              barcodePayload.empty() ? std::optional<std::string>{} : barcodePayload }
+                "UPDATE items "
+                "SET "
+                "sold_quantity = $2, "
+                "status = $3, "
+                "sale_date = CASE "
+                "WHEN $3 = 'sold' "
+                "THEN EXTRACT(EPOCH FROM NOW()) "
+                "ELSE sale_date END "
+                "WHERE id = $1",
+                pqxx::params{
+                    itemId,
+                    newSoldQuantity,
+                    newStatus
+                }
             );
+
+            // =============================================================
+            // 9. Записываем продажу.
+            // =============================================================
+
+            auto saleRes = txn.exec(
+                "INSERT INTO item_sales ("
+                "item_id, "
+                "client_id, "
+                "quantity_sold, "
+                "sale_price, "
+                "client_amount, "
+                "store_amount, "
+                "source, "
+                "receipt_number, "
+                "barcode_payload, "
+                "idempotency_key, "
+                "fiscal_document_number, "
+                "fiscal_document_uuid, "
+                "fiscal_sign, "
+                "fiscalized_at"
+                ") "
+                "VALUES ("
+                "$1, $2, 1, $3, $4, $5, $6, $7, $8, $9, "
+                "$10, $11, $12, $13, EXTRACT(EPOCH FROM NOW())"
+                ") "
+                "RETURNING id",
+                pqxx::params{
+                    itemId,
+                    clientId,
+                    salePrice,
+                    clientAmount,
+                    storeAmount,
+                    source,
+                    receiptNumber.empty()
+                        ? std::optional<std::string>{}
+                        : std::optional<std::string>(receiptNumber),
+                    barcodePayload.empty()
+                        ? std::optional<std::string>{}
+                        : std::optional<std::string>(barcodePayload),
+                    idempotencyKey,
+                    fiscalDocumentNumber.empty()
+                        ? std::optional<std::string>{}
+                        : std::optional<std::string>(fiscalDocumentNumber),
+                    fiscalDocumentUuid.empty()
+                        ? std::optional<std::string>{}
+                        : std::optional<std::string>(fiscalDocumentUuid),
+                    fiscalSign.empty()
+                        ? std::optional<std::string>{}
+                        : std::optional<std::string>(fiscalSign)
+                }
+            );
+
+            const int saleId =
+                saleRes.at(0).at("id").as<int>();
 
             txn.commit();
-            g_serverLogger.info("registerItemSale: SUCCESS - itemId=" + std::to_string(itemId) +
-                ", newSoldQty=" + std::to_string(newSoldQty) +
-                ", clientAmount=" + std::to_string(unitClientAmount) +
-                ", storeAmount=" + std::to_string(unitStoreAmount));
-            return true;
+
+            result["success"] =
+                true;
+
+            result["duplicate"] =
+                false;
+
+            result["sale_id"] =
+                saleId;
+
+            result["item_id"] =
+                itemId;
+
+            result["client_id"] =
+                clientId;
+
+            result["barcode"] =
+                storedBarcode;
+
+            result["sale_price"] =
+                salePrice;
+
+            result["client_amount"] =
+                clientAmount;
+
+            result["store_amount"] =
+                storeAmount;
+
+            result["remaining_units"] =
+                quantity - newSoldQuantity;
+
+            result["status"] =
+                newStatus;
+
+            result["idempotency_key"] =
+                idempotencyKey;
+
+            return result;
         }
         catch (const std::exception& e) {
-            g_serverLogger.error("registerItemSale error: " + std::string(e.what()));
-            return false;
+
+            g_serverLogger.error(
+                "registerItemSale error: " +
+                std::string(e.what())
+            );
+
+            result["success"] =
+                false;
+
+            result["error"] =
+                e.what();
+
+            return result;
         }
     }
 
     // =========================================================================
-    // НОВЫЙ МЕТОД: ПОИСК ТОВАРА ПО ШТРИХ-КОДУ (для кассы Атол 77Ф)
-    // Штрих-код ценника содержит: FIO=...;ID=...;NAME=...;PRICE=...;PAY=...
-    // Для идентификации конкретной единицы используем appendix_number + ordinal
-    // из тега "<appendix_number>+<ordinal>" на ценнике.
+    // ПОИСК ТОВАРА ПО ФИЗИЧЕСКОМУ ШТРИХ-КОДУ
     //
-    // @param appendixNumber — номер приложения к договору
-    // @param ordinal        — порядковый номер единицы в приложении
-    // @return JSON с данными товара или error
+    // barcode является уникальным идентификатором items.
+    //
+    // Никогда НЕ ищем товар:
+    //     client_id + price
+    //
+    // Потому что у одного комитента может быть несколько товаров
+    // одинаковой стоимости.
+    //
+    // Правильная цепочка:
+    //
+    //     barcode
+    //        ↓
+    //     items.id
+    //        ↓
+    //     items.client_id
+    //        ↓
+    //     clients.id
     // =========================================================================
-    json findItemByBarcode(int clientId, double price) {
+    json findItemByBarcode(const std::string& barcode) {
+
+        json result;
+
         try {
+
+            if (!ShopBarcode::isValid(barcode)) {
+
+                result["error"] =
+                    "Invalid SHOP barcode";
+
+                result["barcode"] =
+                    barcode;
+
+                return result;
+            }
+
             pqxx::work txn{ *conn_ };
-            // Ищем товар клиента с matching price и доступным остатком
+
             auto res = txn.exec(
-                "SELECT id, item_number, description, estimated_price, quantity, "
-                "sold_quantity, status, client_percent, store_percent, "
-                "client_amount, store_amount, appendix_id "
-                "FROM items WHERE client_id = $1 AND estimated_price = $2 "
-                "AND status = 'pending' AND (quantity - sold_quantity) > 0 "
-                "ORDER BY id LIMIT 1",
-                pqxx::params{ clientId, price }
+                "SELECT "
+                "i.id, "
+                "i.barcode, "
+                "i.item_number, "
+                "i.client_id, "
+                "i.description, "
+                "i.estimated_price, "
+                "i.quantity, "
+                "i.sold_quantity, "
+                "i.status, "
+                "i.client_percent, "
+                "i.store_percent, "
+                "i.client_amount, "
+                "i.store_amount, "
+                "i.appendix_id, "
+                "c.is_blocked "
+                "FROM items i "
+                "LEFT JOIN clients c "
+                "ON c.id = i.client_id "
+                "WHERE i.barcode = $1 "
+                "LIMIT 1",
+                pqxx::params{ barcode }
             );
 
             if (res.empty()) {
-                g_serverLogger.warning("findItemByBarcode: no matching item for clientId=" +
-                    std::to_string(clientId) + ", price=" + std::to_string(price));
-                json err;
-                err["error"] = "Item not found or no available units";
-                return err;
+
+                g_serverLogger.warning(
+                    "findItemByBarcode: item not found, barcode=" +
+                    barcode
+                );
+
+                result["error"] =
+                    "Item not found";
+
+                result["barcode"] =
+                    barcode;
+
+                return result;
             }
 
-            json item;
-            item["id"] = res[0]["id"].as<int>();
-            item["item_number"] = res[0]["item_number"].as<int>();
-            item["description"] = res[0]["description"].as<std::string>();
-            item["estimated_price"] = res[0]["estimated_price"].as<double>();
-            item["quantity"] = res[0]["quantity"].as<int>();
-            item["sold_quantity"] = res[0]["sold_quantity"].as<int>();
-            item["available"] = res[0]["quantity"].as<int>() - res[0]["sold_quantity"].as<int>();
-            item["status"] = res[0]["status"].as<std::string>();
-            item["client_percent"] = res[0]["client_percent"].is_null() ? 0.0 :
-                res[0]["client_percent"].as<double>();
-            item["store_percent"] = res[0]["store_percent"].is_null() ? 0.0 :
-                res[0]["store_percent"].as<double>();
-            item["appendix_id"] = res[0]["appendix_id"].is_null() ? 0 :
-                res[0]["appendix_id"].as<long long>();
+            const auto& row =
+                res.at(0);
 
-            g_serverLogger.info("findItemByBarcode: found itemId=" +
-                std::to_string(item["id"].get<int>()) + " for clientId=" +
-                std::to_string(clientId) + ", price=" + std::to_string(price));
-            return item;
+            const int itemId =
+                row["id"].as<int>();
+
+            const int clientId =
+                row["client_id"].as<int>();
+
+            const int quantity =
+                row["quantity"].as<int>();
+
+            const int soldQuantity =
+                row["sold_quantity"].as<int>();
+
+            const int available =
+                quantity - soldQuantity;
+
+            result["id"] =
+                itemId;
+
+            result["barcode"] =
+                row["barcode"].is_null()
+                ? ""
+                : row["barcode"].as<std::string>();
+
+            result["item_number"] =
+                row["item_number"].is_null()
+                ? 0
+                : row["item_number"].as<int>();
+
+            result["client_id"] =
+                clientId;
+
+            result["description"] =
+                row["description"].as<std::string>();
+
+            result["estimated_price"] =
+                row["estimated_price"].as<double>();
+
+            result["quantity"] =
+                quantity;
+
+            result["sold_quantity"] =
+                soldQuantity;
+
+            result["available"] =
+                available;
+
+            result["status"] =
+                row["status"].is_null()
+                ? "pending"
+                : row["status"].as<std::string>();
+
+            result["client_percent"] =
+                row["client_percent"].is_null()
+                ? 0.0
+                : row["client_percent"].as<double>();
+
+            result["store_percent"] =
+                row["store_percent"].is_null()
+                ? 0.0
+                : row["store_percent"].as<double>();
+
+            result["client_amount"] =
+                row["client_amount"].is_null()
+                ? 0.0
+                : row["client_amount"].as<double>();
+
+            result["store_amount"] =
+                row["store_amount"].is_null()
+                ? 0.0
+                : row["store_amount"].as<double>();
+
+            result["appendix_id"] =
+                row["appendix_id"].is_null()
+                ? 0
+                : row["appendix_id"].as<long long>();
+
+            result["client_blocked"] =
+                row["is_blocked"].is_null()
+                ? false
+                : row["is_blocked"].as<bool>();
+
+            g_serverLogger.info(
+                "findItemByBarcode: FOUND "
+                "barcode=" + barcode +
+                ", itemId=" + std::to_string(itemId) +
+                ", clientId=" + std::to_string(clientId) +
+                ", available=" + std::to_string(available)
+            );
+
+            return result;
         }
         catch (const std::exception& e) {
-            g_serverLogger.error("findItemByBarcode error: " + std::string(e.what()));
-            json err;
-            err["error"] = e.what();
-            return err;
+
+            g_serverLogger.error(
+                "findItemByBarcode error: " +
+                std::string(e.what())
+            );
+
+            result["error"] =
+                e.what();
+
+            return result;
         }
     }
 

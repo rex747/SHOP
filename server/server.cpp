@@ -2208,126 +2208,381 @@ private:
     // 5. Если все единицы проданы → status = 'sold'
     // =========================================================================
     void handleSaleRegister(const std::string& client_ip) {
-        g_serverLogger.info("handleSaleRegister: request from " + client_ip);
 
-        // =====================================================================
-        // ШАГ 1: Разбор JSON тела запроса
-        // =====================================================================
+        g_serverLogger.info(
+            "handleSaleRegister: request from " +
+            client_ip
+        );
+
         json body;
+
         try {
-            body = json::parse(request_.body());
-            g_serverLogger.info("handleSaleRegister: parsed body: " + body.dump());
+            body =
+                json::parse(request_.body());
         }
-        catch (const json::parse_error& e) {
-            response_.result(http::status::bad_request);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
+        catch (const json::parse_error&) {
+
+            response_.result(
+                http::status::bad_request
+            );
+
+            response_.set(
+                http::field::content_type,
+                "application/json"
+            );
+
+            response_.body() =
+                json{
+                    {"success", false},
+                    {"error", "Invalid JSON payload"}
+            }.dump();
+
             response_.prepare_payload();
-            g_serverLogger.warning("handleSaleRegister: JSON parse error from " + client_ip);
+
             return;
         }
 
-        // =====================================================================
-        // ШАГ 2: Валидация обязательных полей
-        // =====================================================================
-        if (!body.contains("client_id") || !body["client_id"].is_number()) {
-            response_.result(http::status::bad_request);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", "Missing or invalid client_id"} }.dump();
+        // =============================================================
+        // Обязательные поля.
+        // =============================================================
+
+        if (!body.contains("barcode") ||
+            !body["barcode"].is_string()) {
+
+            response_.result(
+                http::status::bad_request
+            );
+
+            response_.body() =
+                json{
+                    {"success", false},
+                    {"error", "barcode is required"}
+            }.dump();
+
             response_.prepare_payload();
-            g_serverLogger.warning("handleSaleRegister: missing client_id from " + client_ip);
+
             return;
         }
 
-        if (!body.contains("item_price") || !body["item_price"].is_number()) {
-            response_.result(http::status::bad_request);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", "Missing or invalid item_price"} }.dump();
+        if (!body.contains("sale_price") ||
+            !body["sale_price"].is_number()) {
+
+            response_.result(
+                http::status::bad_request
+            );
+
+            response_.body() =
+                json{
+                    {"success", false},
+                    {"error", "sale_price is required"}
+            }.dump();
+
             response_.prepare_payload();
-            g_serverLogger.warning("handleSaleRegister: missing item_price from " + client_ip);
+
             return;
         }
 
-        int clientId = body["client_id"].get<int>();
-        double itemPrice = body["item_price"].get<double>();
-        std::string source = body.value("source", std::string("1C"));
-        std::string receiptNumber = body.value("receipt_number", std::string(""));
-        std::string barcodePayload = body.value("barcode_payload", std::string(""));
+        if (!body.contains("idempotency_key") ||
+            !body["idempotency_key"].is_string() ||
+            body["idempotency_key"].get<std::string>().empty()) {
 
-        g_serverLogger.info("handleSaleRegister: clientId=" + std::to_string(clientId) +
-            ", itemPrice=" + std::to_string(itemPrice) +
-            ", source=" + source +
-            ", receiptNumber=" + receiptNumber);
+            response_.result(
+                http::status::bad_request
+            );
 
-        // =====================================================================
-        // ШАГ 3: Проверка, что клиент существует и не заблокирован
-        // =====================================================================
-        auto clientOpt = db_->getClientById(clientId);
-        if (!clientOpt) {
-            response_.result(http::status::not_found);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", "Client not found"} }.dump();
+            response_.body() =
+                json{
+                    {"success", false},
+                    {"error",
+                     "idempotency_key is required"}
+            }.dump();
+
             response_.prepare_payload();
-            g_serverLogger.warning("handleSaleRegister: client not found, id=" +
-                std::to_string(clientId));
+
             return;
         }
 
-        if (db_->isClientBlocked(clientId)) {
-            response_.result(http::status::forbidden);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", "Client is blocked, sale rejected"} }.dump();
+        const std::string barcode =
+            body["barcode"].get<std::string>();
+
+        const double salePrice =
+            body["sale_price"].get<double>();
+
+        const std::string idempotencyKey =
+            body["idempotency_key"].get<std::string>();
+
+        const std::string source =
+            body.value(
+                "source",
+                std::string("1C")
+            );
+
+        const std::string receiptNumber =
+            body.value(
+                "receipt_number",
+                std::string()
+            );
+
+        const std::string fiscalDocumentNumber =
+            body.value(
+                "fiscal_document_number",
+                std::string()
+            );
+
+        const std::string fiscalDocumentUuid =
+            body.value(
+                "fiscal_document_uuid",
+                std::string()
+            );
+
+        const std::string fiscalSign =
+            body.value(
+                "fiscal_sign",
+                std::string()
+            );
+
+        // barcode_payload оставляем для обратной совместимости.
+        const std::string barcodePayload =
+            body.value(
+                "barcode_payload",
+                barcode
+            );
+
+        // =============================================================
+        // Проверяем barcode.
+        // =============================================================
+
+        int itemId = 0;
+
+        if (!ShopBarcode::tryParse(
+            barcode,
+            itemId)) {
+
+            response_.result(
+                http::status::bad_request
+            );
+
+            response_.set(
+                http::field::content_type,
+                "application/json"
+            );
+
+            response_.body() =
+                json{
+                    {"success", false},
+                    {"error",
+                     "Invalid SHOP barcode"},
+                    {"barcode", barcode}
+            }.dump();
+
             response_.prepare_payload();
-            g_serverLogger.warning("handleSaleRegister: BLOCKED client " +
-                std::to_string(clientId) + " attempted sale");
+
             return;
         }
 
-        // =====================================================================
-        // ШАГ 4: Поиск товара по client_id и цене
-        // =====================================================================
-        json itemData = db_->findItemByBarcode(clientId, itemPrice);
+        g_serverLogger.info(
+            "handleSaleRegister: "
+            "barcode=" + barcode +
+            ", itemId=" + std::to_string(itemId) +
+            ", salePrice=" + std::to_string(salePrice) +
+            ", idempotencyKey=" + idempotencyKey
+        );
+
+        // =============================================================
+        // Получаем товар.
+        //
+        // client_id здесь НЕ передаётся клиентом.
+        // Он определяется исключительно БД.
+        // =============================================================
+
+        json itemData =
+            db_->findItemByBarcode(barcode);
+
         if (itemData.contains("error")) {
-            response_.result(http::status::not_found);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = itemData.dump();
+
+            response_.result(
+                http::status::not_found
+            );
+
+            response_.set(
+                http::field::content_type,
+                "application/json"
+            );
+
+            response_.body() =
+                itemData.dump();
+
             response_.prepare_payload();
-            g_serverLogger.warning("handleSaleRegister: item not found for clientId=" +
-                std::to_string(clientId) + ", price=" + std::to_string(itemPrice));
+
             return;
         }
 
-        int itemId = itemData["id"].get<int>();
-        g_serverLogger.info("handleSaleRegister: matched itemId=" + std::to_string(itemId) +
-            ", available=" + std::to_string(itemData["available"].get<int>()));
+        const int databaseItemId =
+            itemData["id"].get<int>();
 
-        // =====================================================================
-        // ШАГ 5: Регистрация продажи (атомарная операция в БД)
-        // =====================================================================
-        bool saleSuccess = db_->registerItemSale(itemId, itemPrice, source,
-            receiptNumber, barcodePayload);
+        if (databaseItemId != itemId) {
 
-        if (saleSuccess) {
-            response_.result(http::status::ok);
-            response_.set(http::field::content_type, "application/json");
-            json successResp;
-            successResp["success"] = true;
-            successResp["item_id"] = itemId;
-            successResp["client_id"] = clientId;
-            successResp["sale_price"] = itemPrice;
-            successResp["remaining_units"] = itemData["available"].get<int>() - 1;
-            response_.body() = successResp.dump();
-            g_serverLogger.info("handleSaleRegister: SALE REGISTERED SUCCESSFULLY - itemId=" +
-                std::to_string(itemId) + ", clientId=" + std::to_string(clientId));
+            response_.result(
+                http::status::conflict
+            );
+
+            response_.body() =
+                json{
+                    {"success", false},
+                    {"error",
+                     "Barcode/item ID mismatch"}
+            }.dump();
+
+            response_.prepare_payload();
+
+            return;
         }
-        else {
-            response_.result(http::status::conflict);
-            response_.set(http::field::content_type, "application/json");
-            response_.body() = json{ {"error", "Sale registration failed: no available units or item expired"} }.dump();
-            g_serverLogger.error("handleSaleRegister: SALE REGISTRATION FAILED for itemId=" +
-                std::to_string(itemId));
+
+        const int clientId =
+            itemData["client_id"].get<int>();
+
+        const bool clientBlocked =
+            itemData.value(
+                "client_blocked",
+                false
+            );
+
+        if (clientBlocked) {
+
+            response_.result(
+                http::status::forbidden
+            );
+
+            response_.body() =
+                json{
+                    {"success", false},
+                    {"error",
+                     "Client is blocked"},
+                    {"client_id", clientId}
+            }.dump();
+
+            response_.prepare_payload();
+
+            return;
         }
+
+        // =============================================================
+        // Проверяем цену.
+        //
+        // Если в вашем бизнес-процессе цена может изменяться кассиром,
+        // этот блок можно изменить.
+        //
+        // По умолчанию защищаемся от продажи по произвольной цене.
+        // =============================================================
+
+        const double registeredPrice =
+            itemData["estimated_price"].get<double>();
+
+        constexpr double PRICE_EPSILON =
+            0.01;
+
+        if (std::fabs(
+            registeredPrice - salePrice)
+        > PRICE_EPSILON) {
+
+            response_.result(
+                http::status::conflict
+            );
+
+            response_.set(
+                http::field::content_type,
+                "application/json"
+            );
+
+            response_.body() =
+                json{
+                    {"success", false},
+                    {"error",
+                     "Sale price does not match item price"},
+                    {"item_id", databaseItemId},
+                    {"barcode", barcode},
+                    {"registered_price", registeredPrice},
+                    {"sale_price", salePrice}
+            }.dump();
+
+            response_.prepare_payload();
+
+            return;
+        }
+
+        // =============================================================
+        // Атомарная регистрация.
+        // =============================================================
+
+        json saleResult =
+            db_->registerItemSale(
+                databaseItemId,
+                salePrice,
+                source,
+                receiptNumber,
+                barcodePayload,
+                idempotencyKey,
+                fiscalDocumentNumber,
+                fiscalDocumentUuid,
+                fiscalSign
+            );
+
+        if (saleResult.value(
+            "success",
+            false)) {
+
+            response_.result(
+                http::status::ok
+            );
+
+            response_.set(
+                http::field::content_type,
+                "application/json"
+            );
+
+            response_.body() =
+                saleResult.dump();
+
+            response_.prepare_payload();
+
+            return;
+        }
+
+        // =============================================================
+        // Ошибка.
+        // =============================================================
+
+        const std::string error =
+            saleResult.value(
+                "error",
+                "Sale registration failed"
+            );
+
+        http::status status =
+            http::status::conflict;
+
+        if (error == "Item not found")
+            status = http::status::not_found;
+
+        if (error == "Client is blocked")
+            status = http::status::forbidden;
+
+        response_.result(status);
+
+        response_.set(
+            http::field::content_type,
+            "application/json"
+        );
+
+        response_.body() =
+            saleResult.dump();
+
         response_.prepare_payload();
+
+        g_serverLogger.warning(
+            "handleSaleRegister: sale rejected: " +
+            error
+        );
     }
 
     // =========================================================================
