@@ -1,19 +1,12 @@
 ﻿// receipt_printer.h
 // =============================================================================
-// МОДУЛЬ ПЕЧАТИ «ПРИЛОЖЕНИЕ К ДОГОВОРУ» (чек комитента)
+// МОДУЛЬ ПЕЧАТИ «ПРИЛОЖЕНИЕ К ДОГОВОРУ» (чек комитента, как в образце 222.jp)
 // =============================================================================
-// автоматический расчет процентов по цене единицы товара.
+// ОБНОВЛЕНИЕ: Добавлен автоматический расчет процентов по цене единицы товара.
 // Логика расчета (CommissionCalc::calculateByPrice):
-//   - 1-299 ₽:     магазин 48%, комитент 52%
-//   - 300-599 ₽:   магазин 46%, комитент 54%
-//   - 600-999 ₽:   магазин 44%, комитент 56%
-//   - 1000-2499 ₽: магазин 42%, комитент 58%
-//   - 2500-3999 ₽: магазин 40%, комитент 60%
-//   - 4000-6999 ₽: магазин 36%, комитент 64%
-//   - 7000-9999 ₽: магазин 34%, комитент 66%
-//   - 10000-19999 ₽: магазин 30%, комитент 70%
-//   - 20000-49999 ₽: магазин 26%, комитент 74%
-//   - от 50000 ₽:  магазин 19%, комитент 81%
+//   - 1-7000 ₽:       магазин 50%, комитент 50%
+//   - 7001-50000 ₽:   магазин 30%, комитент 70%
+//   - более 50000 ₽:  магазин 20%, комитент 80%
 //
 // Расчет производится при формировании приложения к договору для контроля
 // и валидации данных, полученных из worker_window.h.
@@ -53,20 +46,28 @@ namespace CommissionCalc {
         double clientPercent;
     };
 
-    // Расчет процентов по цене единицы товара
+    // Расчет процентов по цене единицы товара.
+    // Правила:
+    //   - 1-7000 ₽:       магазин 50%, комитент 50%
+    //   - 7001-50000 ₽:   магазин 30%, комитент 70%
+    //   - более 50000 ₽:  магазин 20%, комитент 80%
     inline CommissionRates calculateByPrice(double unitPrice) {
-        if (unitPrice >= 50000.0)       return { 19.0, 81.0 };
-        if (unitPrice >= 20000.0)       return { 26.0, 74.0 };
-        if (unitPrice >= 10000.0)       return { 30.0, 70.0 };
-        if (unitPrice >= 7000.0)        return { 34.0, 66.0 };
-        if (unitPrice >= 4000.0)        return { 36.0, 64.0 };
-        if (unitPrice >= 2500.0)        return { 40.0, 60.0 };
-        if (unitPrice >= 1000.0)        return { 42.0, 58.0 };
-        if (unitPrice >= 600.0)         return { 44.0, 56.0 };
-        if (unitPrice >= 300.0)         return { 46.0, 54.0 };
-        if (unitPrice >= 1.0)           return { 48.0, 52.0 };
+        if (unitPrice > 50000.0) return { 20.0, 80.0 };
+        if (unitPrice >= 7001.0) return { 30.0, 70.0 };
+        if (unitPrice >= 1.0) return { 50.0, 50.0 };
         return { 0.0, 0.0 };
     }
+
+    inline double calculateClientAmount(double unitPrice, int quantity) {
+        const auto rates = calculateByPrice(unitPrice);
+        return unitPrice * static_cast<double>(quantity) * rates.clientPercent / 100.0;
+    }
+
+    inline double calculateStoreAmount(double unitPrice, int quantity) {
+        const auto rates = calculateByPrice(unitPrice);
+        return unitPrice * static_cast<double>(quantity) * rates.storePercent / 100.0;
+    }
+
 }
 
 // =============================================================================
@@ -290,7 +291,6 @@ public:
     }
 
     friend class PriceTagPrinter;
-    friend class CashierDocumentPrinter;
 
 private:
     static bool isPromptPort(const std::wstring& printer) {
@@ -507,8 +507,14 @@ private:
             ss << ReceiptUtils::transliterate(d.items[i].description)
                 << " " << d.items[i].quantity;
         }
+
+        double calculatedClientAmount = 0.0;
+        for (const auto& item : d.items)
+            calculatedClientAmount +=
+            CommissionCalc::calculateClientAmount(item.price, item.quantity);
+
         ss << ";SUM=" << static_cast<long long>(std::llround(d.totalValue))
-            << ";PAY=" << d.totalClientAmount;
+            << ";PAY=" << calculatedClientAmount;
         return ss.str();
     }
 
@@ -519,8 +525,14 @@ private:
             if (i) s += L",  ";
             s += d.items[i].description + L" —  " + std::to_wstring(d.items[i].quantity) + L" шт ";
         }
+
+        double calculatedClientAmount = 0.0;
+        for (const auto& item : d.items)
+            calculatedClientAmount +=
+            CommissionCalc::calculateClientAmount(item.price, item.quantity);
+
         s += L"; сумма:  " + ReceiptUtils::formatMoney(d.totalValue) +
-            L"; выплата комитенту:  " + ReceiptUtils::formatMoney(d.totalClientAmount);
+            L"; выплата комитенту:  " + ReceiptUtils::formatMoney(calculatedClientAmount);
         return s;
     }
 
@@ -787,11 +799,13 @@ private:
         g_logger.info(L"ReceiptPrinter: === COMMISSION CALCULATION CONTROL ===");
         double totalClientAmountCalculated = 0.0;
         double totalStoreAmountCalculated = 0.0;
+        std::vector<double> calculatedClientAmounts(d.items.size(), 0.0);
         for (size_t i = 0; i < d.items.size(); ++i) {
             const auto& item = d.items[i];
             auto rates = CommissionCalc::calculateByPrice(item.price);
-            double clientAmount = item.price * item.quantity * rates.clientPercent / 100.0;
-            double storeAmount = item.price * item.quantity * rates.storePercent / 100.0;
+            double clientAmount = CommissionCalc::calculateClientAmount(item.price, item.quantity);
+            double storeAmount = CommissionCalc::calculateStoreAmount(item.price, item.quantity);
+            calculatedClientAmounts[i] = clientAmount;
             totalClientAmountCalculated += clientAmount;
             totalStoreAmountCalculated += storeAmount;
             g_logger.info(L"ReceiptPrinter: item #" + std::to_wstring(i + 1) +
@@ -824,7 +838,7 @@ private:
             GetTextExtentPoint32W(hdc, t0.c_str(), (int)t0.size(), &szT0);
             std::wstring v1 = std::to_wstring(d.totalQty);
             std::wstring v3 = ReceiptUtils::formatMoney(d.totalValue);
-            std::wstring v5 = ReceiptUtils::formatMoney(d.totalClientAmount);
+            std::wstring v5 = ReceiptUtils::formatMoney(totalClientAmountCalculated);
             TextOutW(hdc, colX(0) + 2 + szT0.cx + mmX(3), y + 2, v1.c_str(), (int)v1.size());
             TextOutW(hdc, colX(3) + 2, y + 2, v3.c_str(), (int)v3.size());
             TextOutW(hdc, colX(5) + 2, y + 2, v5.c_str(), (int)v5.size());
@@ -858,7 +872,7 @@ private:
             std::wstring cells[6] = {
                 std::to_wstring(i + 1), it.description, it.characteristic,
                 std::to_wstring(it.quantity), ReceiptUtils::formatMoney(it.price),
-                ReceiptUtils::formatMoney(it.clientAmount)
+                ReceiptUtils::formatMoney(calculatedClientAmounts[i])
             };
             for (int c = 0; c < 6; ++c)
                 TextOutW(hdc, colX(c) + 2, y + 2, cells[c].c_str(), (int)cells[c].size());
@@ -876,7 +890,7 @@ private:
         TextOutW(hdc, colX(4) + 2, y + 2, t4.c_str(), (int)t4.size());
         std::wstring v1 = std::to_wstring(d.totalQty);
         std::wstring v3 = ReceiptUtils::formatMoney(d.totalValue);
-        std::wstring v5 = ReceiptUtils::formatMoney(d.totalClientAmount);
+        std::wstring v5 = ReceiptUtils::formatMoney(totalClientAmountCalculated);
         TextOutW(hdc, colX(1) + 2, y + 2, v1.c_str(), (int)v1.size());
         TextOutW(hdc, colX(3) + 2, y + 2, v3.c_str(), (int)v3.size());
         TextOutW(hdc, colX(5) + 2, y + 2, v5.c_str(), (int)v5.size());
