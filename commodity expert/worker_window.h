@@ -1955,59 +1955,218 @@ private:
 
     ReceiptSnapshot fetchLatestAppendixFromServer(int clientId) {
         ReceiptSnapshot snap;
+
+        if (clientId <= 0)
+            return snap;
+
         std::wstring authToken = g_authManager.getAuthToken();
-        if (authToken.empty()) return snap;
-        auto resp = g_httpsClient.get(L"/api/v1/appendix/latest?client_id=" + std::to_wstring(clientId), authToken);
-        if (!resp || resp->contains("error")) return snap;
 
-        snap.valid = true; snap.clientId = clientId;
-        snap.appendixNumber = resp->value("appendix_number", 0LL);
-        snap.totalQty = resp->value("total_quantity", 0);
-        snap.totalValue = resp->value("total_value", 0.0);
-        snap.totalClientAmount = resp->value("total_client_amount", 0.0);
-
-        if (resp->contains("items") && (*resp)["items"].is_array()) {
-            for (const auto& it : (*resp)["items"]) {
-                json j;
-                j["description"] = it.value("description", "");
-                j["condition"] = it.value("condition", "");
-                j["quantity"] = it.value("quantity", 1);
-                j["estimated_price"] = it.value("estimated_price", 0.0);
-                j["client_amount"] = it.value("client_amount", 0.0);
-                j["note"] = it.value("note", "");
-                snap.items.push_back(j);
-            }
+        if (authToken.empty()) {
+            g_logger.error(
+                L"fetchLatestAppendixFromServer: authentication token is empty");
+            return snap;
         }
+
+        auto resp = g_httpsClient.get(
+            L"/api/v1/appendix/latest?client_id=" +
+            std::to_wstring(clientId),
+            authToken
+        );
+
+        if (!resp) {
+            g_logger.error(
+                L"fetchLatestAppendixFromServer: server returned no response");
+            return snap;
+        }
+
+        if (resp->contains("error")) {
+            g_logger.error(
+                L"fetchLatestAppendixFromServer: server error: " +
+                utf8_to_wstring(resp->value("error", "unknown error")));
+            return snap;
+        }
+
+        snap.valid = true;
+        snap.clientId = clientId;
+
+        snap.appendixNumber =
+            resp->value("appendix_number", 0LL);
+
+        snap.totalQty =
+            resp->value("total_quantity", 0);
+
+        snap.totalValue =
+            resp->value("total_value", 0.0);
+
+        snap.totalClientAmount =
+            resp->value("total_client_amount", 0.0);
+
+        if (!resp->contains("items") ||
+            !(*resp)["items"].is_array()) {
+
+            g_logger.warning(
+                L"fetchLatestAppendixFromServer: response contains no items array");
+
+            return snap;
+        }
+
+        for (const auto& it : (*resp)["items"]) {
+
+            json j;
+
+            // КРИТИЧЕСКИ ВАЖНО:
+            // сохраняем реальный DB item.id.
+            j["id"] =
+                it.value("id", 0);
+
+            j["item_number"] =
+                it.value("item_number", 0);
+
+            j["barcode"] =
+                it.value("barcode", "");
+
+            j["description"] =
+                it.value("description", "");
+
+            j["condition"] =
+                it.value("condition", "");
+
+            j["quantity"] =
+                it.value("quantity", 1);
+
+            j["estimated_price"] =
+                it.value("estimated_price", 0.0);
+
+            j["client_amount"] =
+                it.value("client_amount", 0.0);
+
+            j["note"] =
+                it.value("note", "");
+
+            snap.items.push_back(j);
+        }
+
+        g_logger.info(
+            L"fetchLatestAppendixFromServer: loaded appendix=" +
+            std::to_wstring(snap.appendixNumber) +
+            L", client=" +
+            std::to_wstring(clientId) +
+            L", items=" +
+            std::to_wstring(snap.items.size()));
+
         return snap;
     }
 
     void printReceiptForServedClient(int clientId) {
-        if (clientId <= 0) return;
+        if (clientId <= 0)
+            return;
+
         ReceiptSnapshot snap;
-        { std::lock_guard<std::mutex> lock(m_receiptSnapshotMutex); snap = m_receiptSnapshot; }
-        if (!snap.valid || snap.clientId != clientId) snap = fetchLatestAppendixFromServer(clientId);
-        if (!snap.valid) return;
+
+        {
+            std::lock_guard<std::mutex> lock(m_receiptSnapshotMutex);
+            snap = m_receiptSnapshot;
+        }
+
+        if (!snap.valid || snap.clientId != clientId)
+            snap = fetchLatestAppendixFromServer(clientId);
+
+        if (!snap.valid) {
+            g_logger.error(
+                L"printReceiptForServedClient: invalid receipt snapshot");
+            return;
+        }
 
         HWND hWndCopy = m_hWnd;
+
         std::thread([hWndCopy, snap]() {
+
             ReceiptData data;
-            data.appendixNumber = snap.appendixNumber; data.clientId = snap.clientId;
-            data.totalQty = snap.totalQty; data.totalValue = snap.totalValue; data.totalClientAmount = snap.totalClientAmount;
+
+            data.appendixNumber = snap.appendixNumber;
+            data.clientId = snap.clientId;
+            data.totalQty = snap.totalQty;
+            data.totalValue = snap.totalValue;
+            data.totalClientAmount = snap.totalClientAmount;
 
             for (const auto& it : snap.items) {
-                ReceiptItem ri; ri.description = utf8_to_wstring(it.value("description", ""));
-                ri.characteristic = utf8_to_wstring(it.value("condition", "")); ri.quantity = it.value("quantity", 1);
-                ri.price = it.value("estimated_price", 0.0); ri.clientAmount = it.value("client_amount", 0.0);
-                ri.note = utf8_to_wstring(it.value("note", ""));
+
+                ReceiptItem ri;
+
+                // =============================================================
+                // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ:
+                // сохраняем реальный ID товара из PostgreSQL.
+                // =============================================================
+
+                ri.itemId =
+                    it.value("id", 0);
+
+                ri.description =
+                    utf8_to_wstring(
+                        it.value("description", "")
+                    );
+
+                ri.characteristic =
+                    utf8_to_wstring(
+                        it.value("condition", "")
+                    );
+
+                ri.quantity =
+                    it.value("quantity", 1);
+
+                ri.price =
+                    it.value("estimated_price", 0.0);
+
+                ri.clientAmount =
+                    it.value("client_amount", 0.0);
+
+                ri.note =
+                    utf8_to_wstring(
+                        it.value("note", "")
+                    );
+
+                if (ri.itemId <= 0) {
+                    g_logger.error(
+                        L"printReceiptForServedClient: item has invalid DB id: " +
+                        ri.description);
+                }
+
                 data.items.push_back(ri);
             }
 
-            auto resp = g_httpsClient.get(L"/api/v1/clients/by_id?id=" + std::to_wstring(snap.clientId), L"");
-            if (resp && resp->contains("name")) data.clientFullName = utf8_to_wstring((*resp)["name"].get<std::string>());
-            if (data.clientFullName.empty()) data.clientFullName = L"Клиент #" + std::to_wstring(snap.clientId);
+            auto resp =
+                g_httpsClient.get(
+                    L"/api/v1/clients/by_id?id=" +
+                    std::to_wstring(snap.clientId),
+                    L""
+                );
 
-            ReceiptData* pCopy = new ReceiptData(data);
-            PostMessageW(hWndCopy, WM_RECEIPT_PRINT, 0, (LPARAM)pCopy);
+            if (resp &&
+                resp->contains("name") &&
+                (*resp)["name"].is_string()) {
+
+                data.clientFullName =
+                    utf8_to_wstring(
+                        (*resp)["name"].get<std::string>()
+                    );
+            }
+
+            if (data.clientFullName.empty()) {
+                data.clientFullName =
+                    L"Клиент #" +
+                    std::to_wstring(snap.clientId);
+            }
+
+            ReceiptData* pCopy =
+                new ReceiptData(data);
+
+            PostMessageW(
+                hWndCopy,
+                WM_RECEIPT_PRINT,
+                0,
+                reinterpret_cast<LPARAM>(pCopy)
+            );
+
             }).detach();
     }
 

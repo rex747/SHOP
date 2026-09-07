@@ -4,16 +4,9 @@
 // =============================================================================
 // ОБНОВЛЕНИЕ: Добавлен автоматический расчет процентов по цене единицы товара.
 // Логика расчета (CommissionCalc::calculateByPrice):
-//   - 1-299 ₽:     магазин 48%, комитент 52%
-//   - 300-599 ₽:   магазин 46%, комитент 54%
-//   - 600-999 ₽:   магазин 44%, комитент 56%
-//   - 1000-2499 ₽: магазин 42%, комитент 58%
-//   - 2500-3999 ₽: магазин 40%, комитент 60%
-//   - 4000-6999 ₽: магазин 36%, комитент 64%
-//   - 7000-9999 ₽: магазин 34%, комитент 66%
-//   - 10000-19999 ₽: магазин 30%, комитент 70%
-//   - 20000-49999 ₽: магазин 26%, комитент 74%
-//   - от 50000 ₽:  магазин 19%, комитент 81%
+//   - 1-7000 ₽:       магазин 50%, комитент 50%
+//   - 7001-50000 ₽:   магазин 30%, комитент 70%
+//   - более 50000 ₽:  магазин 20%, комитент 80%
 //
 // Расчет производится при формировании приложения к договору для контроля
 // и валидации данных, полученных из worker_window.h.
@@ -53,20 +46,28 @@ namespace CommissionCalc {
         double clientPercent;
     };
 
-    // Расчет процентов по цене единицы товара
+    // Расчет процентов по цене единицы товара.
+    // Правила:
+    //   - 1-7000 ₽:       магазин 50%, комитент 50%
+    //   - 7001-50000 ₽:   магазин 30%, комитент 70%
+    //   - более 50000 ₽:  магазин 20%, комитент 80%
     inline CommissionRates calculateByPrice(double unitPrice) {
-        if (unitPrice >= 50000.0)       return { 19.0, 81.0 };
-        if (unitPrice >= 20000.0)       return { 26.0, 74.0 };
-        if (unitPrice >= 10000.0)       return { 30.0, 70.0 };
-        if (unitPrice >= 7000.0)        return { 34.0, 66.0 };
-        if (unitPrice >= 4000.0)        return { 36.0, 64.0 };
-        if (unitPrice >= 2500.0)        return { 40.0, 60.0 };
-        if (unitPrice >= 1000.0)        return { 42.0, 58.0 };
-        if (unitPrice >= 600.0)         return { 44.0, 56.0 };
-        if (unitPrice >= 300.0)         return { 46.0, 54.0 };
-        if (unitPrice >= 1.0)           return { 48.0, 52.0 };
+        if (unitPrice > 50000.0) return { 20.0, 80.0 };
+        if (unitPrice >= 7001.0) return { 30.0, 70.0 };
+        if (unitPrice >= 1.0) return { 50.0, 50.0 };
         return { 0.0, 0.0 };
     }
+
+    inline double calculateClientAmount(double unitPrice, int quantity) {
+        const auto rates = calculateByPrice(unitPrice);
+        return unitPrice * static_cast<double>(quantity) * rates.clientPercent / 100.0;
+    }
+
+    inline double calculateStoreAmount(double unitPrice, int quantity) {
+        const auto rates = calculateByPrice(unitPrice);
+        return unitPrice * static_cast<double>(quantity) * rates.storePercent / 100.0;
+    }
+
 }
 
 // =============================================================================
@@ -101,6 +102,8 @@ namespace ReceiptConfig {
 // ДАННЫЕ ДЛЯ ПЕЧАТИ
 // =============================================================================
 struct ReceiptItem {
+    int itemId = 0; // для записи items в PostgreSQL
+
     std::wstring description;
     std::wstring characteristic;
     int quantity = 1;
@@ -184,6 +187,78 @@ namespace ReceiptUtils {
         wchar_t buf[16];
         swprintf_s(buf, L"%02d.%02d.%04d", tm_buf.tm_mday, tm_buf.tm_mon + 1, tm_buf.tm_year + 1900);
         return buf;
+    }
+}
+
+// =============================================================================
+// ИДЕНТИФИКАТОР ШТРИХ-КОДА SHOP
+// =============================================================================
+//
+// Формат:
+//     SHOP + decimal(item_id)
+//
+// Пример:
+//     item_id = 123
+//     barcode = SHOP123
+//
+// Требования:
+// - только ASCII;
+// - Code 128 Set B;
+// - короткая строка;
+// - не содержит ФИО, цены или описания;
+// - цена и комитент НЕ являются частью идентификатора.
+//
+// ВАЖНО:
+// barcode идентифицирует строку items, а не отдельную штуку из quantity.
+// Если quantity = 5, один и тот же barcode SHOP123 может быть просканирован
+// пять раз. sold_quantity определяет количество уже проданных единиц.
+// =============================================================================
+namespace ShopBarcode {
+
+    constexpr const char* PREFIX = "SHOP";
+
+    inline std::string make(int itemId) {
+        if (itemId <= 0)
+            return std::string();
+
+        return std::string(PREFIX) + std::to_string(itemId);
+    }
+
+    inline bool isValid(const std::string& barcode) {
+        if (barcode.size() < 5)
+            return false;
+
+        if (barcode.compare(0, 4, PREFIX) != 0)
+            return false;
+
+        for (size_t i = 4; i < barcode.size(); ++i) {
+            if (barcode[i] < '0' || barcode[i] > '9')
+                return false;
+        }
+
+        return true;
+    }
+
+    inline bool tryParse(const std::string& barcode, int& itemId) {
+        itemId = 0;
+
+        if (!isValid(barcode))
+            return false;
+
+        try {
+            const std::string idText = barcode.substr(4);
+
+            long long parsed = std::stoll(idText);
+
+            if (parsed <= 0 || parsed > INT_MAX)
+                return false;
+
+            itemId = static_cast<int>(parsed);
+            return true;
+        }
+        catch (...) {
+            return false;
+        }
     }
 }
 
@@ -496,19 +571,21 @@ private:
     }
 
     static std::string buildPayload(const ReceiptData& d) {
-        std::ostringstream ss;
-        ss << "APP=" << d.appendixNumber
-            << ";ID=" << d.clientId
-            << ";FIO=" << ReceiptUtils::transliterate(d.clientFullName)
-            << ";ITEMS=";
-        for (size_t i = 0; i < d.items.size(); ++i) {
-            if (i) ss << ", ";
-            ss << ReceiptUtils::transliterate(d.items[i].description)
-                << " " << d.items[i].quantity;
-        }
-        ss << ";SUM=" << static_cast<long long>(std::llround(d.totalValue))
-            << ";PAY=" << d.totalClientAmount;
-        return ss.str();
+        // Штрих-код приложения НЕ должен содержать ФИО, цену,
+        // описание товара и другие изменяемые данные.
+        //
+        // Для приложения используется отдельный идентификатор:
+        //
+        //     SHOPAPP<appendix_number>
+        //
+        // Этот код является идентификатором документа,
+        // а не товара.
+
+        if (d.appendixNumber <= 0)
+            return std::string();
+
+        return std::string("SHOPAPP") +
+            std::to_string(d.appendixNumber);
     }
 
     static std::wstring buildRussianCaption(const ReceiptData& d) {
@@ -518,8 +595,14 @@ private:
             if (i) s += L",  ";
             s += d.items[i].description + L" —  " + std::to_wstring(d.items[i].quantity) + L" шт ";
         }
+
+        double calculatedClientAmount = 0.0;
+        for (const auto& item : d.items)
+            calculatedClientAmount +=
+            CommissionCalc::calculateClientAmount(item.price, item.quantity);
+
         s += L"; сумма:  " + ReceiptUtils::formatMoney(d.totalValue) +
-            L"; выплата комитенту:  " + ReceiptUtils::formatMoney(d.totalClientAmount);
+            L"; выплата комитенту:  " + ReceiptUtils::formatMoney(calculatedClientAmount);
         return s;
     }
 
@@ -786,11 +869,13 @@ private:
         g_logger.info(L"ReceiptPrinter: === COMMISSION CALCULATION CONTROL ===");
         double totalClientAmountCalculated = 0.0;
         double totalStoreAmountCalculated = 0.0;
+        std::vector<double> calculatedClientAmounts(d.items.size(), 0.0);
         for (size_t i = 0; i < d.items.size(); ++i) {
             const auto& item = d.items[i];
             auto rates = CommissionCalc::calculateByPrice(item.price);
-            double clientAmount = item.price * item.quantity * rates.clientPercent / 100.0;
-            double storeAmount = item.price * item.quantity * rates.storePercent / 100.0;
+            double clientAmount = CommissionCalc::calculateClientAmount(item.price, item.quantity);
+            double storeAmount = CommissionCalc::calculateStoreAmount(item.price, item.quantity);
+            calculatedClientAmounts[i] = clientAmount;
             totalClientAmountCalculated += clientAmount;
             totalStoreAmountCalculated += storeAmount;
             g_logger.info(L"ReceiptPrinter: item #" + std::to_wstring(i + 1) +
@@ -823,7 +908,7 @@ private:
             GetTextExtentPoint32W(hdc, t0.c_str(), (int)t0.size(), &szT0);
             std::wstring v1 = std::to_wstring(d.totalQty);
             std::wstring v3 = ReceiptUtils::formatMoney(d.totalValue);
-            std::wstring v5 = ReceiptUtils::formatMoney(d.totalClientAmount);
+            std::wstring v5 = ReceiptUtils::formatMoney(totalClientAmountCalculated);
             TextOutW(hdc, colX(0) + 2 + szT0.cx + mmX(3), y + 2, v1.c_str(), (int)v1.size());
             TextOutW(hdc, colX(3) + 2, y + 2, v3.c_str(), (int)v3.size());
             TextOutW(hdc, colX(5) + 2, y + 2, v5.c_str(), (int)v5.size());
@@ -857,7 +942,7 @@ private:
             std::wstring cells[6] = {
                 std::to_wstring(i + 1), it.description, it.characteristic,
                 std::to_wstring(it.quantity), ReceiptUtils::formatMoney(it.price),
-                ReceiptUtils::formatMoney(it.clientAmount)
+                ReceiptUtils::formatMoney(calculatedClientAmounts[i])
             };
             for (int c = 0; c < 6; ++c)
                 TextOutW(hdc, colX(c) + 2, y + 2, cells[c].c_str(), (int)cells[c].size());
@@ -875,7 +960,7 @@ private:
         TextOutW(hdc, colX(4) + 2, y + 2, t4.c_str(), (int)t4.size());
         std::wstring v1 = std::to_wstring(d.totalQty);
         std::wstring v3 = ReceiptUtils::formatMoney(d.totalValue);
-        std::wstring v5 = ReceiptUtils::formatMoney(d.totalClientAmount);
+        std::wstring v5 = ReceiptUtils::formatMoney(totalClientAmountCalculated);
         TextOutW(hdc, colX(1) + 2, y + 2, v1.c_str(), (int)v1.size());
         TextOutW(hdc, colX(3) + 2, y + 2, v3.c_str(), (int)v3.size());
         TextOutW(hdc, colX(5) + 2, y + 2, v5.c_str(), (int)v5.size());

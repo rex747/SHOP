@@ -15,35 +15,51 @@
 #include <ctime>
 #include <mutex>
 #include <gdiplus.h>
+
 #pragma comment(lib, "gdiplus.lib")
+
 #include "logger.h"
 #include "string_utils.h"
 #include "config.h"
 #include "receipt_printer.h"
+
 extern Logger g_logger;
 extern HINSTANCE g_hInstance;
+
 #ifndef IDR_PNG_STATUE
 #define IDR_PNG_STATUE 300
 #endif
+
 namespace PriceTagConfig {
 	constexpr int TAG_WIDTH_MM = 100;
 	constexpr int TAG_HEIGHT_MM = 50;
 	constexpr COLORREF STATUE_RED = RGB(211, 47, 47);
 	inline const wchar_t* STORE_HEADER = ReceiptConfig::STORE_NAME;
 }
+
 struct PriceTagData {
 	long long appendixNumber = 0;
+
+	// Порядковый номер ценника внутри приложения.
 	int ordinal = 0;
+
+	// Реальный ID items.id.
+	int itemId = 0;
+
 	int clientId = 0;
+
 	std::wstring clientFullName;
 	std::wstring workerFullName;
 	std::wstring description;
 	std::wstring characteristic;
 	std::wstring note;
+
 	double price = 0.0;
 	double perUnitPay = 0.0;
+
 	time_t date = 0;
 };
+
 class PriceTagPrinter {
 public:
 	static bool printForReceipt(const ReceiptData& d, const std::wstring& workerFullName) {
@@ -57,31 +73,114 @@ public:
 		ReceiptPrinter::ensureGdiplus();
 		std::vector<PriceTagData> units;
 		int ordinal = 0;
+
 		for (const auto& it : d.items) {
-			const int qty = (it.quantity > 0) ? it.quantity : 1;
+
+			const int qty =
+				(it.quantity > 0)
+				? it.quantity
+				: 1;
+
 			for (int k = 0; k < qty; ++k) {
+
 				++ordinal;
+
 				PriceTagData t;
-				t.appendixNumber = d.appendixNumber;
-				t.ordinal = ordinal;
-				t.clientId = d.clientId;
-				t.clientFullName = d.clientFullName;
-				t.workerFullName = workerFullName;
-				t.description = it.description;
-				t.characteristic = it.characteristic;
-				t.note = it.note;
-				t.price = it.price;
-				auto rates = CommissionCalc::calculateByPrice(it.price);
-				t.perUnitPay = it.price * rates.clientPercent / 100.0;
-				g_logger.info(L"PriceTagPrinter: unit #" + std::to_wstring(ordinal) +
-					L" desc='" + it.description +
-					L"', price=" + std::to_wstring(it.price) +
-					L", clientPercent=" + std::to_wstring(rates.clientPercent) +
-					L"%, perUnitPay=" + std::to_wstring(t.perUnitPay));
-				t.date = time(nullptr);
+
+				t.appendixNumber =
+					d.appendixNumber;
+
+				t.ordinal =
+					ordinal;
+
+				// =============================================================
+				// КРИТИЧЕСКО:
+				// все ценники одной позиции items используют один itemId.
+				//
+				// Например:
+				// quantity = 3
+				// itemId   = 123
+				//
+				// будут напечатаны:
+				//   SHOP123
+				//   SHOP123
+				//   SHOP123
+				//
+				// После продажи одного экземпляра:
+				// sold_quantity = 1
+				//
+				// После следующего:
+				// sold_quantity = 2
+				//
+				// Это соответствует существующей модели items.quantity.
+				// =============================================================
+
+				t.itemId =
+					it.itemId;
+
+				t.clientId =
+					d.clientId;
+
+				t.clientFullName =
+					d.clientFullName;
+
+				t.workerFullName =
+					workerFullName;
+
+				t.description =
+					it.description;
+
+				t.characteristic =
+					it.characteristic;
+
+				t.note =
+					it.note;
+
+				t.price =
+					it.price;
+
+				auto rates =
+					CommissionCalc::calculateByPrice(it.price);
+
+				t.perUnitPay =
+					it.price *
+					rates.clientPercent /
+					100.0;
+
+				t.date =
+					time(nullptr);
+
+				g_logger.info(
+					L"PriceTagPrinter: unit #" +
+					std::to_wstring(ordinal) +
+					L", itemId=" +
+					std::to_wstring(t.itemId) +
+					L", barcode=" +
+					utf8_to_wstring(
+						ShopBarcode::make(t.itemId)
+					) +
+					L", desc='" +
+					it.description +
+					L"', price=" +
+					std::to_wstring(it.price)
+				);
+				if (t.itemId <= 0) {
+					g_logger.error(
+						L"PriceTagPrinter: itemId is invalid, "
+						L"barcode cannot be generated. "
+						L"appendix=" +
+						std::to_wstring(t.appendixNumber) +
+						L", ordinal=" +
+						std::to_wstring(t.ordinal)
+					);
+
+					// Не печатаем ценник без идентификатора товара.
+					return false;
+				}
 				units.push_back(t);
 			}
 		}
+
 		g_logger.info(L"PriceTagPrinter: total units to print=" + std::to_wstring(units.size()));
 		for (const auto& t : units) {
 			std::wstring png = renderTagPreviewPng(t);
@@ -149,19 +248,29 @@ public:
 	}
 private:
 	static std::string buildTagPayload(const PriceTagData& t) {
-		std::ostringstream ss;
-		char num[64] = {};
-		ss << "FIO=" << ReceiptUtils::transliterate(t.clientFullName)
-			<< ";ID=" << t.clientId
-			<< ";NAME=" << ReceiptUtils::transliterate(t.description)
-			<< ";PRICE=";
-		sprintf_s(num, "%.2f", t.price); ss << num;
-		ss << ";PAY=";
-		sprintf_s(num, "%.2f", t.perUnitPay); ss << num;
-		const std::string payload = ss.str();
-		g_logger.info(L"PriceTagPrinter: buildTagPayload ordinal=" +
-			std::to_wstring(t.ordinal) + L", payload='" +
-			std::wstring(payload.begin(), payload.end()) + L"'");
+
+		if (t.itemId <= 0) {
+			g_logger.error(
+				L"PriceTagPrinter::buildTagPayload: "
+				L"invalid itemId=" +
+				std::to_wstring(t.itemId)
+			);
+
+			return std::string();
+		}
+
+		const std::string payload =
+			ShopBarcode::make(t.itemId);
+
+		g_logger.info(
+			L"PriceTagPrinter::buildTagPayload: "
+			L"itemId=" +
+			std::to_wstring(t.itemId) +
+			L", barcode='" +
+			std::wstring(payload.begin(), payload.end()) +
+			L"'"
+		);
+
 		return payload;
 	}
 	static std::wstring formatPriceSpaced(double v) {
@@ -366,20 +475,91 @@ private:
 		TextOutW(hdc, (mmX(PriceTagConfig::TAG_WIDTH_MM) - sz.cx) / 2, mmY(2),
 			header.c_str(), (int)header.size());
 
-		const std::string payload = buildTagPayload(t);
-		// Вычисляем размеры горизонтального штрих-кода в пикселях (через mmX/mmY)
-		int barcodeWidth = mmX(84) - mmX(16);
-		int barcodeHeight = mmY(7) - mmY(6);
-		// Горизонтальный штрих-код в верхней части ценника (зелёный прямоугольник)
-		ReceiptPrinter::drawBarcodeLine(hdc, mmX(16), mmX(84), mmY(6), mmY(7), payload);
+		const std::string payload =
+			buildTagPayload(t);
+
+		if (payload.empty()) {
+			g_logger.error(
+				L"PriceTagPrinter::renderTagDocument: "
+				L"barcode payload is empty, itemId=" +
+				std::to_wstring(t.itemId)
+			);
+
+			return;
+		}
+
+		int barcodeWidth =
+			mmX(84) - mmX(16);
+
+		int barcodeHeight =
+			mmY(7) - mmY(6);
+
+		ReceiptPrinter::drawBarcodeLine(
+			hdc,
+			mmX(16),
+			mmX(84),
+			mmY(6),
+			mmY(7),
+			payload
+		);
+
 		SelectObject(hdc, fSmall);
-		std::wstring tagStr = std::to_wstring(t.appendixNumber) + L"+" + std::to_wstring(t.ordinal);
-		GetTextExtentPoint32W(hdc, tagStr.c_str(), (int)tagStr.size(), &sz);
-		TextOutW(hdc, (mmX(PriceTagConfig::TAG_WIDTH_MM) - sz.cx) / 2, mmY(13),
-			tagStr.c_str(), (int)tagStr.size());
+
+		// Человекочитаемый номер приложения/позиции.
+		std::wstring tagStr =
+			std::to_wstring(t.appendixNumber) +
+			L"+" +
+			std::to_wstring(t.ordinal);
+
+		GetTextExtentPoint32W(
+			hdc,
+			tagStr.c_str(),
+			static_cast<int>(tagStr.size()),
+			&sz
+		);
+
+		TextOutW(
+			hdc,
+			(mmX(PriceTagConfig::TAG_WIDTH_MM) - sz.cx) / 2,
+			mmY(13),
+			tagStr.c_str(),
+			static_cast<int>(tagStr.size())
+		);
+
+		// Человекочитаемый barcode.
+		// Он должен совпадать с тем, что фактически закодировано.
+		const std::string barcode =
+			ShopBarcode::make(t.itemId);
+
+		std::wstring barcodeText =
+			utf8_to_wstring(barcode);
+
+		GetTextExtentPoint32W(
+			hdc,
+			barcodeText.c_str(),
+			static_cast<int>(barcodeText.size()),
+			&sz
+		);
+
+		TextOutW(
+			hdc,
+			(mmX(PriceTagConfig::TAG_WIDTH_MM) - sz.cx) / 2,
+			mmY(15),
+			barcodeText.c_str(),
+			static_cast<int>(barcodeText.size())
+		);
 		// Вертикальный штрих-код в правой части ценника (красный прямоугольник)
 		// Штрих-код повёрнут на 90° по часовой стрелке
-		drawBarcodeVertical(hdc, mmX(92), mmY(6), mmY(44), mmX(5), payload, barcodeWidth, barcodeHeight);
+		drawBarcodeVertical(
+			hdc, 
+			mmX(92), 
+			mmY(6), 
+			mmY(44), 
+			mmX(5), 
+			payload, 
+			barcodeWidth, 
+			barcodeHeight
+		);
 		SelectObject(hdc, fLbl);
 		TextOutW(hdc, mmX(3), mmY(17), L"Номер товара", (int)wcslen(L"Номер товара"));
 		SelectObject(hdc, fVal);
