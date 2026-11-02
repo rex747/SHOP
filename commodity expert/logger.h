@@ -1,7 +1,6 @@
 // logger.h
 #pragma once
-
-#include<Windows.h>
+#include <Windows.h>
 #include <string>
 #include <fstream>
 #include <mutex>
@@ -13,6 +12,7 @@
 #ifdef ERROR
 #undef ERROR
 #endif
+
 enum class LogLevel {
     DEBUG,
     INFO,
@@ -41,15 +41,11 @@ private:
     std::wstring getCurrentTimestamp() const {
         auto now = std::chrono::system_clock::now();
         auto time_t_now = std::chrono::system_clock::to_time_t(now);
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch()) % 1000;
-
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
         std::wstringstream ss;
-
         struct tm timeinfo;
         localtime_s(&timeinfo, &time_t_now);
         ss << std::put_time(&timeinfo, L"%Y-%m-%d %H:%M:%S");
-
         ss << L"." << std::setfill(L'0') << std::setw(3) << ms.count();
         return ss.str();
     }
@@ -59,23 +55,24 @@ private:
         fs::path logPath(m_logFile);
         std::error_code ec;
 
-        // Проверяем существование без исключений
-        if (fs::exists(logPath, ec)) {
-            // Если ошибка при проверке – пропускаем ротацию
-            if (ec) return;
-
+        if (fs::exists(logPath, ec) && !ec) {
             auto size = fs::file_size(logPath, ec);
-            if (ec) return; // ошибка – пропускаем
-
-            if (size > 10 * 1024 * 1024) {
+            if (!ec && size > 10 * 1024 * 1024) { // 10 MB
                 auto now = std::chrono::system_clock::now();
-                auto timestamp = std::chrono::system_clock::to_time_t(now);
+                auto time_t_now = std::chrono::system_clock::to_time_t(now);
+                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+
+                // ИСПРАВЛЕНИЕ: Добавлены миллисекунды для гарантии уникальности имени файла
                 std::wstringstream backupName;
                 backupName << logPath.parent_path() << L"\\"
                     << logPath.stem().c_str() << L"_"
-                    << timestamp << L".log";
+                    << time_t_now << L"_" << ms.count() << L".log";
+
                 fs::rename(logPath, backupName.str(), ec);
-                // Ошибка переименования игнорируется – лог останется старым
+                if (ec) {
+                    // Если переименование не удалось, логируем ошибку, но не прерываем работу
+                    // (например, файл заблокирован антивирусом)
+                }
             }
         }
     }
@@ -83,10 +80,8 @@ private:
 public:
     Logger(const std::wstring& logFile, LogLevel minLevel = LogLevel::INFO)
         : m_logFile(logFile), m_minLevel(minLevel) {
-        // Ensure directory exists – не бросаем исключения
         std::error_code ec;
         std::filesystem::create_directories(std::filesystem::path(logFile).parent_path(), ec);
-        // ec игнорируем – если не удалось создать, запись в файл просто не сработает
     }
 
     void log(LogLevel level, const std::wstring& message) {
@@ -102,11 +97,8 @@ public:
                 << message << std::endl;
         }
 
-        // Also output to debug console
 #ifdef _DEBUG
-        OutputDebugStringW((getCurrentTimestamp() + L" " +
-            getLogLevelString(level) + L" " +
-            message + L"\n").c_str());
+        OutputDebugStringW((getCurrentTimestamp() + L" " + getLogLevelString(level) + L" " + message + L"\n").c_str());
 #endif
     }
 

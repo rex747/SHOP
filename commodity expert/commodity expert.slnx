@@ -1,0 +1,10 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="../cashier_client/cashier_client.vcxproj" Id="350aa8bd-0f0a-4fed-b6d3-411cfda74687" />
+  <Project Path="../client/client.vcxproj" Id="89ee23b4-99d2-4f42-93a7-09a5e192e073" />
+  <Project Path="../server/server.vcxproj" Id="e45e5e94-986d-4f52-9e1b-fb5525583929" />
+  <Project Path="commodity expert.vcxproj" Id="0bf3301c-3982-4c2b-996a-c527b86bfb95" />
+</Solution>

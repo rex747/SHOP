@@ -60,7 +60,7 @@ using json = nlohmann::json;
 #define WM_DISPLAY_ERROR        (WM_APP + 101)
 
 namespace DisplayConfig {
-    constexpr bool DEBUG_MODE = true;
+    constexpr bool DEBUG_MODE = false;
     constexpr int POLL_INTERVAL_MS = 2000;
     constexpr COLORREF BG_COLOR = RGB(0, 0, 40);
     constexpr COLORREF HEADER_COLOR = RGB(255, 255, 0);
@@ -114,7 +114,7 @@ private:
     std::mutex m_spokenMutex;
 
     // Флаг начальной синхронизации
-    bool m_initialSyncDone = false;
+    std::atomic<bool> m_initialSyncDone{ false };
 
     ISpVoice* m_pVoice = nullptr;
 
@@ -139,6 +139,8 @@ private:
             g_logger.error(L"QueueDisplayWindow: TTS initialization failed, hr=" +
                 std::to_wstring(hr));
             m_pVoice = nullptr;
+            CoUninitialize();   // <-- откат, если голос не создан
+
         }
     }
 
@@ -229,10 +231,7 @@ private:
         snapshot.valid = true;
         snapshot.serverTimestamp = response.value("timestamp", (int64_t)0);
 
-        struct QueueMapping {
-            const char* id;
-            const wchar_t* displayName;
-        };
+        struct QueueMapping { const char* id; const wchar_t* displayName; };
         static const QueueMapping mappings[] = {
             { "general",    L"Общая очередь (до 20 позиций)" },
             { "first_time", L"Первый раз (оформление договора)" },
@@ -242,55 +241,68 @@ private:
             { "expensive",  L"Дорогой товар (>5000 руб.)" }
         };
 
-        const json& queuesJson = response["queues"];
-        for (const auto& mapping : mappings) {
-            DisplayQueue dq;
-            dq.queueId = utf8_to_wstring(mapping.id);
-            dq.displayName = mapping.displayName;
+        try {
+            const json& queuesJson = response.at("queues");
+            for (const auto& mapping : mappings) {
+                DisplayQueue dq;
+                dq.queueId = utf8_to_wstring(mapping.id);
+                dq.displayName = mapping.displayName;
 
-            if (queuesJson.contains(mapping.id)) {
-                const auto& q = queuesJson[mapping.id];
+                if (queuesJson.contains(mapping.id)) {
+                    const auto& q = queuesJson.at(mapping.id);
 
-                // =================================================================
-                // ИСПРАВЛЕНИЕ: для ожидающих талонов сохраняем created_at в acceptedAt
-                // =================================================================
-                if (q.contains("waiting") && q["waiting"].is_array()) {
-                    for (const auto& t : q["waiting"]) {
-                        DisplayTicket dt;
-                        dt.ticketNumber = utf8_to_wstring(
-                            t.value("ticket_number", std::string("")));
-                        dt.clientId = t.value("client_id", 0);
-                        dt.windowNumber = utf8_to_wstring(
-                            t.value("window_number", std::string("1")));
-                        dt.position = t.value("position", 0);
-                        // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: читаем created_at и сохраняем в acceptedAt
-                        dt.acceptedAt = t.value("created_at", (int64_t)0);
-                        if (!dt.ticketNumber.empty()) {
-                            dq.waiting.push_back(dt);
-                            g_logger.info(L"parseDisplayResponse: waiting ticket " +
-                                dt.ticketNumber + L" created_at=" +
-                                std::to_wstring(dt.acceptedAt));
+                    if (q.contains("waiting") && q["waiting"].is_array()) {
+                        for (const auto& t : q["waiting"]) {
+                            DisplayTicket dt;
+                            dt.ticketNumber = utf8_to_wstring(
+                                t.value("ticket_number", std::string("")));
+                            dt.clientId = t.value("client_id", 0);
+                            dt.windowNumber = utf8_to_wstring(
+                                t.value("window_number", std::string("1")));
+                            dt.position = t.value("position", 0);
+                            dt.acceptedAt = t.value("created_at", (int64_t)0);
+                            if (!dt.ticketNumber.empty()) {
+                                dq.waiting.push_back(dt);
+                                g_logger.info(L"parseDisplayResponse: waiting ticket " +
+                                    dt.ticketNumber + L" created_at=" +
+                                    std::to_wstring(dt.acceptedAt));
+                            }
+                        }
+                    }
+
+                    if (q.contains("accepted") && q["accepted"].is_array()) {
+                        for (const auto& t : q["accepted"]) {
+                            DisplayTicket dt;
+                            dt.ticketNumber = utf8_to_wstring(
+                                t.value("ticket_number", std::string("")));
+                            dt.clientId = t.value("client_id", 0);
+                            dt.windowNumber = utf8_to_wstring(
+                                t.value("window_number", std::string("1")));
+                            dt.acceptedAt = t.value("accepted_at", (int64_t)0);
+                            if (!dt.ticketNumber.empty()) {
+                                dq.accepted.push_back(dt);
+                            }
                         }
                     }
                 }
-
-                if (q.contains("accepted") && q["accepted"].is_array()) {
-                    for (const auto& t : q["accepted"]) {
-                        DisplayTicket dt;
-                        dt.ticketNumber = utf8_to_wstring(
-                            t.value("ticket_number", std::string("")));
-                        dt.clientId = t.value("client_id", 0);
-                        dt.windowNumber = utf8_to_wstring(
-                            t.value("window_number", std::string("1")));
-                        dt.acceptedAt = t.value("accepted_at", (int64_t)0);
-                        if (!dt.ticketNumber.empty()) {
-                            dq.accepted.push_back(dt);
-                        }
-                    }
-                }
+                snapshot.queues.push_back(dq);
             }
-            snapshot.queues.push_back(dq);
         }
+        catch (const json::exception& e) {
+            g_logger.error(L"parseDisplayResponse: JSON exception: " +
+                utf8_to_wstring(e.what()));
+            snapshot.valid = false;
+        }
+        catch (const std::exception& e) {
+            g_logger.error(L"parseDisplayResponse: std::exception: " +
+                utf8_to_wstring(e.what()));
+            snapshot.valid = false;
+        }
+        catch (...) {
+            g_logger.error(L"parseDisplayResponse: unknown exception");
+            snapshot.valid = false;
+        }
+
         g_logger.info(L"parseDisplayResponse: parsed " +
             std::to_wstring(snapshot.queues.size()) + L" queues");
         return snapshot;
@@ -307,9 +319,8 @@ private:
         }
         if (!snapshotCopy.valid) return;
 
-        bool isFirstSync = !m_initialSyncDone;
+        const bool isFirstSync = !m_initialSyncDone.exchange(true);
         if (isFirstSync) {
-            m_initialSyncDone = true;
             g_logger.info(L"QueueDisplayWindow: INITIAL SYNC detected - "
                 L"TTS suppressed for all pre-existing accepted tickets");
         }
@@ -422,8 +433,8 @@ private:
         // =====================================================================
         struct UnifiedTicket {
             std::wstring displayName;   // тип очереди (человекочитаемый)
-            std::wstring ticketNumber;
-            int64_t createdAt;          // время создания (created_at из сервера)
+            std::wstring ticketNumber{};
+            int64_t createdAt{};          // время создания (created_at из сервера)
         };
         std::vector<UnifiedTicket> unified;
 
@@ -671,6 +682,7 @@ private:
                 pThis->m_pollThread.join();
             }
             pThis->releaseResources();
+            CoUninitialize();
             PostQuitMessage(0);
             g_logger.info(L"QueueDisplayWindow: WM_DESTROY");
             return 0;

@@ -1,5 +1,4 @@
-﻿// login_window.h (МОДИФИЦИРОВАННАЯ ВЕРСИЯ С ПОДДЕРЖКОЙ ПАРОЛЕЙ)
-#pragma once
+﻿#pragma once
 #include <windows.h>
 #include <commctrl.h>
 #include <string>
@@ -53,7 +52,7 @@ private:
     HWND  m_hEyeBtn;          // кнопка-"глаз" показа/скрытия пароля
     bool  m_passwordVisible;  // true = пароль отображается открытым текстом
     WCHAR m_passwordChar;     // исходный маскирующий символ поля (для точного восстановления)
-    
+
     HWND m_hStatusLabel;
     HWND m_hSubmitBtn;
     std::vector<HWND> m_allKeyButtons;
@@ -141,56 +140,56 @@ private:
         LoginWindow* pThis = nullptr;
         if (msg == WM_CREATE) {
             CREATESTRUCTW* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
-			g_logger.info(L"LoginWindow: WM_CREATE received, lpCreateParams=" + std::to_wstring((LONG_PTR)cs->lpCreateParams));
+            g_logger.info(L"LoginWindow: WM_CREATE received, lpCreateParams=" + std::to_wstring((LONG_PTR)cs->lpCreateParams));
             pThis = reinterpret_cast<LoginWindow*>(cs->lpCreateParams);
-			g_logger.info(L"LoginWindow: WM_CREATE, pThis=" + std::to_wstring((LONG_PTR)pThis));
+            g_logger.info(L"LoginWindow: WM_CREATE, pThis=" + std::to_wstring((LONG_PTR)pThis));
             SetWindowLongPtrW(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
-			g_logger.info(L"LoginWindow: WM_CREATE, GWLP_USERDATA set to " + std::to_wstring((LONG_PTR)pThis));
+            g_logger.info(L"LoginWindow: WM_CREATE, GWLP_USERDATA set to " + std::to_wstring((LONG_PTR)pThis));
             pThis->m_hWnd = hWnd;
-			g_logger.info(L"LoginWindow: WM_CREATE, m_hWnd set to " + std::to_wstring((LONG_PTR)pThis->m_hWnd));
+            g_logger.info(L"LoginWindow: WM_CREATE, m_hWnd set to " + std::to_wstring((LONG_PTR)pThis->m_hWnd));
             pThis->createControls();
-			g_logger.info(L"LoginWindow: createControls() completed");
+            g_logger.info(L"LoginWindow: createControls() completed");
             g_logger.info(L"LoginWindow: WM_CREATE processed");
             return 0;
         }
         pThis = reinterpret_cast<LoginWindow*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
-		g_logger.info(L"LoginWindow: WndProc called, msg=" + std::to_wstring(msg) + L", pThis=" + std::to_wstring((LONG_PTR)pThis));
+        g_logger.info(L"LoginWindow: WndProc called, msg=" + std::to_wstring(msg) + L", pThis=" + std::to_wstring((LONG_PTR)pThis));
         if (!pThis) return DefWindowProcW(hWnd, msg, wParam, lParam);
-		g_logger.info(L"LoginWindow: WndProc, pThis is valid, processing message " + std::to_wstring(msg));
+        g_logger.info(L"LoginWindow: WndProc, pThis is valid, processing message " + std::to_wstring(msg));
         switch (msg) {
-			g_logger.info(L"LoginWindow: WndProc, processing message " + std::to_wstring(msg));
-            case WM_COMMAND: 
-                pThis->onCommand(wParam); 
-				g_logger.info(L"LoginWindow: WM_COMMAND processed");
-                return 0;
-            case WM_CTLCOLORBTN: 
-                return pThis->onCtlColorBtn((HDC)wParam, (HWND)lParam);
-				g_logger.log(LogLevel::DEBUG, L"LoginWindow: WM_CTLCOLORBTN processed");
-            case WM_CTLCOLORSTATIC: 
-                return pThis->onCtlColorStatic((HDC)wParam);
-				g_logger.log(LogLevel::DEBUG, L"LoginWindow: WM_CTLCOLORSTATIC processed");
-            case WM_CTLCOLOREDIT: 
-                return pThis->onCtlColorEdit((HDC)wParam, (HWND)lParam);
-				g_logger.log(LogLevel::DEBUG, L"LoginWindow: WM_CTLCOLOREDIT processed");
-            case WM_LOGIN_RESULT: 
-                pThis->onLoginResult(); 
-				g_logger.log(LogLevel::DEBUG, L"LoginWindow: WM_LOGIN_RESULT processed");
-                return 0;
-            case WM_TIMER:
-                if (wParam == TIMER_ID_CLOSE) {
-                    KillTimer(hWnd, TIMER_ID_CLOSE);
-                    g_logger.info(L"LoginWindow: timer fired, destroying window");
-                    DestroyWindow(hWnd);
-                }
-                return 0;
-            case WM_CLOSE:
-                g_logger.info(L"LoginWindow: WM_CLOSE received");
+            g_logger.info(L"LoginWindow: WndProc, processing message " + std::to_wstring(msg));
+        case WM_COMMAND:
+            pThis->onCommand(wParam);
+            g_logger.info(L"LoginWindow: WM_COMMAND processed");
+            return 0;
+        case WM_CTLCOLORBTN:
+            return pThis->onCtlColorBtn((HDC)wParam, (HWND)lParam);
+            g_logger.log(LogLevel::DEBUG, L"LoginWindow: WM_CTLCOLORBTN processed");
+        case WM_CTLCOLORSTATIC:
+            return pThis->onCtlColorStatic((HDC)wParam);
+            g_logger.log(LogLevel::DEBUG, L"LoginWindow: WM_CTLCOLORSTATIC processed");
+        case WM_CTLCOLOREDIT:
+            return pThis->onCtlColorEdit((HDC)wParam, (HWND)lParam);
+            g_logger.log(LogLevel::DEBUG, L"LoginWindow: WM_CTLCOLOREDIT processed");
+        case WM_LOGIN_RESULT:
+            pThis->onLoginResult();
+            g_logger.log(LogLevel::DEBUG, L"LoginWindow: WM_LOGIN_RESULT processed");
+            return 0;
+        case WM_TIMER:
+            if (wParam == TIMER_ID_CLOSE) {
+                KillTimer(hWnd, TIMER_ID_CLOSE);
+                g_logger.info(L"LoginWindow: timer fired, destroying window");
                 DestroyWindow(hWnd);
-                return 0;
-            case WM_DESTROY:
-                g_logger.info(L"LoginWindow: WM_DESTROY, releasing resources");
-                pThis->releaseResources();
-                return 0;
+            }
+            return 0;
+        case WM_CLOSE:
+            g_logger.info(L"LoginWindow: WM_CLOSE received");
+            DestroyWindow(hWnd);
+            return 0;
+        case WM_DESTROY:
+            g_logger.info(L"LoginWindow: WM_DESTROY, releasing resources");
+            pThis->releaseResources();
+            return 0;
         }
         return DefWindowProcW(hWnd, msg, wParam, lParam);
     }
@@ -232,7 +231,7 @@ private:
         m_hPasswordEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL | ES_PASSWORD,
             centerX + 20, startY, 150, 40, m_hWnd, nullptr, g_hInstance, nullptr);
         SendMessageW(m_hPasswordEdit, WM_SETFONT, (WPARAM)m_hFontEdit, TRUE);
-                
+
         m_hEyeBtn = CreateWindowExW(0, L"BUTTON", L"👁",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_NOTIFY,
             centerX + 175, startY, 45, 40, m_hWnd, (HMENU)(INT_PTR)ID_KEY_EYE, g_hInstance, nullptr);
@@ -394,9 +393,9 @@ private:
             return;
         }
         // === кнопка-"глаз" — показать/скрыть пароль ===
-        if (cmd == ID_KEY_EYE) { 
-            onTogglePasswordVisibility(); 
-            return; 
+        if (cmd == ID_KEY_EYE) {
+            onTogglePasswordVisibility();
+            return;
         }
         if ((cmd >= ID_KEY_1 && cmd <= ID_KEY_CLEAR) ||
             (cmd >= ID_KEY_A && cmd <= ID_KEY_Z) ||
@@ -698,7 +697,7 @@ private:
                 }
 
                 WorkerRegistrationWindow regWnd(m_normalizedPhone, registrationRole);
-                
+
                 int result = regWnd.show(m_hWnd);
                 if (result == IDOK) {
                     g_logger.info(L"LoginWindow: registration successful, performing auto-login for " + m_normalizedPhone);

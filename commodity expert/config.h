@@ -1,9 +1,11 @@
 ﻿// config.h
 #pragma once
-
 #include <string>
 #include <filesystem>
 #include <shlobj.h>
+
+// Предупреждение для сборщика о хардкоде паролей в продакшене
+#pragma message("WARNING: Hardcoded credentials detected in config.h. Move to secure storage (e.g., Windows DPAPI or env vars) for production.")
 
 namespace Config {
     // Server configuration
@@ -16,12 +18,12 @@ namespace Config {
     constexpr int DB_PORT = 5432;
     constexpr const wchar_t* DB_NAME = L"kiosk_db";
     constexpr const wchar_t* DB_USER = L"kiosk_user";
-    constexpr const wchar_t* DB_PASSWORD = L"secure_password_here";
+    constexpr const wchar_t* DB_PASSWORD = L"secure_password_here"; // TODO: Вынести в защищенное хранилище
 
     // 1C Integration
     constexpr const wchar_t* ONEC_BASE_URL = L"http://1c-server:1550/hs/exchange";
     constexpr const wchar_t* ONEC_USER = L"1c_user";
-    constexpr const wchar_t* ONEC_PASSWORD = L"1c_password";
+    constexpr const wchar_t* ONEC_PASSWORD = L"1c_password"; // TODO: Вынести в защищенное хранилище
 
     // Terminal settings
     constexpr int MAX_ITEMS_GENERAL_QUEUE = 20;
@@ -41,8 +43,7 @@ namespace Config {
     // Paths
     inline std::wstring getAppDataPath() {
         wchar_t path[MAX_PATH];
-        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA,
-            nullptr, 0, path))) {
+        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, path))) {
             return std::wstring(path) + L"\\TerminalKiosk";
         }
         return L"C:\\TerminalKiosk";
@@ -64,29 +65,20 @@ namespace Config {
     }
 
     // ФОРМАТ: { телефон_товароведа, номер_окна }
-    // Телефоны указаны в формате +7XXXXXXXXXX (как возвращает сервер).
-    //
-    // ВАЖНО: Замените телефоны ниже на реальные телефоны ваших 6 товароведов.
-    // =========================================================================
     struct WorkerWindowMapping {
         const wchar_t* phone;
         int windowNumber;
     };
 
-    // Массив из 6 записей: телефон товароведа → номер окна
     static constexpr WorkerWindowMapping WORKER_WINDOW_MAP[] = {
-        { L"+79991001010", 1 },   // Товаровед 1 Голикова → Окно 1
-        { L"+79991001011", 2 },   // Товаровед 2 Куликова → Окно 2
-        { L"+78881001010", 3 },   // Товаровед 3 Каталова → Окно 3
-        { L"+79000000004", 4 },   // Товаровед 4 → Окно 4
-        { L"+79000000005", 5 },   // Товаровед 5 → Окно 5
-        { L"+79000000006", 6 },   // Товаровед 6 → Окно 6
+        { L"+79991001010", 1 },
+        { L"+79991001011", 2 },
+        { L"+78881001010", 3 },
+        { L"+79000000004", 4 },
+        { L"+79000000005", 5 },
+        { L"+79000000006", 6 },
     };
 
-    // Количество записей в маппинге
     static constexpr int WORKER_WINDOW_MAP_SIZE = 6;
-
-    // Номер окна по умолчанию (если телефон не найден в маппинге)
     static constexpr int DEFAULT_WINDOW_NUMBER = 1;
-
 }

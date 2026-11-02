@@ -133,13 +133,18 @@ private:
         wchar_t buf[32];
         swprintf_s(buf, L"%d / %d", len, DirectorConfig::MAX_BLOCK_REASON_LENGTH);
         SetWindowTextW(m_hCharCountLabel, buf);
-        // Меняем цвет счётчика, если превышен лимит
-        if (len >= DirectorConfig::MAX_BLOCK_REASON_LENGTH) {
-            SetTextColor(GetDC(m_hCharCountLabel), DirectorConfig::DANGER_COLOR);
+
+        HDC hdc = GetDC(m_hCharCountLabel);
+        if (hdc) {
+            if (len >= DirectorConfig::MAX_BLOCK_REASON_LENGTH) {
+                SetTextColor(hdc, DirectorConfig::DANGER_COLOR);
+            }
+            else {
+                SetTextColor(hdc, RGB(0, 0, 0));
+            }
+            ReleaseDC(m_hCharCountLabel, hdc);
         }
-        else {
-            SetTextColor(GetDC(m_hCharCountLabel), RGB(0, 0, 0));
-        }
+        InvalidateRect(m_hCharCountLabel, nullptr, TRUE);
     }
     // =====================================================================
     // Оконная процедура диалога
@@ -167,8 +172,9 @@ private:
             }
             // Кнопка "Заблокировать" (OK)
             if (id == 1 && code == BN_CLICKED) {
-                wchar_t buf[1024];
-                GetWindowTextW(pThis->m_hEdit, buf, 1024);
+                wchar_t buf[1024] = { 0 };
+                GetWindowTextW(pThis->m_hEdit, buf, _countof(buf));
+                buf[_countof(buf) - 1] = L'\0';
                 pThis->m_reason = buf;
                 pThis->m_confirmed = true;
                 DestroyWindow(hWnd);
@@ -589,9 +595,12 @@ private:
         int listY = pt.y + 10;
         int listWidth = rc.right - rc.left - 20;
         int listHeight = rc.bottom - rc.top - 40;
-        g_logger.info(L"DirectorWindow: createClientsListView - final position: " +
+
+        std::wstring logMsg = L"DirectorWindow: createClientsListView - final position: " +
             std::to_wstring(listX) + L"," + std::to_wstring(listY) +
-            L", size: " + std::to_wstring(listWidth) + L"x" + std::to_wstring(listHeight));
+            L", size: " + std::to_wstring(listWidth) + L"x" + std::to_wstring(listHeight);
+        g_logger.info(logMsg);
+
         m_hClientsList = CreateWindowExW(
             WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
             WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
@@ -823,6 +832,9 @@ private:
         std::wstring authToken = g_authManager.getAuthToken();
         if (authToken.empty()) {
             g_logger.error(L"DirectorWindow: auth token is empty");
+            m_isLoading = false;                // <-- ДОБАВЛЕНО
+            EnableWindow(m_hRefreshBtn, TRUE);  // <-- ДОБАВЛЕНО
+            SetWindowTextW(m_hStatusLabel, L"Ошибка авторизации. Токен отсутствует.");
             PostMessageW(m_hWnd, WM_DIRECTOR_ERROR, 0, (LPARAM)L"Ошибка авторизации. Токен отсутствует.");
             return;
         }
@@ -1153,12 +1165,17 @@ private:
         item.iSubItem = 0;
         ListView_GetItem(m_hClientsList, &item);
         m_selectedClientId = static_cast<int>(item.lParam);
-        wchar_t phoneBuf[50];
-        ListView_GetItemText(m_hClientsList, selectedIndex, 1, phoneBuf, 50);
+        
+        wchar_t phoneBuf[50] = { 0 };
+        ListView_GetItemText(m_hClientsList, selectedIndex, 1, phoneBuf, _countof(phoneBuf));
+        phoneBuf[_countof(phoneBuf) - 1] = L'\0';
         m_selectedClientPhone = phoneBuf;
-        wchar_t statusBuf[50];
-        ListView_GetItemText(m_hClientsList, selectedIndex, 10, statusBuf, 50);
+        
+        wchar_t statusBuf[50] = { 0 };
+        ListView_GetItemText(m_hClientsList, selectedIndex, 10, statusBuf, _countof(statusBuf));
+        statusBuf[_countof(statusBuf) - 1] = L'\0';
         bool isBlocked = (std::wstring(statusBuf).find(L"ЗАБЛОКИРОВАН") != std::wstring::npos);
+
         EnableWindow(m_hBlockBtn, !isBlocked);
         EnableWindow(m_hUnblockBtn, isBlocked);
         g_logger.info(L"DirectorWindow: client selected - id=" +

@@ -10,7 +10,6 @@
 #include "config.h"
 
 extern Logger g_logger;
-
 using json = nlohmann::json;
 
 class HTTPSClient {
@@ -19,7 +18,7 @@ private:
     std::wstring m_serverName;
     INTERNET_PORT m_port;
 
-    std::string wstring_to_utf8(const std::wstring& wstr) {
+    [[nodiscard]] std::string wstring_to_utf8(const std::wstring& wstr) const {
         if (wstr.empty()) return std::string();
         int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
         std::string strTo(size_needed, 0);
@@ -27,7 +26,7 @@ private:
         return strTo;
     }
 
-    std::wstring utf8_to_wstring(const std::string& str) {
+    [[nodiscard]] std::wstring utf8_to_wstring(const std::string& str) const {
         if (str.empty()) return std::wstring();
         int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
         std::wstring wstrTo(size_needed, 0);
@@ -53,35 +52,12 @@ public:
         }
     }
 
-    // =========================================================================
-    // ИСПРАВЛЕННЫЙ МЕТОД initialize()
-    // =========================================================================
-    // ПРИЧИНА ИСПРАВЛЕНИЯ:
-    // 1. WINHTTP_OPTION_SECURE_PROTOCOLS должен устанавливаться ТОЛЬКО на
-    //    session handle (m_hSession), а НЕ на request handle (hRequest).
-    //    Установка на hRequest вызывает ошибку 12018
-    //    (ERROR_WINHTTP_INCORRECT_HANDLE_TYPE) и TLS 1.2 не включается
-    //    принудительно, что приводит к нестабильному TLS-рукопожатию.
-    //
-    // 2. WinHttpSetTimeouts вызывается ОДИН РАЗ при инициализации сессии.
-    //    Ранее setTimeouts() вызывался при КАЖДОМ запросе из РАЗНЫХ потоков
-    //    (фоновый поток обновления очереди, асинхронная загрузка товаров,
-    //    асинхронное сохранение товаров), что создавало гонку за m_hSession
-    //    и приводило к обрыву TLS-рукопожатия (stream truncated) и
-    //    таймаутам (12002).
-    // =========================================================================
     bool initialize() {
         if (!m_hSession) {
             g_logger.error(L"HTTPSClient::initialize() failed: session is null.");
             return false;
         }
 
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ 1: Принудительное включение TLS 1.2 на уровне СЕССИИ.
-        // WINHTTP_OPTION_SECURE_PROTOCOLS устанавливается на m_hSession,
-        // а НЕ на hRequest. Это гарантирует, что все запросы через данную
-        // сессию будут использовать TLS 1.2.
-        // =====================================================================
         DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
         if (!WinHttpSetOption(m_hSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols))) {
             DWORD err = GetLastError();
@@ -91,27 +67,14 @@ public:
         }
         g_logger.info(L"HTTPSClient::initialize() - TLS 1.2 enforced on session handle successfully.");
 
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ 2: Установка таймаутов ОДИН РАЗ при инициализации.
-        // Ранее setTimeouts() вызывался при каждом запросе из разных потоков,
-        // что создавало гонку за m_hSession. Теперь таймауты устанавливаются
-        // один раз, и конкурентный доступ к m_hSession для изменения
-        // параметров исключён.
-        // =====================================================================
         if (!setTimeouts()) {
             g_logger.error(L"HTTPSClient::initialize() - setTimeouts() failed.");
             return false;
         }
         g_logger.info(L"HTTPSClient::initialize() - Timeouts configured: resolve=5000, connect=10000, send=10000, receive=10000 ms.");
-
-        g_logger.info(L"HTTPSClient::initialize() succeeded.");
         return true;
     }
 
-    // =========================================================================
-    // Метод установки таймаутов.
-    // Вызывается ТОЛЬКО из initialize() для исключения гонки потоков.
-    // =========================================================================
     bool setTimeouts(DWORD resolveTimeout = 5000, DWORD connectTimeout = 10000,
         DWORD sendTimeout = 10000, DWORD receiveTimeout = 10000) {
         if (!m_hSession) {
@@ -126,11 +89,7 @@ public:
         return true;
     }
 
-    // =========================================================================
-    // POST-запрос
-    // =========================================================================
-    std::optional<json> post(const std::wstring& path, const json& requestBody,
-        const std::wstring& authToken = L"") {
+    std::optional<json> post(const std::wstring& path, const json& requestBody, const std::wstring& authToken = L"") {
         if (!m_hSession) {
             g_logger.error(L"HTTP Session is not initialized");
             return std::nullopt;
@@ -138,15 +97,11 @@ public:
 
         std::string utf8Body = requestBody.dump();
         g_logger.info(L"Preparing POST request to: " + path);
-        g_logger.info(L"Request body size: " + std::to_wstring(utf8Body.length()) + L" bytes");
 
         std::wstring headers = L"Content-Type: application/json\r\n";
         if (!authToken.empty()) {
             headers += L"Authorization: Bearer " + authToken + L"\r\n";
-            g_logger.info(L"Added Authorization header (Bearer token).");
         }
-
-        g_logger.info(L"Connecting to: https://" + m_serverName + L":" + std::to_wstring(m_port) + path);
 
         HINTERNET hConnect = WinHttpConnect(m_hSession, m_serverName.c_str(), m_port, 0);
         if (!hConnect) {
@@ -163,35 +118,15 @@ public:
             return std::nullopt;
         }
 
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ: Убрана установка WINHTTP_OPTION_SECURE_PROTOCOLS на
-        // hRequest. TLS 1.2 теперь принудительно включён на уровне СЕССИИ
-        // в методе initialize(). Установка на hRequest вызывала ошибку 12018
-        // и не обеспечивала корректное TLS-рукопожатие.
-        // =====================================================================
-
-        // Игнорирование ошибок сертификата (для самоподписанных сертификатов)
-        DWORD dwFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
-            SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
-            SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-            SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
-        if (!WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwFlags, sizeof(dwFlags))) {
-            g_logger.warning(L"WinHttpSetOption (SECURITY_FLAGS) failed: " + std::to_wstring(GetLastError()));
-        }
-
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ: Убран вызов setTimeouts() из метода post().
-        // Таймауты установлены ОДИН РАЗ в initialize(). Вызов из разных
-        // потоков создавал гонку за m_hSession и приводил к обрыву
-        // TLS-рукопожатия.
-        // =====================================================================
+        DWORD dwFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+            SECURITY_FLAG_IGNORE_CERT_DATE_INVALID | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwFlags, sizeof(dwFlags));
 
         if (!WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.length(),
             (LPVOID)utf8Body.c_str(), (DWORD)utf8Body.length(),
             (DWORD)utf8Body.length(), 0)) {
             DWORD err = GetLastError();
-            g_logger.error(L"WinHttpSendRequest failed: " + std::to_wstring(err) +
-                L" (path: " + path + L")");
+            g_logger.error(L"WinHttpSendRequest failed: " + std::to_wstring(err) + L" (path: " + path + L")");
             WinHttpCloseHandle(hRequest);
             WinHttpCloseHandle(hConnect);
             return std::nullopt;
@@ -199,11 +134,31 @@ public:
 
         if (!WinHttpReceiveResponse(hRequest, NULL)) {
             DWORD err = GetLastError();
-            g_logger.error(L"WinHttpReceiveResponse failed: " + std::to_wstring(err) +
-                L" (path: " + path + L")");
+            g_logger.error(L"WinHttpReceiveResponse failed: " + std::to_wstring(err) + L" (path: " + path + L")");
             WinHttpCloseHandle(hRequest);
             WinHttpCloseHandle(hConnect);
             return std::nullopt;
+        }
+
+        // ИСПРАВЛЕНИЕ: Проверка HTTP статуса ответа
+        DWORD statusCode = 0;
+        DWORD statusCodeSize = sizeof(statusCode);
+
+        bool haveStatus = WinHttpQueryHeaders(
+            hRequest,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            &statusCode,
+            &statusCodeSize,
+            WINHTTP_NO_HEADER_INDEX
+        ) == TRUE;
+
+        if (haveStatus && statusCode != HTTP_STATUS_OK) {
+            g_logger.warning(
+                L"HTTP POST returned non-200 status: " +
+                std::to_wstring(statusCode) +
+                L" (path: " + path + L")"
+            );
         }
 
         std::string responseText;
@@ -227,25 +182,52 @@ public:
         WinHttpCloseHandle(hConnect);
 
         if (responseText.empty()) {
+            if (haveStatus && statusCode != HTTP_STATUS_OK) {
+                json errorObject;
+                errorObject["_http_status"] = static_cast<int>(statusCode);
+                errorObject["error"] = "HTTP error";
+                return errorObject;
+            }
+
             g_logger.warning(L"Empty response received from server");
             return std::nullopt;
         }
 
-        g_logger.info(L"Response received, size: " + std::to_wstring(responseText.length()) +
-            L", body: " + utf8_to_wstring(responseText));
-
         try {
-            return json::parse(responseText);
+            json parsed = json::parse(responseText);
+
+            if (haveStatus) {
+                if (!parsed.is_object()) {
+                    json wrapper;
+                    wrapper["data"] = parsed;
+                    parsed = wrapper;
+                }
+
+                parsed["_http_status"] = static_cast<int>(statusCode);
+            }
+
+            return parsed;
         }
         catch (const json::parse_error& e) {
-            g_logger.error(L"JSON parse error: " + utf8_to_wstring(e.what()));
+            if (haveStatus && statusCode != HTTP_STATUS_OK) {
+                json errorObject;
+                errorObject["_http_status"] = static_cast<int>(statusCode);
+                errorObject["error"] = "HTTP error";
+                errorObject["raw"] = responseText;
+                return errorObject;
+            }
+
+            g_logger.error(
+                L"JSON parse error: " +
+                utf8_to_wstring(e.what()) +
+                L" | Raw response: " +
+                utf8_to_wstring(responseText)
+            );
+
             return std::nullopt;
         }
     }
 
-    // =========================================================================
-    // GET-запрос
-    // =========================================================================
     std::optional<json> get(const std::wstring& path, const std::wstring& authToken = L"") {
         if (!m_hSession) {
             g_logger.error(L"HTTP Session is not initialized");
@@ -253,11 +235,9 @@ public:
         }
 
         g_logger.info(L"Preparing GET request to: " + path);
-
         std::wstring headers = L"Content-Type: application/json\r\n";
         if (!authToken.empty()) {
             headers += L"Authorization: Bearer " + authToken + L"\r\n";
-            g_logger.info(L"Added Authorization header (Bearer token).");
         }
 
         HINTERNET hConnect = WinHttpConnect(m_hSession, m_serverName.c_str(), m_port, 0);
@@ -275,31 +255,14 @@ public:
             return std::nullopt;
         }
 
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ: Убрана установка WINHTTP_OPTION_SECURE_PROTOCOLS на
-        // hRequest. TLS 1.2 теперь принудительно включён на уровне СЕССИИ
-        // в методе initialize().
-        // =====================================================================
-
-        // Игнорирование ошибок сертификата (для самоподписанных сертификатов)
-        DWORD dwFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
-            SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
-            SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-            SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
-        if (!WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwFlags, sizeof(dwFlags))) {
-            g_logger.warning(L"WinHttpSetOption (SECURITY_FLAGS) failed: " + std::to_wstring(GetLastError()));
-        }
-
-        // =====================================================================
-        // ИСПРАВЛЕНИЕ: Убран вызов setTimeouts() из метода get().
-        // Таймауты установлены ОДИН РАЗ в initialize().
-        // =====================================================================
+        DWORD dwFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+            SECURITY_FLAG_IGNORE_CERT_DATE_INVALID | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwFlags, sizeof(dwFlags));
 
         if (!WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.length(),
             WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
             DWORD err = GetLastError();
-            g_logger.error(L"WinHttpSendRequest failed: " + std::to_wstring(err) +
-                L" (path: " + path + L")");
+            g_logger.error(L"WinHttpSendRequest failed: " + std::to_wstring(err) + L" (path: " + path + L")");
             WinHttpCloseHandle(hRequest);
             WinHttpCloseHandle(hConnect);
             return std::nullopt;
@@ -307,11 +270,23 @@ public:
 
         if (!WinHttpReceiveResponse(hRequest, NULL)) {
             DWORD err = GetLastError();
-            g_logger.error(L"WinHttpReceiveResponse failed: " + std::to_wstring(err) +
-                L" (path: " + path + L")");
+            g_logger.error(L"WinHttpReceiveResponse failed: " + std::to_wstring(err) + L" (path: " + path + L")");
             WinHttpCloseHandle(hRequest);
             WinHttpCloseHandle(hConnect);
             return std::nullopt;
+        }
+
+        // ИСПРАВЛЕНИЕ: Проверка HTTP статуса ответа
+        DWORD statusCode = 0;
+        DWORD statusCodeSize = sizeof(statusCode);
+        if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX)) {
+            if (statusCode != HTTP_STATUS_OK) {
+                g_logger.error(L"HTTP GET request failed with status code: " + std::to_wstring(statusCode) + L" (path: " + path + L")");
+                WinHttpCloseHandle(hRequest);
+                WinHttpCloseHandle(hConnect);
+                return std::nullopt;
+            }
         }
 
         std::string responseText;
@@ -340,7 +315,7 @@ public:
             return json::parse(responseText);
         }
         catch (const json::parse_error& e) {
-            g_logger.error(L"JSON parse error: " + utf8_to_wstring(e.what()));
+            g_logger.error(L"JSON parse error: " + utf8_to_wstring(e.what()) + L" | Raw response: " + utf8_to_wstring(responseText));
             return std::nullopt;
         }
     }

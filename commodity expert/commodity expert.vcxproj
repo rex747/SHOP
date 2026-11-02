@@ -123,6 +123,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>C:\Users\Sergey\OneDrive\Рабочий стол\SHOP\server\client\packages\vcpkg\installed\x64-windows\include\boost\asio;C:\Users\Sergey\OneDrive\Рабочий стол\SHOP\server\client\packages\vcpkg\packages\boost-asio_x64-windows\include;C:\Users\Sergey\OneDrive\Рабочий стол\SHOP\server\client\packages\nlohmann.json.3.12.0\build\native\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -134,6 +135,7 @@
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\server\shop_barcode.h" />
     <ClInclude Include="auth_manager.h" />
     <ClInclude Include="config.h" />
     <ClInclude Include="director_window.h" />

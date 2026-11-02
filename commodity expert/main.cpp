@@ -117,11 +117,12 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance,
 
         WorkerWindow workerWnd;
         workerWnd.show();
+        g_logger.info(L"QueueDisplayWindow local launch DISABLED — queue is now displayed on remote Android TV via VPS");
     });
 
 	// Параллельно запускаем окно отображения очередей на втором мониторе
-    QueueDisplayWindow displayWnd;
-    displayWnd.show();
+    //QueueDisplayWindow displayWnd;
+    //displayWnd.show();
     if (workerThread.joinable()) {
         workerThread.join();
     }
