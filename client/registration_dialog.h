@@ -5,7 +5,6 @@
 #include <regex>
 #include "auth_manager.h"
 #include "logger.h"
-#include "database_local.h" // Добавлено для LocalDB::addClient
 
 extern AuthManager g_authManager;
 extern Logger g_logger;
@@ -144,7 +143,7 @@ private:
 
         // ИСПРАВЛЕНО: Использование verifyTOTP вместо authenticate
         if (g_authManager.verifyTOTP(m_phone, std::wstring(code))) {
-            LocalDB::addClient(m_phone, std::wstring(name), std::wstring(email));
+            //LocalDB::addClient(m_phone, std::wstring(name), std::wstring(email));
             g_logger.info(L"Client registered locally and authenticated via TOTP: " + m_phone);
             EndDialog(m_hDlg, IDOK);
         }

@@ -1,43 +1,36 @@
 ﻿// receipt_printer.h
-// Печать талонов на принтере, подключённом к терминалу (киоск самообслуживания).
-// ПРОДАКШН-ВЕРСИЯ. Архитектура и логика не меняются:
-//  - печать идёт на принтер терминала (принтер по умолчанию ОС киоска);
-//  - добавлено перекодирование UTF-16 -> CP1251 (термопринтеры ESC/POS принимают
-//    однобайтовую кириллицу; запись wchar_t давала "мусор"/пустой чек);
-//  - добавлено повторное обнаружение принтера непосредственно при печати
-//    (принтер терминала может инициализироваться позже старта приложения);
-//  - исправлен блок EnumPrinters конструктора (ранее выполнялся с испорченным size);
-//  - добавлено полное логгирование каждого шага печати и кодов ошибок GetLastError();
-//  - формат бланка "НА ДОВЕРИИ" (formatTicketWithExtra) соответствует строго
-//    утверждённому юридическому тексту из бизнес-требования.
-#pragma once
-#include <windows.h>
-#include <winspool.h>
-#include <string>
-#include <vector>
-#include <sstream>
-#include <iomanip>
-#include <chrono>
-#include "queue_manager.h"
-#include "logger.h"
-#pragma comment(lib, "winspool.lib")  // для линковки
 
-extern Logger g_logger; // глобальный логгер терминала (определён в main.cpp)
+#pragma once
+#include  <windows.h >
+#include  <winspool.h >
+#include  <string >
+#include  <vector >
+#include  <sstream >
+#include  <iomanip >
+#include  <chrono >
+#include  <mutex >
+
+#include  "queue_manager.h "
+#include  "logger.h "
+#pragma comment(lib, "winspool.lib")
+
+extern Logger g_logger;
+
+class MainWindow;
 
 class ReceiptPrinter {
 private:
     std::wstring m_printerName;
     bool m_initialized;
-
-    HDC openPrinter() {
-        DOCINFO di = { sizeof(DOCINFO), L"Ticket Print Job", nullptr };
-        HDC hdc = CreateDC(L"RAW", m_printerName.c_str(), nullptr, nullptr);
-        return hdc;
-    }
-
-    // Перекодирование строки талона в CP1251 (кириллица для принтера терминала).
+    std::mutex m_printMutex;
+    friend class MainWindow;
+    // Перекодирование строки талона в CP866 (DOS кириллица для принтера терминала).
+     // CP866 поддерживается ВСЕМИ термопринтерами ESC/POS, включая китайские KPOS 80.
+     // ПРИМЕЧАНИЕ: при GDI-печати этот метод больше не используется для формирования данных,
+     // так как драйвер Windows сам конвертирует Unicode в нужную кодировку принтера.
+     // Метод сохранён для обратной совместимости и возможного логгирования.
     std::string toPrinterEncoding(const std::wstring& content) {
-        int ansiSize = WideCharToMultiByte(1251, 0, content.c_str(),
+        int ansiSize = WideCharToMultiByte(866, 0, content.c_str(),
             static_cast<int>(content.size()), nullptr, 0, nullptr, nullptr);
         if (ansiSize <= 0) {
             g_logger.error(L"ReceiptPrinter::toPrinterEncoding: WideCharToMultiByte(size) failed, err=" +
@@ -45,14 +38,13 @@ private:
             return std::string();
         }
         std::string ansi(static_cast<size_t>(ansiSize), '\0');
-        WideCharToMultiByte(1251, 0, content.c_str(),
+        WideCharToMultiByte(866, 0, content.c_str(),
             static_cast<int>(content.size()), &ansi[0], ansiSize, nullptr, nullptr);
         g_logger.info(L"ReceiptPrinter::toPrinterEncoding: converted " +
             std::to_wstring(content.size()) + L" wchar_t -> " +
-            std::to_wstring(ansiSize) + L" bytes (CP1251)");
+            std::to_wstring(ansiSize) + L" bytes (CP866)");
         return ansi;
     }
-
     // Повторное обнаружение принтера терминала (вызывается только если m_initialized == false).
     void reDetectPrinter() {
         DWORD size = 0;
@@ -69,14 +61,14 @@ private:
         g_logger.warning(L"ReceiptPrinter::reDetectPrinter: default printer still not found, err=" +
             std::to_wstring(GetLastError()));
     }
-
     // Формат стандартного талона
     std::wstring formatTicket(const QueueTicket& ticket,
         const std::wstring& clientName,
         const std::wstring& clientPhone) {
         std::wstringstream ss;
         ss << L"================================\n";
-        ss << L"   ДОБРО - Комиссионный магазин\n";
+        ss << L"   Комиссионный магазин\n";
+        ss << L"         СОВЕТСКИЙ\n";
         ss << L"================================\n\n";
         ss << L"ТАЛОН ОЧЕРЕДИ\n";
         ss << L"Номер: " << ticket.ticketNumber << L"\n\n";
@@ -120,48 +112,63 @@ private:
         ss << L"================================\n\n";
         return ss.str();
     }
-
     // Формат талона для услуги "НА ДОВЕРИИ" - строго утверждённый юридический бланк.
-    // Тот же текст выводится в превью над кнопкой "Печать талона"
-    // в showTrustAcceptanceWindow() (единое бизнес-требование).
+    // ВСЕ строки искусственно разбиты так, чтобы не превышать ~38 символов,
+    // что гарантирует размещение в полезной области 60 мм (70 мм лента - 10 мм поля).
     std::wstring formatTicketWithExtra(const QueueTicket& ticket,
         int clientId,
         const std::wstring& clientName,
         const std::wstring& clientPhone) {
         std::wstringstream ss;
         ss << L"КОМИССИОННЫЙ МАГАЗИН\n";
-        ss << L"ДОБРО\n\n";
+        ss << L"       СОВЕТСКИЙ\n\n";
         ss << L"Комитент №" << clientId << L"\n";
-        ss << L"Я, " << clientName << L" доверяю Вам оценить вещи на Ваше усмотрение, без согласования цен со мной. Согласен на обработку моих персональных данных.\n";
+        ss << L"Я, " << clientName << L"\n";
+        ss << L"доверяю Вам оценить вещи на Ваше\n";
+        ss << L"усмотрение, без согласования цен\n";
+        ss << L"со мной. Согласен на обработку\n";
+        ss << L"моих персональных данных.\n\n";
         ss << L"Условия:\n";
-        ss << L"Комиссионный магазин принимает товар по услуге «Доверие»,\n";
-        ss << L"без проверки содержимого пакетов, коробок и иной упаковки.\n";
-        ss << L"Магазин не несет ответственности за вложенные в пакет вещи,\n";
-        ss << L"их наличие или отсутствие, сохранность пакета и его возврат.\n";
-        ss << L"Вещи, которые товаровед не примет по состоянию, качеству или др. причинам,\n";
-        ss << L"автоматически отправляются в категорию «на утилизацию» и выставляются\n";
-        ss << L"за один рубль без составления перечня.\n\n";
-        ss << L"Подписывая данный бланк, я подтверждаю, что ознакомлен \n";
-        ss << L"с условиями и согласен с ними. Также я соглашаюсь с возможной \n";
-        ss << L"утратой пакета или части его содержимого без претензий с моей стороны.\n\n";
+        ss << L"Комиссионный магазин принимает\n";
+        ss << L"товар по услуге «Доверие», без\n";
+        ss << L"проверки содержимого пакетов,\n";
+        ss << L"коробок и иной упаковки.\n";
+        ss << L"Магазин не несет ответственности\n";
+        ss << L"за вложенные в пакет вещи, их\n";
+        ss << L"наличие или отсутствие,\n";
+        ss << L"сохранность пакета и его возврат.\n";
+        ss << L"Вещи, которые товаровед не примет\n";
+        ss << L"по состоянию, качеству или др.\n";
+        ss << L"причинам, автоматически\n";
+        ss << L"отправляются в категорию «на\n";
+        ss << L"утилизацию» и выставляются за\n";
+        ss << L"один рубль без составления\n";
+        ss << L"перечня.\n\n";
+        ss << L"Подписывая данный бланк, я\n";
+        ss << L"подтверждаю, что ознакомлен с\n";
+        ss << L"условиями и согласен с ними.\n";
+        ss << L"Также я соглашаюсь с возможной\n";
+        ss << L"утратой пакета или части его\n";
+        ss << L"содержимого без претензий с\n";
+        ss << L"моей стороны.\n\n";
         ss << L"Мой телефон: " << clientPhone << L"\n";
-        ss << L"(телефон необходим для возможности осуществления удаленной проверки продаж)\n";
+        ss << L"(телефон необходим для возможности\n";
+        ss << L"осуществления удаленной проверки\n";
+        ss << L"продаж)\n";
         ss << L"ВНИМАНИЕ – мы не звоним Вам!\n";
-        ss << L"Если Вы сдаете вещи впервые, то заполните данные для регистрации:\n";
+        ss << L"Если Вы сдаете вещи впервые, то\n";
+        ss << L"заполните данные для регистрации:\n";
         ss << L"ПАСПОРТ:\n";
-        ss << L"Серия _______________ Номер_______________\n";
-        ss << L"Выдан _____________ от ___________________\n";
-        ss << L"Дата выдачи ______________________________\n";
-        ss << L"Дата рождения ____________________________\n";
-        ss << L"Проживаю ________________________________\n";
-
-        // Служебная часть талона электронной очереди (необходима для работы системы)
+        ss << L"Серия _______ Номер__________\n";
+        ss << L"Выдан _________ от __________\n";
+        ss << L"Дата выдачи _________________\n";
+        ss << L"Дата рождения _______________\n";
+        ss << L"Проживаю ____________________\n";
         ss << L"\n================================\n";
         ss << L"Талон №: " << ticket.ticketNumber << L"\n";
         ss << L"Окно приема: " << ticket.windowNumber << L"\n";
         if (ticket.estimatedWaitTime > 0) {
-            ss << L"Примерное время ожидания: "
-                << ticket.estimatedWaitTime << L" мин\n";
+            ss << L"Ожидание: " << ticket.estimatedWaitTime << L" мин\n";
         }
         auto now = std::chrono::system_clock::now();
         auto time_t_now = std::chrono::system_clock::to_time_t(now);
@@ -173,7 +180,6 @@ private:
         ss << L"================================\n\n";
         return ss.str();
     }
-
     bool saveTicketToFile(const QueueTicket& ticket,
         const std::wstring& clientName,
         const std::wstring& clientPhone) {
@@ -194,7 +200,6 @@ private:
         g_logger.warning(L"ReceiptPrinter::saveTicketToFile: ticket saved to file (degradation): " + filename);
         return true;
     }
-
     bool saveTicketToFileWithExtra(const QueueTicket& ticket,
         int clientId,
         const std::wstring& clientName,
@@ -216,10 +221,195 @@ private:
         g_logger.warning(L"ReceiptPrinter::saveTicketToFileWithExtra: ticket saved to file (degradation): " + filename);
         return true;
     }
+    // Вспомогательный метод: разбиение wstring на строки по символу '\n' для GDI-печати.
+    // Логика и математика не меняются — текст уже отформатирован в formatTicket / formatTicketWithExtra.
+    std::vector<std::wstring> splitLines(const std::wstring& text) {
+        std::vector<std::wstring> lines;
+        std::wstringstream ss(text);
+        std::wstring line;
+        while (std::getline(ss, line, L'\n')) {
+            lines.push_back(line);
+        }
+        return lines;
+    }
+    // Вспомогательный метод: GDI-печать готового wstring-контента на принтер.
+    // Использует стандартный механизм Windows: CreateDC -> StartDoc -> StartPage -> TextOutW -> EndPage -> EndDoc -> DeleteDC.
+    // Драйвер принтера САМ конвертирует Unicode в нужную кодовую таблицу и формирует ESC/POS или Raster-команды.
+    bool printContentViaGDI(const std::wstring& content, const std::wstring& docName) {
+        std::lock_guard<std::mutex> lock(m_printMutex);
 
+        if (!m_initialized) {
+            reDetectPrinter();
+        }
+
+        if (!m_initialized) {
+            g_logger.error(L"ReceiptPrinter::printContentViaGDI: printer not initialized");
+            return false;
+        }
+        g_logger.info(L"ReceiptPrinter::printContentViaGDI: start, docName=" + docName +
+            L", printer=" + m_printerName);
+        // ШАГ 1: Получение HDC принтера через CreateDC.
+        // Драйвер сам применит все настройки страницы (ширина ленты, поля, ориентация).
+        HDC hdc = CreateDCW(nullptr, m_printerName.c_str(), nullptr, nullptr);
+        if (hdc == nullptr) {
+            g_logger.error(L"ReceiptPrinter::printContentViaGDI: CreateDCW failed for printer '" +
+                m_printerName + L"', err=" + std::to_wstring(GetLastError()));
+            return false;
+        }
+        g_logger.info(L"ReceiptPrinter::printContentViaGDI: HDC created successfully");
+        // ШАГ 2: Логгирование физических размеров страницы (для отладки).
+        int widthPx = GetDeviceCaps(hdc, HORZRES);
+        int heightPx = GetDeviceCaps(hdc, VERTRES);
+        int widthMm = GetDeviceCaps(hdc, HORZSIZE);
+        int heightMm = GetDeviceCaps(hdc, VERTSIZE);
+        g_logger.info(L"ReceiptPrinter::printContentViaGDI: page size = " +
+            std::to_wstring(widthPx) + L"x" + std::to_wstring(heightPx) + L" px, " +
+            std::to_wstring(widthMm) + L"x" + std::to_wstring(heightMm) + L" mm");
+        // ШАГ 3: Создание шрифта для печати.
+        // Используем моноширинный шрифт Courier New — он гарантированно есть в Windows
+        // и обеспечивает корректное выравнивание столбцов в талонах.
+        // Размер шрифта подбирается так, чтобы ~38 символов помещались в ширину 80 мм ленты.
+        // При ширине ~576 px (типично для 80 мм при 203 DPI) и 38 символах -> ~15 px на символ.
+        // Для Courier New это соответствует высоте ~10-12 пунктов.
+        HFONT hFont = CreateFontW(
+            40,                             // высота шрифта в логических единицах (подбирается эмпирически)
+            0,                              // средняя ширина
+            0,                              // наклон
+            0,                              // толщина
+            FW_NORMAL,                      // насыщенность
+            FALSE,                          // курсив
+            FALSE,                          // подчёркивание
+            FALSE,                          // зачёркивание
+            DEFAULT_CHARSET,                // кодировка (драйвер сам выберет нужную)
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY,
+            FF_MODERN | FIXED_PITCH,        // моноширинный шрифт
+            L"Courier New"
+        );
+        if (hFont == nullptr) {
+            g_logger.error(L"ReceiptPrinter::printContentViaGDI: CreateFontW failed, err=" +
+                std::to_wstring(GetLastError()));
+            DeleteDC(hdc);
+            return false;
+        }
+        g_logger.info(L"ReceiptPrinter::printContentViaGDI: normal font 'Courier New' (height=40) created");
+
+        // создание жирного шрифта для выделения номера очереди
+        HFONT hFontBold = CreateFontW(
+            40,                             // высота шрифта увеличена в 2 раза
+            0,                              // средняя ширина
+            0,                              // наклон
+            0,                              // толщина
+            FW_BOLD,                        // жирная насыщенность для выделения
+            FALSE,                          // курсив
+            FALSE,                          // подчёркивание
+            FALSE,                          // зачёркивание
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY,
+            FF_MODERN | FIXED_PITCH,
+            L"Courier New"
+        );
+        if (hFontBold == nullptr) {
+            g_logger.error(L"ReceiptPrinter::printContentViaGDI: CreateFontW (bold) failed, err=" +
+                std::to_wstring(GetLastError()));
+            DeleteObject(hFont);
+            DeleteDC(hdc);
+            return false;
+        }
+        g_logger.info(L"ReceiptPrinter::printContentViaGDI: bold font 'Courier New' (height=40, FW_BOLD) created");
+
+        HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
+        g_logger.info(L"ReceiptPrinter::printContentViaGDI: font 'Courier New' selected");
+
+        // ШАГ 4: Начало документа.
+        DOCINFOW di = {};
+        di.cbSize = sizeof(DOCINFOW);
+        di.lpszDocName = docName.c_str();
+        di.lpszOutput = nullptr;
+        di.lpszDatatype = nullptr;
+        int docResult = StartDocW(hdc, &di);
+        if (docResult <= 0) {
+            g_logger.error(L"ReceiptPrinter::printContentViaGDI: StartDocW failed, err=" +
+                std::to_wstring(GetLastError()));
+            SelectObject(hdc, hOldFont);
+            DeleteObject(hFontBold);
+            DeleteObject(hFont);
+            DeleteDC(hdc);
+            return false;
+        }
+        g_logger.info(L"ReceiptPrinter::printContentViaGDI: StartDocW succeeded");
+        // ШАГ 5: Начало страницы.
+        if (StartPage(hdc) <= 0) {
+            g_logger.error(L"ReceiptPrinter::printContentViaGDI: StartPage failed, err=" +
+                std::to_wstring(GetLastError()));
+            AbortDoc(hdc);
+            SelectObject(hdc, hOldFont);
+            DeleteObject(hFontBold);
+            DeleteObject(hFont);
+            DeleteDC(hdc);
+            return false;
+        }
+        g_logger.info(L"ReceiptPrinter::printContentViaGDI: StartPage succeeded");
+        // ШАГ 6: Разбиение текста на строки и вывод каждой через TextOutW.
+        // TextOutW принимает Unicode (wchar_t), драйвер сам конвертирует в кодировку принтера.
+        std::vector<std::wstring> lines = splitLines(content);
+        int y = 0;
+        int lineHeight = 44;  // межстрочный интервал (подбирается под размер шрифта 20 px)
+        int linesPrinted = 0;
+        for (const auto& line : lines) {
+            // Проверка выхода за пределы страницы (для термопринтера с ограниченной длиной ленты).
+            if (y + lineHeight > heightPx) {
+                g_logger.warning(L"ReceiptPrinter::printContentViaGDI: page overflow at line " +
+                    std::to_wstring(linesPrinted) + L", starting new page");
+                EndPage(hdc);
+                if (StartPage(hdc) <= 0) {
+                    g_logger.error(L"ReceiptPrinter::printContentViaGDI: StartPage (2) failed");
+                    break;
+                }
+                y = 0;
+            }
+            // Выделяем жирным строки с номером очереди ("Номер: " и "Талон №: ")
+            bool useBold = (line.find(L"Номер: ") != std::wstring::npos) ||
+                (line.find(L"Талон №: ") != std::wstring::npos);
+
+            HFONT hCurrentFont = useBold ? hFontBold : hFont;
+            HFONT hPrevFont = (HFONT)SelectObject(hdc, hCurrentFont);
+
+            if (!line.empty()) {
+                BOOL textOutResult = TextOutW(hdc, 0, y, line.c_str(), static_cast<int>(line.size()));
+                if (!textOutResult) {
+                    g_logger.error(L"ReceiptPrinter::printContentViaGDI: TextOutW failed at line " +
+                        std::to_wstring(linesPrinted) + L", err=" + std::to_wstring(GetLastError()));
+                }
+            }
+            y += lineHeight;
+            ++linesPrinted;
+        }
+        g_logger.info(L"ReceiptPrinter::printContentViaGDI: printed " +
+            std::to_wstring(linesPrinted) + L" lines, final Y=" + std::to_wstring(y));
+        // ШАГ 7: Завершение страницы и документа.
+        EndPage(hdc);
+        int endDocResult = EndDoc(hdc);
+        if (endDocResult <= 0) {
+            g_logger.error(L"ReceiptPrinter::printContentViaGDI: EndDoc failed, err=" +
+                std::to_wstring(GetLastError()));
+        }
+        else {
+            g_logger.info(L"ReceiptPrinter::printContentViaGDI: EndDoc succeeded, document sent to spooler");
+        }
+        // ШАГ 8: Освобождение ресурсов GDI.
+        SelectObject(hdc, hOldFont);
+        DeleteObject(hFontBold);
+        DeleteObject(hFont);
+        DeleteDC(hdc);
+        g_logger.info(L"ReceiptPrinter::printContentViaGDI: HDC and font released");
+        return endDocResult > 0;
+    }
 public:
     ReceiptPrinter() : m_initialized(false) {
-        // Find default printer or specific printer
         DWORD size = 0;
         GetDefaultPrinterW(nullptr, &size);
         if (size > 0) {
@@ -229,17 +419,17 @@ public:
                 m_initialized = true;
             }
         }
-        // ИСПРАВЛЕНО: перебор локальных принтеров только если дефолтный не найден
-        // (ранее блок выполнялся с уже изменённым size и мог затереть имя принтера).
         if (!m_initialized) {
             DWORD needed = 0;
-            if (EnumPrinters(PRINTER_ENUM_LOCAL, nullptr, 2, nullptr, 0, &needed, nullptr) && needed > 0) {
-                std::vector<BYTE> buffer(needed);
-                if (EnumPrinters(PRINTER_ENUM_LOCAL, nullptr, 2, buffer.data(), needed, &needed, nullptr)) {
-                    PRINTER_INFO_2* printers = (PRINTER_INFO_2*)buffer.data();
-                    if (needed > 0) {
+            DWORD returned = 0;
+            if (EnumPrintersW(PRINTER_ENUM_LOCAL, nullptr, 2, nullptr, 0, &needed, &returned) || GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+                std::vector <BYTE > buffer(needed);
+                if (EnumPrintersW(PRINTER_ENUM_LOCAL, nullptr, 2, buffer.data(), needed, &needed, &returned)) {
+                    if (returned > 0) {
+                        PRINTER_INFO_2W* printers = reinterpret_cast <PRINTER_INFO_2W*>(buffer.data());
                         m_printerName = printers[0].pPrinterName;
                         m_initialized = true;
+                        g_logger.info(L"ReceiptPrinter: constructor: fallback terminal printer detected: " + m_printerName);
                     }
                 }
             }
@@ -251,90 +441,63 @@ public:
             g_logger.warning(L"ReceiptPrinter: constructor: no printer detected at startup (will re-detect at print time)");
         }
     }
-
     bool printTicket(const QueueTicket& ticket, const std::wstring& clientName,
         const std::wstring& clientPhone) {
+        //std::lock_guard<std::mutex> lock(m_printMutex); - у нас уже есть поток
         g_logger.info(L"ReceiptPrinter::printTicket: start, ticket=" + ticket.ticketNumber);
-        if (!m_initialized) {
-            reDetectPrinter(); // принтер терминала мог появиться после старта
-        }
-        if (!m_initialized) {
-            return saveTicketToFile(ticket, clientName, clientPhone);
-        }
+        //if (!m_initialized) {
+        //    reDetectPrinter();
+        //}
+        //if (!m_initialized) {
+        //    return saveTicketToFile(ticket, clientName, clientPhone);
+        //}
         std::wstring content = formatTicket(ticket, clientName, clientPhone);
-        std::string ansi = toPrinterEncoding(content);
-        if (ansi.empty()) {
-            return saveTicketToFile(ticket, clientName, clientPhone);
-        }
-        HANDLE hPrinter;
-        if (!OpenPrinter(const_cast<LPWSTR>(m_printerName.c_str()), &hPrinter, nullptr)) {
-            g_logger.error(L"ReceiptPrinter::printTicket: OpenPrinter('" + m_printerName +
-                L"') failed, err=" + std::to_wstring(GetLastError()));
-            return saveTicketToFile(ticket, clientName, clientPhone);
-        }
-        DOCINFOW di = { sizeof(DOCINFOW), L"Ticket", nullptr };
-        StartDocPrinter(hPrinter, 1, (LPBYTE)&di);
-        StartPagePrinter(hPrinter);
-        DWORD bytesWritten = 0;
-        BOOL wr = WritePrinter(hPrinter, (LPVOID)ansi.c_str(),
-            static_cast<DWORD>(ansi.size()), &bytesWritten);
-        if (!wr || bytesWritten != ansi.size()) {
-            g_logger.error(L"ReceiptPrinter::printTicket: WritePrinter failed/incomplete, err=" +
-                std::to_wstring(GetLastError()) + L", written=" + std::to_wstring(bytesWritten) +
-                L" of " + std::to_wstring(ansi.size()));
+        g_logger.info(L"ReceiptPrinter::printTicket: content formatted, length=" +
+            std::to_wstring(content.size()) + L" wchar_t");
+        // ПЕРЕХОД НА GDI-ПЕЧАТЬ: вызываем универсальный метод printContentViaGDI.
+        // Драйвер Windows сам конвертирует Unicode в нужную кодовую таблицу принтера
+        // и сформирует корректные ESC/POS или Raster-команды.
+        bool printed = printContentViaGDI(content, L"Ticket");
+        if (printed) {
+            g_logger.info(L"ReceiptPrinter::printTicket: ticket printed successfully via GDI: " +
+                ticket.ticketNumber);
+            return true;
         }
         else {
-            g_logger.info(L"ReceiptPrinter::printTicket: sent " + std::to_wstring(bytesWritten) +
-                L" bytes to terminal printer '" + m_printerName + L"'");
+            g_logger.error(L"ReceiptPrinter::printTicket: GDI print failed, falling back to file: " +
+                ticket.ticketNumber);
+            return saveTicketToFile(ticket, clientName, clientPhone);
         }
-        EndPagePrinter(hPrinter);
-        EndDocPrinter(hPrinter);
-        ClosePrinter(hPrinter);
-        return true;
     }
-
-    // Печать талона услуги "НА ДОВЕРИИ" (бланк доверия + служебная часть)
     bool printTicketWithExtraMessage(const QueueTicket& ticket,
         int clientId,
         const std::wstring& clientName,
         const std::wstring& clientPhone) {
+        //std::lock_guard<std::mutex> lock(m_printMutex);
         g_logger.info(L"ReceiptPrinter::printTicketWithExtraMessage: start, ticket=" +
             ticket.ticketNumber + L", clientId=" + std::to_wstring(clientId));
-        if (!m_initialized) {
-            reDetectPrinter(); // принтер терминала мог появиться после старта
-        }
-        if (!m_initialized) {
-            return saveTicketToFileWithExtra(ticket, clientId, clientName, clientPhone);
-        }
+        //if (!m_initialized) {
+        //    reDetectPrinter();
+        //}
+        //if (!m_initialized) {
+        //    return saveTicketToFileWithExtra(ticket, clientId, clientName, clientPhone);
+        //}
         std::wstring content = formatTicketWithExtra(ticket, clientId, clientName, clientPhone);
-        std::string ansi = toPrinterEncoding(content);
-        if (ansi.empty()) {
-            return saveTicketToFileWithExtra(ticket, clientId, clientName, clientPhone);
-        }
-        HANDLE hPrinter;
-        if (!OpenPrinter(const_cast<LPWSTR>(m_printerName.c_str()), &hPrinter, nullptr)) {
-            g_logger.error(L"ReceiptPrinter::printTicketWithExtraMessage: OpenPrinter('" +
-                m_printerName + L"') failed, err=" + std::to_wstring(GetLastError()));
-            return saveTicketToFileWithExtra(ticket, clientId, clientName, clientPhone);
-        }
-        DOCINFOW di = { sizeof(DOCINFOW), L"TicketWithExtraMessage", nullptr };
-        StartDocPrinter(hPrinter, 1, (LPBYTE)&di);
-        StartPagePrinter(hPrinter);
-        DWORD bytesWritten = 0;
-        BOOL wr = WritePrinter(hPrinter, (LPVOID)ansi.c_str(),
-            static_cast<DWORD>(ansi.size()), &bytesWritten);
-        if (!wr || bytesWritten != ansi.size()) {
-            g_logger.error(L"ReceiptPrinter::printTicketWithExtraMessage: WritePrinter failed/incomplete, err=" +
-                std::to_wstring(GetLastError()) + L", written=" + std::to_wstring(bytesWritten) +
-                L" of " + std::to_wstring(ansi.size()));
+        g_logger.info(L"ReceiptPrinter::printTicketWithExtraMessage: content formatted, length=" +
+            std::to_wstring(content.size()) + L" wchar_t");
+        // ПЕРЕХОД НА GDI-ПЕЧАТЬ: вызываем универсальный метод printContentViaGDI.
+        // Драйвер Windows сам конвертирует Unicode в нужную кодовую таблицу принтера
+        // и сформирует корректные ESC/POS или Raster-команды.
+        bool printed = printContentViaGDI(content, L"TicketWithExtraMessage");
+        if (printed) {
+            g_logger.info(L"ReceiptPrinter::printTicketWithExtraMessage: ticket printed successfully via GDI: " +
+                ticket.ticketNumber);
+            return true;
         }
         else {
-            g_logger.info(L"ReceiptPrinter::printTicketWithExtraMessage: sent " +
-                std::to_wstring(bytesWritten) + L" bytes to terminal printer '" + m_printerName + L"'");
+            g_logger.error(L"ReceiptPrinter::printTicketWithExtraMessage: GDI print failed, falling back to file: " +
+                ticket.ticketNumber);
+            return saveTicketToFileWithExtra(ticket, clientId, clientName, clientPhone);
         }
-        EndPagePrinter(hPrinter);
-        EndDocPrinter(hPrinter);
-        ClosePrinter(hPrinter);
-        return true;
     }
 };

@@ -129,10 +129,12 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <ResourceCompile>
       <AdditionalIncludeDirectories>C:\Users\dpc\Desktop\SHOP\server\client\res;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -145,15 +147,16 @@
       <PreprocessorDefinitions Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PreprocessorDefinitions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
+    <ClCompile Include="payment_manager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="auth_manager.h" />
     <ClInclude Include="config.h" />
-    <ClInclude Include="database_local.h" />
     <ClInclude Include="https_client.h" />
     <ClInclude Include="logger.h" />
     <ClInclude Include="login_window.h" />
     <ClInclude Include="main_window.h" />
+    <ClInclude Include="payment_manager.h" />
     <ClInclude Include="queue_manager.h" />
     <ClInclude Include="receipt_printer.h" />
     <ClInclude Include="registration_dialog.h" />

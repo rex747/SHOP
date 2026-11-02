@@ -26,7 +26,6 @@
 
 #include "config.h"
 #include "https_client.h"
-#include "database_local.h"
 #include "auth_manager.h"
 #include "queue_manager.h"
 #include "registration_dialog.h"
@@ -34,6 +33,7 @@
 #include "logger.h"
 #include "receipt_printer.h"
 #include "login_window.h"
+#include "payment_manager.h"
 
 using namespace std;
 
@@ -57,17 +57,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     // Initialize logger
     g_logger.log(LogLevel::INFO, L"Terminal application started");
     Config::initializePaths();   // установка путей для логов и БД
-    // Initialize local database
-    if (!LocalDB::initialize()) {
-        MessageBox(nullptr, L"Failed to initialize local database",
-            L"Error", MB_ICONERROR);
-        return 1;
-    }
+    
     // Initialize HTTPS client with SSL
     if (!g_httpsClient.initialize()) {
         g_logger.log(LogLevel::ERROR, L"Failed to initialize HTTPS client");
         return 1;
     }
+
+    // ЗАПУСК АВТОМАТИЧЕСКОЙ ЕЖЕДНЕВНОЙ СВЕРКИ ИТОГОВ (в 21:00)
+    g_paymentManager.StartAutoReconciliation();
+
     // Register window class
     WNDCLASSEXW wcex = {};
     wcex.cbSize = sizeof(WNDCLASSEX);
@@ -93,7 +92,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     g_hMainWnd = CreateWindowExW(
         WS_EX_TOPMOST,
         L"TerminalKioskClass",
-        L"ДОБРО - Комиссионный магазин",
+        L"СОВЕТСКИЙ - Комиссионный магазин",
         WS_POPUP,
         0, 0, screenWidth, screenHeight,
         nullptr, nullptr, hInstance, nullptr
@@ -103,18 +102,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         return 1;
     }
     g_mainWindow.m_hWnd = g_hMainWnd;
-    // ========== ДОБАВЛЕНО: контроль поддержки МЫШИ и ТАЧСКРИНА ==========
-    // ПРОДАКШН-ПРИМЕЧАНИЕ (факт-чекинг по winuser.h Windows SDK):
-    //  1) RegisterTouchWindow() НЕ вызывается намеренно: пока окно не
-    //     зарегистрировано для raw-touch, Windows 10 сама синтезирует мышиные
-    //     сообщения (WM_LBUTTONDOWN/WM_LBUTTONUP) из касаний пальцем, поэтому
-    //     стандартные кнопки BUTTON/STATIC одинаково работают и от мыши, и от
-    //     тачскрина киоска (ёмкостной сенсор видится системой как HID-digitizer).
-    //  2) Маска SM_DIGITIZER в SDK содержит ТОЛЬКО шесть констант:
-    //     NID_INTEGRATED_TOUCH, NID_EXTERNAL_TOUCH, NID_INTEGRATED_PEN,
-    //     NID_EXTERNAL_PEN, NID_MULTI_INPUT, NID_READY.
-    //     Наличие МЫШИ проверяется отдельным метриком SM_MOUSEPRESENT
-    //     (константы NID_MOUSE_INPUT в SDK нет — она убрана из кода).
+    // ========== контроль поддержки МЫШИ и ТАЧСКРИНА ==========
+    
     {
         const int digitizer = GetSystemMetrics(SM_DIGITIZER);     // маска устройств ввода
         const int mousePresent = GetSystemMetrics(SM_MOUSEPRESENT);  // != 0, если мышь установлена
@@ -139,7 +128,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 L"No digitizer detected at startup (NID_READY not set): kiosk touchscreen driver absent, mouse-only mode.");
         }
     }
-    // ========== КОНЕЦ ДОБАВЛЕННОГО БЛОКА ==========
+    
     ShowWindow(g_hMainWnd, nCmdShow);
     UpdateWindow(g_hMainWnd);
     g_mainWindow.create(g_hMainWnd);
@@ -151,6 +140,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
+
+    // ОСТАНОВКА ФОНОВОГО ПОТОКА ПЕРЕД ЗАВЕРШЕНИЕМ РАБОТЫ
+    g_paymentManager.StopAutoReconciliation();
+
     // Очистка GDI объекта желтой кисти
     if (hYellowBrush) {
         DeleteObject(hYellowBrush);

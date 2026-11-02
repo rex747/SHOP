@@ -26,7 +26,7 @@ namespace Config {
     // Terminal settings
     constexpr int MAX_ITEMS_GENERAL_QUEUE = 20;
     constexpr int MAX_ITEMS_PAID_QUEUE = 20;
-    constexpr int PAID_ACCEPTANCE_PRICE = 200;
+    constexpr int PAID_ACCEPTANCE_PRICE = 100;
     constexpr int EXPENSIVE_ITEM_THRESHOLD = 5000;
     constexpr int TRUST_ACCEPTANCE_LIMIT = 1;
 
