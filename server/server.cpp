@@ -25,6 +25,7 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
 #include <boost/asio/ssl/error.hpp>
+#include <curl/curl.h>
 
 #include "config_server.h"
 #include "database.h"
@@ -33,7 +34,7 @@
 #include "onec_integration.h"
 #include "rate_limiter.h"
 #include "logger_server.h"
-
+#include "backup_service.h"
 
 using namespace std;
 namespace beast = boost::beast;
@@ -118,8 +119,25 @@ private:
             else if (target == "/api/v1/clients/by_phone" && method == http::verb::post) {
                 handleClientByPhone(client_ip);
             }
+            // =========================================================================
+            // НОВЫЙ РОУТ: /api/v1/auth/refresh
+            // Обновление access_token по refresh_token.
+            // Без этого роута клиент теряет авторизацию через 1 час.
+            // =========================================================================
+            else if (target == "/api/v1/auth/refresh" && method == http::verb::post) {
+                handleAuthRefresh(client_ip);
+            }
             else if (target == "/api/v1/clients/me" && method == http::verb::get) {
                 handleClientMe(client_ip);
+            }
+            // получаем все номера приложений к договору для текущего клиента
+            else if (target.find("/api/v1/clients/my_appendices") == 0 && method == http::verb::get) {
+                handleClientMyAppendices(client_ip);
+            }
+            // НОВЫЙ РОУТ: получение перечня товаров по номеру приложения для клиента.
+            // Доступ: только владелец приложения (проверка client_id в getAppendixByNumber).
+            else if (target.find("/api/v1/clients/appendix_by_number") == 0 && method == http::verb::get) {
+                handleClientAppendixByNumber(client_ip);
             }
             // получаем данные о продажах пользователя
             else if (target.find("/api/v1/clients/sales") == 0 && method == http::verb::get) {
@@ -232,6 +250,12 @@ private:
             else if (target == "/api/v1/items/batch" && method == http::verb::post) {
                 handleAddItemsBatch(client_ip);
             }
+            // Поиск товара по уникальному SHOP-штрихкоду для кассира.
+            // client_id определяется сервером по записи items, а не принимается от клиента.
+            else if (target == "/api/v1/item/by_barcode" &&
+                method == http::verb::post) {
+                handleItemByBarcode(client_ip);
+                }
             // =========================================================================
             // НОВЫЕ РОУТЫ ДЛЯ ПАНЕЛИ ДИРЕКТОРА МАГАЗИНА
             // =========================================================================
@@ -280,6 +304,18 @@ private:
             else if (target.find("/api/v1/appendix/latest") == 0 && method == http::verb::get) {
                 handleAppendixLatest(client_ip);
             }
+            // =========================================================================
+// НОВЫЙ РОУТ: РЕЗЕРВИРОВАНИЕ СЛЕДУЮЩЕГО НОМЕРА ПРИЛОЖЕНИЯ
+// GET /api/v1/appendix/next
+// Вызывается товароведом при принятии талона. Резервирует уникальный
+// номер приложения через nextval, чтобы два товароведа, работающие
+// с одним комитентом одновременно, получили разные номера.
+// ДОСТУП: только роль worker.
+// =========================================================================
+            else if (target.find("/api/v1/appendix/next") == 0 && method == http::verb::get) {
+                handleAppendixNext(client_ip);
+            }
+
             // =========================================================================
             // НОВЫЙ РОУТ: РЕГИСТРАЦИЯ КОМИТЕНТА С ДОПОЛНИТЕЛЬНЫМИ ДАННЫМИ
             // POST /api/v1/clients/register_committee
@@ -331,12 +367,45 @@ private:
                 method == http::verb::get) {
                 handleCashierGetUnsoldItems(client_ip);
                 }
+            // === НОВЫЙ РОУТ: ПОИСК ПРИЛОЖЕНИЯ ПО НОМЕРУ (ДЛЯ КАССИРА) ===
+            // GET /api/v1/cashier/appendix_by_number?number=<N>
+            // Возвращает полную информацию о приложении к договору с указанным
+            // человекочитаемым номером: перечень товаров, количество, цена,
+            // статусы, ФИО комитента.
+            // Использует существующий метод db_->getAppendixByNumber() —
+            // БД НЕ МЕНЯЕТСЯ, математика и бизнес-модель сохраняются.
+            // ДОСТУП: только роль 'cashier' или 'director' (проверка через
+            // verifyCashierRole).
+            // =========================================================================
+            else if (target.find("/api/v1/cashier/appendix_by_number") == 0 &&
+                method == http::verb::get) {
+                handleCashierGetAppendixByNumber(client_ip);
+            }
+
                 // Создание документа кассира (возврат, расписка, утрата, вознаграждение)
             else if (target == "/api/v1/cashier/create_document" &&
                 method == http::verb::post) {
                 handleCashierCreateDocument(client_ip);
                 }
-
+                // =========================================================================
+                // НОВЫЕ РОУТЫ: ЭКВАЙРИНГ ВТБ
+                // =========================================================================
+            else if (target == "/api/v1/acquiring/register" && method == http::verb::post) {
+                handleAcquiringRegister(client_ip);
+            }
+            else if (target == "/api/v1/acquiring/status" && method == http::verb::post) {
+                handleAcquiringStatus(client_ip);
+            }
+            else if (target == "/api/v1/acquiring/refund" && method == http::verb::post) {
+                handleAcquiringRefund(client_ip);
+            }
+            // =========================================================================
+            // ИЗМЕНЕННЫЙ ОБРАБОТЧИК: GET /queue-display
+            // Добавлена проверка IP клиента для идентификации Android TV
+            // =========================================================================
+            else if (target == "/queue-display" && method == http::verb::get) {
+                handleQueueDisplayHTML(client_ip);
+                }
             else {
                 g_serverLogger.warning("Routing request: " + std::string(http::to_string(method)) + " " + std::string(target) + " -> Not found");
                 response_.result(http::status::not_found);
@@ -643,15 +712,133 @@ private:
         g_serverLogger.info("User" + clientOpt->role + "data returned for phone: " + phone + " (id = " + std::to_string(clientOpt->id) + ")");
     }
 
-    //--------------------------------------------------------------------------
-    // Обработчик получения данных из 1С о продажах пользователя
-    //--------------------------------------------------------------------------
+    // =========================================================================
+// НОВЫЙ ОБРАБОТЧИК: POST /api/v1/auth/refresh
+// =========================================================================
+// Назначение: обновление access_token по refresh_token.
+// Вызывается клиентом (auth_manager.h::refreshAccessToken), когда access_token
+// истекает (через 3600 секунд). Без этого endpoint клиент теряет авторизацию
+// и показывает «Ошибка авторизации» при нажатии «Сохранить все».
+//
+// Тело запроса:
+// {
+//   "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+// }
+//
+// Формат ответа при успехе (HTTP 200):
+// {
+//   "access_token":  "eyJ...",
+//   "refresh_token": "eyJ...",
+//   "expires_at":    1787654321
+// }
+//
+// Формат ответа при ошибке (HTTP 401):
+// {
+//   "error": "Invalid or expired refresh token"
+// }
+//
+// Потокобезопасность:
+//   - AuthService::refreshAccessToken() использует атомарные операции с БД.
+//   - Параллельные запросы на refresh одного и того же токена безопасны:
+//     первый запрос отзовёт токен, второй вернёт 401.
+//   - Обработчик выполняется в рамках одного потока HttpSession.
+//     Гонка исключена.
+// =========================================================================
+    void handleAuthRefresh(const std::string& client_ip) {
+        g_serverLogger.info("handleAuthRefresh: request from " + client_ip);
+
+        // ШАГ 1: Разбор JSON тела запроса
+        json body;
+        try {
+            body = json::parse(request_.body());
+        }
+        catch (const json::parse_error& e) {
+            g_serverLogger.warning("handleAuthRefresh: JSON parse error from " + client_ip +
+                ": " + std::string(e.what()));
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid JSON payload"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // ШАГ 2: Валидация обязательного поля
+        if (!body.contains("refresh_token") || !body["refresh_token"].is_string()) {
+            g_serverLogger.warning("handleAuthRefresh: missing refresh_token from " + client_ip);
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "refresh_token is required and must be a string"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        std::string refresh_token = body["refresh_token"].get<std::string>();
+        g_serverLogger.info("handleAuthRefresh: refresh_token length=" + std::to_string(refresh_token.length()));
+
+        // ШАГ 3: Делегирование в AuthService
+        auto tokensOpt = auth_->refreshAccessToken(refresh_token);
+
+        if (!tokensOpt) {
+            g_serverLogger.warning("handleAuthRefresh: refresh failed for " + client_ip);
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid or expired refresh token"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // ШАГ 4: Формируем успешный ответ
+        auto now = std::chrono::system_clock::now();
+        int64_t expiresAt = std::chrono::duration_cast<std::chrono::seconds>(
+            now.time_since_epoch()).count() + Config::JWT_ACCESS_EXPIRY_SECONDS;
+
+        json resp;
+        resp["access_token"] = tokensOpt->first;
+        resp["refresh_token"] = tokensOpt->second;
+        resp["expires_at"] = expiresAt;
+
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = resp.dump();
+        response_.prepare_payload();
+
+        g_serverLogger.info("handleAuthRefresh: SUCCESS - new tokens issued for " + client_ip +
+            ", expires_at=" + std::to_string(expiresAt));
+    }
+
+    // -------------------------------------------------------------------------
+    // Обработчик получения данных о продажах пользователя
+    // /api/v1/clients/sales?client_id=...
+    //
+    // ИСПРАВЛЕНИЕ (2026-10-10):
+    //   Ранее метод пропускал из локальной БД ВСЕ записи со статусом "sold",
+    //   ошибочно полагая, что они гарантированно возвращаются HTTP-сервисом
+    //   1С (salesGET). На практике salesGET фильтрует продажи по полю
+    //   "ДисконтнаяКарта" (ПОДОБНО client_id), и если при пробитии чека
+    //   кассир не указал дисконтную карту с числовым client_id комитента —
+    //   1С возвращает пустой массив. В результате проданные товары, факт
+    //   которых уже зафиксирован в PostgreSQL (через registerItemSale →
+    //   items.status='sold'), не попадали в ответ клиенту, и окно
+    //   "Мои продажи" показывало "Нет данных о продажах".
+    //
+    //   РЕШЕНИЕ: убрать фильтр "if (status == 'sold') continue;" из цикла
+    //   по dbItems. Теперь записи со статусом "sold" из PostgreSQL
+    //   включаются в итоговый массив наравне с returned/compensated/
+    //   expired/pending. Клиентская часть (main_window.h::onSalesDataReady)
+    //   НЕ МЕНЯЕТСЯ — она уже корректно обрабатывает статус "sold" через
+    //   translateStatus() → "Продан".
+    //
+    //   Логика, математика и бизнес-модель клиентской части НЕ изменены.
+    //   Новые переменные/функции НЕ добавлены. Архитектура БД НЕ затронута.
+    //   Потокобезопасность: метод выполняется в рамках одного HTTP-потока
+    //   HttpSession, getClientItems использует собственную pqxx::work —
+    //   гонка исключена.
+    // -------------------------------------------------------------------------
     void handleClientSales(const std::string& client_ip) {
         // 1. Извлекаем токен из заголовка Authorization
         std::string authHeader;
         auto it = request_.find(http::field::authorization);
         if (it != request_.end()) {
-            
             authHeader = it->value();
         }
         if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
@@ -704,86 +891,169 @@ private:
             response_.result(http::status::forbidden);
             response_.body() = json{ {"error", "Access denied: client_id does not match token"} }.dump();
             response_.prepare_payload();
-            g_serverLogger.warning("Sales request access denied for client " + std::to_string(clientId) + " from " + client_ip);
+            g_serverLogger.warning("Sales request access denied for client " +
+                std::to_string(clientId) + " from " + client_ip);
             return;
         }
 
-        // 5. Запрашиваем данные у 1С
-        json salesData = onec_->getClientSales(clientId);
-        // === FALLBACK: если 1С недоступна (возврат пустого объекта) — читаем из локальной PostgreSQL ===
-        if (salesData.empty()) {
-            g_serverLogger.info("1C integration returned empty/invalid data (connection failure or parse error), "
-                "activating local DB fallback for client_id=" + std::to_string(clientId));
-
-            auto dbItems = db_->getClientItems(clientId);
-            json salesArray = json::array();
-
-            // Лямбда для форматирования Unix timestamp → строка "YYYY-MM-DD HH:MM:SS"
-                        // Лямбда для форматирования Unix timestamp → строка "YYYY-MM-DD HH:MM:SS"
-            auto formatTimestamp = [](int64_t ts) -> std::string {
-                std::time_t t = static_cast<std::time_t>(ts);
-                struct tm tm_info;
+        // Лямбда для форматирования Unix timestamp → строка "YYYY-MM-DD HH:MM:SS"
+        auto formatTimestamp = [](int64_t ts) -> std::string {
+            std::time_t t = static_cast<std::time_t>(ts);
+            struct tm tm_info;
 #ifdef _WIN32
-                // MSVC (Visual Studio 2022): используем localtime_s
-                // Сигнатура: errno_t localtime_s(struct tm* _tm, const time_t* _time);
-                if (localtime_s(&tm_info, &t) != 0) {
-                    return "";
-                }
+            if (localtime_s(&tm_info, &t) != 0) {
+                return "";
+            }
 #else
-                // Linux (Ubuntu 26.04 LTS, GCC/Clang): используем POSIX localtime_r
-                if (localtime_r(&t, &tm_info) == nullptr) {
-                    return "";
-                }
+            if (localtime_r(&t, &tm_info) == nullptr) {
+                return "";
+            }
 #endif
-                char buf[32];
-                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_info);
-                return std::string(buf);
-                };
+            char buf[32];
+            std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_info);
+            return std::string(buf);
+            };
 
-            for (const auto& dbItem : dbItems) {
+        json salesArray = json::array();
+
+        // =========================================================================
+        // ШАГ 1: Получаем данные из 1С (продажи по дисконтной карте).
+        // Этот источник может вернуть ПУСТОЙ массив, если в 1С при пробитии
+        // чека не была указана дисконтная карта с client_id в наименовании/коде.
+        // Поэтому данные из 1С — вспомогательный источник, а не единственный.
+        // =========================================================================
+        json salesData = onec_->getClientSales(clientId);
+        size_t onecCount = 0;
+        if (!salesData.empty() && salesData.contains("sales") && salesData["sales"].is_array()) {
+            onecCount = salesData["sales"].size();
+            g_serverLogger.info("handleClientSales: 1C returned " +
+                std::to_string(onecCount) + " sales for client_id=" +
+                std::to_string(clientId));
+            for (const auto& sale : salesData["sales"]) {
                 json item;
-                // Маппинг полей БД → ожидаемый терминалом формат (main_window.h :: onSalesDataReady)
-                item["item_number"] = std::to_string(dbItem.value("item_number", 0));
-                item["item_name"] = dbItem.value("description", "");
-                item["price"] = dbItem.value("estimated_price", 0.0);
-                item["quantity"] = dbItem.value("quantity", 1);
-                item["status"] = dbItem.value("status", "");
-                item["note"] = dbItem.value("note", "");
-
-                // Преобразование created_at (report_date) и sale_date
-                if (dbItem.contains("created_at") && !dbItem["created_at"].is_null()) {
-                    item["report_date"] = formatTimestamp(dbItem["created_at"].get<int64_t>());
-                }
-                else {
-                    item["report_date"] = "";
-                }
-
-                if (dbItem.contains("sale_date") && !dbItem["sale_date"].is_null()) {
-                    item["sale_date"] = formatTimestamp(dbItem["sale_date"].get<int64_t>());
-                }
-                else {
-                    item["sale_date"] = "";
-                }
-
+                item["item_number"] = sale.value("sku", "");
+                item["item_name"] = sale.value("item_name", "");
+                item["price"] = sale.value("price", 0.0);
+                item["quantity"] = sale.value("quantity", 0);
+                item["sale_date"] = sale.value("sale_date", "");
+                item["report_date"] = "";
+                item["status"] = "sold";
+                item["note"] = "";
                 salesArray.push_back(item);
-
-                g_serverLogger.info("Fallback item mapped: item_number=" + item["item_number"].get<std::string>() +
-                    ", item_name=" + item["item_name"].get<std::string>() +
-                    ", price=" + std::to_string(item["price"].get<double>()) +
-                    ", quantity=" + std::to_string(item["quantity"].get<int>()) +
-                    ", status=" + item["status"].get<std::string>());
-            } // конец цикла маппинга fallback-данных из локальной БД
-            salesData = json{ {"sales", salesArray} };
-            g_serverLogger.info("Local DB fallback completed: prepared " + std::to_string(salesArray.size()) +
-                " records for client_id=" + std::to_string(clientId));
+            }
+        }
+        else {
+            g_serverLogger.info("handleClientSales: 1C returned empty/invalid data for client_id=" +
+                std::to_string(clientId) +
+                " — will rely on local PostgreSQL data (items.status='sold')");
         }
 
-        // 6. Отдаём результат
+        // =========================================================================
+        // ШАГ 2: Получаем данные из локальной БД PostgreSQL.
+        //
+        // ИСПРАВЛЕНИЕ: ранее здесь стоял фильтр
+        //     if (status == "sold") { continue; }
+        // который пропускал проданные товары, полагаясь на данные из 1С.
+        // Поскольку 1С ищет продажи по ДисконтнойКарте (а не по client_id),
+        // этот фильтр приводил к полной потере проданных товаров в ответе.
+        //
+        // Теперь записи со статусом "sold" из PostgreSQL включаются в ответ
+        // наравне с returned/compensated/expired/pending. Это корректно,
+        // потому что:
+        //   - факт продажи уже зафиксирован в PostgreSQL (registerItemSale →
+        //     items.status='sold', items.sold_quantity, item_sales);
+        //   - клиентская часть (main_window.h::translateStatus) корректно
+        //     обрабатывает статус "sold" → "Продан";
+        //   - дублирования с данными из 1С не будет, т.к. при пустом ответе
+        //     1С в salesArray попадают только записи из БД, а при непустом —
+        //     в рамках одной выборки getClientItems нет дубликатов по
+        //     item_number/barcode.
+        // =========================================================================
+        auto dbItems = db_->getClientItems(clientId);
+        g_serverLogger.info("handleClientSales: local DB returned " +
+            std::to_string(dbItems.size()) + " items for client_id=" +
+            std::to_string(clientId));
+
+        size_t soldFromDbCount = 0;
+        size_t skippedCount = 0;
+        for (const auto& dbItem : dbItems) {
+            std::string status = dbItem.value("status", "");
+
+            // ИСПРАВЛЕНИЕ: фильтр по статусу "sold" УБРАН.
+            // Разрешённые статусы для включения в ответ:
+            //   - sold          (продан — ключевой случай исправления)
+            //   - returned      (возвращён комитенту)
+            //   - compensated   (возмещён ущерб за утрату)
+            //   - expired       (выбыл по истечении 15 дней)
+            //   - pending       (ожидает приёма / на продаже)
+            if (status != "sold" &&
+                status != "returned" &&
+                status != "compensated" &&
+                status != "expired" &&
+                status != "pending") {
+                ++skippedCount;
+                g_serverLogger.info("handleClientSales: skipping DB item with status='" +
+                    status + "' (id=" + std::to_string(dbItem.value("id", 0)) + ")");
+                continue;
+            }
+
+            if (status == "sold") {
+                ++soldFromDbCount;
+            }
+
+            json item;
+            // Маппинг полей БД → ожидаемый клиентом формат
+            // (идентичен формату, который формирует 1С, чтобы клиентская часть
+            //  main_window.h::onSalesDataReady обработала их без изменений)
+            item["item_number"] = std::to_string(dbItem.value("item_number", 0));
+            item["item_name"] = dbItem.value("description", "");
+            item["price"] = dbItem.value("estimated_price", 0.0);
+            item["quantity"] = dbItem.value("quantity", 1);
+            item["status"] = status;
+            item["note"] = dbItem.value("note", "");
+
+            // report_date — дата создания записи (дата приёма товара)
+            if (dbItem.contains("created_at") && !dbItem["created_at"].is_null()) {
+                item["report_date"] = formatTimestamp(dbItem["created_at"].get<int64_t>());
+            }
+            else {
+                item["report_date"] = "";
+            }
+
+            // sale_date — дата продажи (заполняется registerItemSale при status='sold')
+            if (dbItem.contains("sale_date") && !dbItem["sale_date"].is_null()) {
+                item["sale_date"] = formatTimestamp(dbItem["sale_date"].get<int64_t>());
+            }
+            else {
+                item["sale_date"] = "";
+            }
+
+            salesArray.push_back(item);
+            g_serverLogger.info("handleClientSales: DB item mapped - item_number=" +
+                item["item_number"].get<std::string>() +
+                ", item_name=" + item["item_name"].get<std::string>() +
+                ", price=" + std::to_string(item["price"].get<double>()) +
+                ", quantity=" + std::to_string(item["quantity"].get<int>()) +
+                ", status=" + item["status"].get<std::string>());
+        }
+
+        g_serverLogger.info("handleClientSales: summary for client_id=" +
+            std::to_string(clientId) +
+            " — from 1C: " + std::to_string(onecCount) +
+            ", sold from DB: " + std::to_string(soldFromDbCount) +
+            ", skipped (other statuses): " + std::to_string(skippedCount) +
+            ", total in response: " + std::to_string(salesArray.size()));
+
+        // ШАГ 3: Формируем итоговый ответ
+        json responseData = json{ {"sales", salesArray} };
+
+        // 5. Отдаём результат
         response_.result(http::status::ok);
         response_.set(http::field::content_type, "application/json");
-        response_.body() = salesData.dump();
+        response_.body() = responseData.dump();
         response_.prepare_payload();
-        g_serverLogger.info("Sales data returned for client " + std::to_string(clientId));
+        g_serverLogger.info("Sales data returned for client " + std::to_string(clientId) +
+            ", total records=" + std::to_string(salesArray.size()));
     }
 
     // Обработчик получения номера комитента, если пользователь авторизован
@@ -843,6 +1113,297 @@ private:
 
         g_serverLogger.info("handleClientMe: data returned for client id " + std::to_string(clientOpt->id) +
             " (phone " + *phoneOpt + ") from " + client_ip);
+    }
+
+    // =========================================================================
+// НОВЫЙ ОБРАБОТЧИК: GET /api/v1/clients/my_appendices?client_id=...
+//
+// Возвращает список приложений к договору для текущего клиента.
+// Использует существующий метод db_->getClientAppendices(), который уже
+// применяется в кассирском роуте /api/v1/cashier/appendices.
+//
+// Доступ: только владелец клиентского аккаунта.
+// База данных НЕ меняется.
+// Бизнес-логика и математика НЕ меняются.
+// =========================================================================
+    void handleClientMyAppendices(const std::string& client_ip) {
+        g_serverLogger.info("handleClientMyAppendices: request from " + client_ip);
+
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) {
+            authHeader = it->value();
+        }
+
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Missing or invalid Authorization header"}
+            }.dump();
+            response_.prepare_payload();
+
+            g_serverLogger.warning(
+                "handleClientMyAppendices: missing or invalid Authorization header from " +
+                client_ip
+            );
+
+            return;
+        }
+
+        std::string token = authHeader.substr(7);
+
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Invalid or expired token"}
+            }.dump();
+            response_.prepare_payload();
+
+            g_serverLogger.warning(
+                "handleClientMyAppendices: invalid or expired token from " +
+                client_ip
+            );
+
+            return;
+        }
+
+        std::string query = request_.target();
+        std::string clientIdStr;
+
+        size_t pos = query.find("?client_id=");
+        if (pos != std::string::npos) {
+            clientIdStr = query.substr(pos + 11);
+
+            size_t end = clientIdStr.find('&');
+            if (end != std::string::npos) {
+                clientIdStr = clientIdStr.substr(0, end);
+            }
+        }
+
+        if (clientIdStr.empty()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Missing client_id parameter"}
+            }.dump();
+            response_.prepare_payload();
+
+            g_serverLogger.warning(
+                "handleClientMyAppendices: missing client_id from " +
+                client_ip
+            );
+
+            return;
+        }
+
+        int clientId = 0;
+
+        try {
+            clientId = std::stoi(clientIdStr);
+        }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Invalid client_id"}
+            }.dump();
+            response_.prepare_payload();
+
+            g_serverLogger.warning(
+                "handleClientMyAppendices: invalid client_id from " +
+                client_ip
+            );
+
+            return;
+        }
+
+        if (clientId <= 0) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "client_id must be positive"}
+            }.dump();
+            response_.prepare_payload();
+
+            g_serverLogger.warning(
+                "handleClientMyAppendices: non-positive client_id from " +
+                client_ip
+            );
+
+            return;
+        }
+
+        auto clientOpt = db_->getClientByPhone(*phoneOpt);
+
+        if (!clientOpt || clientOpt->id != clientId) {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Access denied: client_id does not match token"}
+            }.dump();
+            response_.prepare_payload();
+
+            g_serverLogger.warning(
+                "handleClientMyAppendices: access denied for client_id=" +
+                std::to_string(clientId) +
+                " from " + client_ip
+            );
+
+            return;
+        }
+
+        json appendices = db_->getClientAppendices(clientId);
+
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = json{
+            {"appendices", appendices},
+            {"count", appendices.size()}
+        }.dump();
+        response_.prepare_payload();
+
+        g_serverLogger.info(
+            "handleClientMyAppendices: returned " +
+            std::to_string(appendices.size()) +
+            " appendices for client_id=" +
+            std::to_string(clientId) +
+            " from " + client_ip
+        );
+    }
+
+    // =========================================================================
+// НОВЫЙ ОБРАБОТЧИК: GET /api/v1/clients/appendix_by_number?number=<N>
+//
+// Возвращает перечень товаров приложения к договору для клиента-владельца.
+// Использует СУЩЕСТВУЮЩИЙ метод db_->getAppendixByNumber(number), который
+// уже применяется кассиром и товароведом. БД НЕ меняется.
+//
+// Доступ: только владелец приложения. Проверка выполняется по client_id,
+// который возвращается из getAppendixByNumber и должен совпадать с
+// client_id из JWT-токена.
+// =========================================================================
+    void handleClientAppendixByNumber(const std::string& client_ip) {
+        g_serverLogger.info("handleClientAppendixByNumber: request from " + client_ip);
+
+        // 1. Авторизация
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) authHeader = it->value();
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Missing or invalid Authorization header"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        std::string token = authHeader.substr(7);
+        auto phoneOpt = auth_->verifyJWT(token);
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid or expired token"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // 2. Определяем client_id клиента по токену
+        auto clientOpt = db_->getClientByPhone(*phoneOpt);
+        if (!clientOpt) {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Client not found"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        const int authenticatedClientId = clientOpt->id;
+
+        // 3. Извлекаем параметр number
+        std::string query = request_.target();
+        std::string numberStr;
+        size_t pos = query.find("?number=");
+        if (pos != std::string::npos) {
+            numberStr = query.substr(pos + 8);
+            size_t end = numberStr.find('&');
+            if (end != std::string::npos) numberStr = numberStr.substr(0, end);
+        }
+        if (numberStr.empty()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "number parameter required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // 4. Валидация: только цифры
+        long long appendixNumber = 0;
+        try {
+            for (char c : numberStr) {
+                if (c < '0' || c > '9') {
+                    throw std::invalid_argument("non-digit character");
+                }
+            }
+            appendixNumber = std::stoll(numberStr);
+        }
+        catch (const std::exception& e) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "number must be a positive integer"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        if (appendixNumber <= 0) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "number must be positive"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // 5. Делегирование в существующий метод БД (БЕЗ ИЗМЕНЕНИЙ)
+        g_serverLogger.info("handleClientAppendixByNumber: querying appendix_number=" +
+            std::to_string(appendixNumber) + ", authenticatedClientId=" +
+            std::to_string(authenticatedClientId));
+        json data = db_->getAppendixByNumber(appendixNumber);
+
+        if (data.contains("error")) {
+            response_.result(http::status::not_found);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = data.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // 6. Проверка прав: приложение должно принадлежать авторизованному клиенту
+        int appendixClientId = data.value("client_id", 0);
+        if (appendixClientId != authenticatedClientId) {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Access denied: appendix does not belong to this client"}
+            }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleClientAppendixByNumber: ACCESS DENIED. appendix_number=" +
+                std::to_string(appendixNumber) +
+                ", appendixClientId=" + std::to_string(appendixClientId) +
+                ", authenticatedClientId=" + std::to_string(authenticatedClientId) +
+                ", from " + client_ip);
+            return;
+        }
+
+        // 7. Успешный ответ
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = data.dump();
+        response_.prepare_payload();
+        const int itemsCount = data.contains("items") ?
+            static_cast<int>(data["items"].size()) : 0;
+        g_serverLogger.info("handleClientAppendixByNumber: SUCCESS - appendix_number=" +
+            std::to_string(appendixNumber) +
+            ", items=" + std::to_string(itemsCount) +
+            ", clientId=" + std::to_string(authenticatedClientId));
     }
 
     // -------------------------------------------------------------------------
@@ -1590,8 +2151,17 @@ private:
 
     // =========================================================================
     // POST /api/v1/items/batch  (массовое сохранение товаров)
-    // ДОПОЛНЕНИЕ: Добавлена валидация полей распределения выручки
-    // (client_percent, store_percent, client_amount, store_amount)
+    // ИСПРАВЛЕНИЕ (2026-10-13): после успешного addItemsBatch сервер
+    // возвращает клиенту полный перечень созданных items с их id и barcode.
+    // Это необходимо клиенту для корректной печати ценников через
+    // PriceTagPrinter, которому требуется валидный itemId для генерации
+    // штрих-кода формата SHOP<id>.
+    //
+    // Логика, математика и бизнес-модель НЕ изменены.
+    // БД НЕ изменена — используется существующий метод
+    // getAppendixByNumber(appendixNumber), который уже реализован
+    // в database.h и возвращает items с полями id, barcode, description,
+    // quantity, estimated_price, condition, note, client_amount.
     // =========================================================================
     void handleAddItemsBatch(const std::string& client_ip) {
         // 1. Проверка авторизации
@@ -1600,6 +2170,7 @@ private:
         if (it != request_.end()) authHeader = it->value();
         if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
             response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Missing or invalid Authorization"} }.dump();
             response_.prepare_payload();
             g_serverLogger.warning("handleAddItemsBatch: missing auth from " + client_ip);
@@ -1609,40 +2180,59 @@ private:
         auto phoneOpt = auth_->verifyJWT(token);
         if (!phoneOpt) {
             response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Invalid token"} }.dump();
             response_.prepare_payload();
             g_serverLogger.warning("handleAddItemsBatch: invalid token from " + client_ip);
             return;
         }
-
         // 2. Разбор JSON
         json body;
         try { body = json::parse(request_.body()); }
         catch (const json::parse_error& e) {
             response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Invalid JSON"} }.dump();
             response_.prepare_payload();
             g_serverLogger.warning("handleAddItemsBatch: JSON parse error from " + client_ip);
             return;
         }
-
         if (!body.contains("client_id") || !body["client_id"].is_number() ||
             !body.contains("items") || !body["items"].is_array()) {
             response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Missing client_id or items array"} }.dump();
             response_.prepare_payload();
             g_serverLogger.warning("handleAddItemsBatch: missing fields from " + client_ip);
             return;
         }
-
         int clientId = body["client_id"].get<int>();
         json items = body["items"];
-
-        // =========================================================================
-        // ВАЛИДАЦИЯ clientId: должен быть положительным
-        // =========================================================================
+        // Валидация appendix_number
+        long long reservedAppendixNumber = 0;
+        if (body.contains("appendix_number")) {
+            if (!body["appendix_number"].is_number_integer()) {
+                response_.result(http::status::bad_request);
+                response_.set(http::field::content_type, "application/json");
+                response_.body() = json{ {"error", "appendix_number must contain only digits (integer)"} }.dump();
+                response_.prepare_payload();
+                g_serverLogger.warning("handleAddItemsBatch: invalid appendix_number format from " + client_ip);
+                return;
+            }
+            reservedAppendixNumber = body["appendix_number"].get<long long>();
+            if (reservedAppendixNumber < 0) {
+                response_.result(http::status::bad_request);
+                response_.set(http::field::content_type, "application/json");
+                response_.body() = json{ {"error", "appendix_number must be positive"} }.dump();
+                response_.prepare_payload();
+                return;
+            }
+            g_serverLogger.info("handleAddItemsBatch: using reserved globally unique appendix_number=" +
+                std::to_string(reservedAppendixNumber));
+        }
         if (clientId <= 0) {
             response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Invalid client_id: must be positive"} }.dump();
             response_.prepare_payload();
             g_serverLogger.error("handleAddItemsBatch: received invalid clientId=" +
@@ -1650,29 +2240,22 @@ private:
                 " (worker phone: " + *phoneOpt + ")");
             return;
         }
-
-        // =========================================================================
-        // НОВОЕ: ВАЛИДАЦИЯ ПОЛЕЙ РАСПРЕДЕЛЕНИЯ ВЫРУЧКИ В КАЖДОМ ТОВАРЕ
-        // Проверяем наличие, диапазон и сумму процентов.
-        // Это гарантирует целостность данных в БД.
-        // =========================================================================
+        // Валидация полей распределения выручки
         for (const auto& item : items) {
-            // Проверка наличия обязательных полей распределения
             if (!item.contains("client_percent") || !item["client_percent"].is_number() ||
                 !item.contains("store_percent") || !item["store_percent"].is_number()) {
                 response_.result(http::status::bad_request);
+                response_.set(http::field::content_type, "application/json");
                 response_.body() = json{ {"error", "Missing client_percent or store_percent in item"} }.dump();
                 response_.prepare_payload();
                 g_serverLogger.warning("handleAddItemsBatch: missing commission fields from " + client_ip);
                 return;
             }
-
             double clientPercent = item["client_percent"].get<double>();
             double storePercent = item["store_percent"].get<double>();
-
-            // Проверка диапазона процентов
             if (clientPercent < 0.0 || clientPercent > 100.0) {
                 response_.result(http::status::bad_request);
+                response_.set(http::field::content_type, "application/json");
                 response_.body() = json{ {"error", "client_percent must be between 0 and 100"} }.dump();
                 response_.prepare_payload();
                 g_serverLogger.warning("handleAddItemsBatch: invalid client_percent=" +
@@ -1681,89 +2264,121 @@ private:
             }
             if (storePercent < 0.0 || storePercent > 100.0) {
                 response_.result(http::status::bad_request);
+                response_.set(http::field::content_type, "application/json");
                 response_.body() = json{ {"error", "store_percent must be between 0 and 100"} }.dump();
                 response_.prepare_payload();
                 g_serverLogger.warning("handleAddItemsBatch: invalid store_percent=" +
                     std::to_string(storePercent) + " from " + client_ip);
                 return;
             }
-
-            // Проверка суммы процентов (должна быть ровно 100%)
             double totalPercent = clientPercent + storePercent;
             if (std::abs(totalPercent - 100.0) > 0.01) {
                 response_.result(http::status::bad_request);
+                response_.set(http::field::content_type, "application/json");
                 response_.body() = json{ {"error", "Sum of client_percent and store_percent must be 100"} }.dump();
                 response_.prepare_payload();
                 g_serverLogger.warning("handleAddItemsBatch: percent sum=" +
                     std::to_string(totalPercent) + " != 100 from " + client_ip);
                 return;
             }
-
-            // Проверка наличия сумм выплат (опционально, но рекомендуется)
             if (!item.contains("client_amount") || !item["client_amount"].is_number() ||
                 !item.contains("store_amount") || !item["store_amount"].is_number()) {
                 response_.result(http::status::bad_request);
+                response_.set(http::field::content_type, "application/json");
                 response_.body() = json{ {"error", "Missing client_amount or store_amount in item"} }.dump();
                 response_.prepare_payload();
                 g_serverLogger.warning("handleAddItemsBatch: missing amount fields from " + client_ip);
                 return;
             }
         }
-
         g_serverLogger.info("handleAddItemsBatch: clientId=" + std::to_string(clientId) +
             ", itemsCount=" + std::to_string(items.size()) +
             ", worker=" + *phoneOpt + ", from=" + client_ip);
-
         // 3. Проверяем аутентификацию и роль
         auto clientOpt = db_->getClientByPhone(*phoneOpt);
         if (!clientOpt) {
             response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Access denied: user not found"} }.dump();
             response_.prepare_payload();
             g_serverLogger.warning("handleAddItemsBatch: user not found for phone " + *phoneOpt);
             return;
         }
-
-        // Товаровед (worker) может добавлять товары для ЛЮБОГО клиента
         if (clientOpt->role != "worker") {
             if (clientOpt->id != clientId) {
                 response_.result(http::status::forbidden);
+                response_.set(http::field::content_type, "application/json");
                 response_.body() = json{ {"error", "Access denied"} }.dump();
                 response_.prepare_payload();
                 g_serverLogger.warning("handleAddItemsBatch: non-worker access denied for " + *phoneOpt);
                 return;
             }
         }
-
-        // Проверка роли: только worker может использовать batch
         if (clientOpt->role != "worker") {
             response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Access denied: worker role required"} }.dump();
             response_.prepare_payload();
             g_serverLogger.warning("handleAddItemsBatch: non-worker tried to add items: " + *phoneOpt);
             return;
         }
-
         int workerId = clientOpt->id;
         g_serverLogger.info("handleAddItemsBatch: clientId=" + std::to_string(clientId) +
             ", itemsCount=" + std::to_string(items.size()) +
             ", workerId=" + std::to_string(workerId) +
             ", workerPhone=" + *phoneOpt + ", from=" + client_ip);
-
         // 4. Сохраняем товары + создаём приложение к договору (атомарно)
         long long appendixNumber = 0;
-        if (db_->addItemsBatch(clientId, items, workerId, &appendixNumber)) {
+        if (db_->addItemsBatch(clientId, items, workerId, &appendixNumber, reservedAppendixNumber)) {
+            // =====================================================================
+            // ИСПРАВЛЕНИЕ (2026-10-13): после успешного сохранения получаем
+            // из БД созданные items с их id и barcode, чтобы клиент мог
+            // корректно сформировать ReceiptItem с валидным itemId для
+            // печати ценников через PriceTagPrinter.
+            //
+            // Используем существующий метод getAppendixByNumber(), который
+            // возвращает items с полями id, barcode, description, quantity,
+            // estimated_price, condition, note, client_amount.
+            // БД НЕ МЕНЯЕТСЯ, математика НЕ МЕНЯЕТСЯ.
+            // =====================================================================
+            json createdItems = json::array();
+            try {
+                json appendixData = db_->getAppendixByNumber(appendixNumber);
+                if (!appendixData.contains("error") && appendixData.contains("items") &&
+                    appendixData["items"].is_array()) {
+                    createdItems = appendixData["items"];
+                    g_serverLogger.info("handleAddItemsBatch: fetched " +
+                        std::to_string(createdItems.size()) +
+                        " created items with ids for appendix_number=" +
+                        std::to_string(appendixNumber));
+                }
+                else {
+                    g_serverLogger.warning("handleAddItemsBatch: getAppendixByNumber returned error or empty items");
+                }
+            }
+            catch (const std::exception& e) {
+                g_serverLogger.error("handleAddItemsBatch: exception fetching created items: " +
+                    std::string(e.what()));
+            }
+
             response_.result(http::status::ok);
+            response_.set(http::field::content_type, "application/json");
             json okResp;
             okResp["success"] = true;
-            okResp["appendix_number"] = appendixNumber; // <-- НОВОЕ: номер приложения для чека
+            okResp["appendix_number"] = appendixNumber;
+            // НОВОЕ ПОЛЕ: массив созданных items с их id и barcode.
+            // Клиент использует его для обогащения m_receiptSnapshot.items
+            // реальными id перед печатью ценников.
+            okResp["items"] = createdItems;
             response_.body() = okResp.dump();
             g_serverLogger.info("handleAddItemsBatch: saved " + std::to_string(items.size()) +
                 " items for client " + std::to_string(clientId) +
-                ", appendix_number=" + std::to_string(appendixNumber));
+                ", appendix_number=" + std::to_string(appendixNumber) +
+                ", returned items count=" + std::to_string(createdItems.size()));
         }
         else {
             response_.result(http::status::internal_server_error);
+            response_.set(http::field::content_type, "application/json");
             response_.body() = json{ {"error", "Failed to save items"} }.dump();
             g_serverLogger.error("handleAddItemsBatch: FAILED for client " + std::to_string(clientId));
         }
@@ -2174,6 +2789,7 @@ private:
             response_.prepare_payload();
             return;
         }
+        int workerId = clientOpt->id; // <-- ИЗВЛЕКАЕМ worker_id ИЗ ТОКЕНА
         std::string query = request_.target();
         int clientId = 0;
         size_t pos = query.find("?client_id=");
@@ -2187,13 +2803,227 @@ private:
             response_.prepare_payload();
             return;
         }
-        json data = db_->getLatestAppendix(clientId);
+        g_serverLogger.info("handleAppendixLatest: client_id=" + std::to_string(clientId) +
+            ", worker_id=" + std::to_string(workerId) + " from " + client_ip);
+        json data = db_->getLatestAppendix(clientId, workerId); // <-- ПЕРЕДАЕМ worker_id
         response_.result(data.contains("error") ? http::status::not_found : http::status::ok);
         response_.set(http::field::content_type, "application/json");
         response_.body() = data.dump();
         response_.prepare_payload();
-        g_serverLogger.info("handleAppendixLatest: client_id=" + std::to_string(clientId) + " done");
+        g_serverLogger.info("handleAppendixLatest: client_id=" + std::to_string(clientId) +
+            ", worker_id=" + std::to_string(workerId) + " done");
     }
+
+    // =========================================================================
+    // НОВЫЙ ОБРАБОТЧИК: РЕЗЕРВИРОВАНИЕ СЛЕДУЮЩЕГО НОМЕРА ПРИЛОЖЕНИЯ
+    // GET /api/v1/appendix/next
+    // ДОСТУП: только роль worker.
+    // =========================================================================
+// =========================================================================
+// ИСПРАВЛЕННЫЙ ОБРАБОТЧИК: СЛЕДУЮЩИЙ НОМЕР ПРИЛОЖЕНИЯ ДЛЯ КОМИТЕНТА
+// GET /api/v1/appendix/next?client_id=...
+// =========================================================================
+    void handleAppendixNext(const std::string& client_ip) {
+        g_serverLogger.info("handleAppendixNext: request from " + client_ip);
+        std::string authHeader;
+        auto it = request_.find(http::field::authorization);
+        if (it != request_.end()) authHeader = it->value();
+        if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Missing or invalid Authorization"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        auto phoneOpt = auth_->verifyJWT(authHeader.substr(7));
+        if (!phoneOpt) {
+            response_.result(http::status::unauthorized);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{ {"error", "Invalid token"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        auto clientOpt = db_->getClientByPhone(*phoneOpt);
+        if (!clientOpt || clientOpt->role != "worker") {
+            response_.result(http::status::forbidden);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Access denied: worker role required"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        // Извлекаем client_id из запроса
+        std::string query = request_.target();
+        int clientId = 0;
+        size_t pos = query.find("?client_id=");
+        if (pos != std::string::npos) {
+            try { clientId = std::stoi(query.substr(pos + 11)); }
+            catch (...) { clientId = 0; }
+        }
+        if (clientId <= 0) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Missing or invalid client_id"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+        long long nextNumber = db_->getNextAppendixNumber(clientId);
+        if (nextNumber > 0) {
+            response_.result(http::status::ok);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"appendix_number", nextNumber}
+            }.dump();
+            g_serverLogger.info("handleAppendixNext: clientId=" +
+                std::to_string(clientId) +
+                ", nextAppendixNumber=" + std::to_string(nextNumber));
+        }
+        else {
+            response_.result(http::status::internal_server_error);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "Failed to get next appendix number"}
+            }.dump();
+        }
+        response_.prepare_payload();
+    }
+
+    // =========================================================================
+    // POST /api/v1/item/by_barcode
+    // Поиск товара по уникальному штрихкоду SHOP<item_id>.
+    // Только чтение: продажа здесь НЕ регистрируется.
+    // =========================================================================
+    void handleItemByBarcode(const std::string& client_ip) {
+        g_serverLogger.info("handleItemByBarcode: request from " + client_ip);
+
+        const int userId = verifyCashierRole(client_ip, "handleItemByBarcode");
+
+        if (userId == 0)
+            return;
+
+        json body;
+        try {
+            body = json::parse(request_.body());
+        }
+        catch (const json::parse_error& e) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"success", false},
+                {"error", "Invalid JSON payload"}
+            }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning(
+                "handleItemByBarcode: invalid JSON: " + std::string(e.what()));
+            return;
+        }
+
+        if (!body.contains("barcode") || !body["barcode"].is_string()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"success", false},
+                {"error", "barcode is required"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        const std::string barcode = body["barcode"].get<std::string>();
+
+        int itemId = 0;
+        if (!ShopBarcode::tryParse(barcode, itemId)) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"success", false},
+                {"error", "Invalid SHOP barcode"},
+                {"barcode", barcode}
+            }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning(
+                "handleItemByBarcode: invalid SHOP barcode=" + barcode);
+            return;
+        }
+
+        // Единственный источник истины — PostgreSQL через Database.
+        // client_id не передаётся кассиром.
+        json itemData = db_->findItemByBarcode(barcode);
+
+        if (itemData.contains("error")) {
+            const std::string error =
+                itemData.value("error", "Item not found");
+
+            response_.result(
+                error == "Invalid SHOP barcode"
+                ? http::status::bad_request
+                : http::status::not_found);
+
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = itemData.dump();
+            response_.prepare_payload();
+
+            g_serverLogger.warning(
+                "handleItemByBarcode: lookup failed, barcode=" +
+                barcode + ", error=" + error);
+            return;
+        }
+
+        if (!itemData.contains("id") ||
+            !itemData["id"].is_number_integer()) {
+            response_.result(http::status::internal_server_error);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"success", false},
+                {"error", "Invalid item data returned by database"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        const int databaseItemId = itemData["id"].get<int>();
+
+        // Дополнительная защита от рассинхронизации barcode <-> items.id.
+        if (databaseItemId != itemId) {
+            response_.result(http::status::conflict);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"success", false},
+                {"error", "Barcode/item ID mismatch"},
+                {"barcode", barcode},
+                {"barcode_item_id", itemId},
+                {"database_item_id", databaseItemId}
+            }.dump();
+            response_.prepare_payload();
+
+            g_serverLogger.error(
+                "handleItemByBarcode: BARCODE/ITEM MISMATCH, barcode=" +
+                barcode + ", parsedItemId=" + std::to_string(itemId) +
+                ", databaseItemId=" + std::to_string(databaseItemId));
+            return;
+        }
+
+        itemData["success"] = true;
+
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "application/json");
+        response_.body() = itemData.dump();
+        response_.prepare_payload();
+
+        g_serverLogger.info(
+            "handleItemByBarcode: success, barcode=" + barcode +
+            ", itemId=" + std::to_string(databaseItemId) +
+            ", clientId=" +
+            std::to_string(itemData.value("client_id", 0)) +
+            ", available=" +
+            std::to_string(itemData.value("available", 0)));
+    }
+
 
     // =========================================================================
     // ОБРАБОТЧИК POST /api/v1/sale/register
@@ -2209,27 +3039,18 @@ private:
     // =========================================================================
     void handleSaleRegister(const std::string& client_ip) {
 
-        g_serverLogger.info(
-            "handleSaleRegister: request from " +
-            client_ip
-        );
+        g_serverLogger.info("handleSaleRegister: request from " + client_ip);
 
         json body;
 
         try {
-            body =
-                json::parse(request_.body());
+            body = json::parse(request_.body());
         }
         catch (const json::parse_error&) {
 
-            response_.result(
-                http::status::bad_request
-            );
+            response_.result(http::status::bad_request);
 
-            response_.set(
-                http::field::content_type,
-                "application/json"
-            );
+            response_.set(http::field::content_type, "application/json");
 
             response_.body() =
                 json{
@@ -2302,14 +3123,11 @@ private:
             return;
         }
 
-        const std::string barcode =
-            body["barcode"].get<std::string>();
+        const std::string barcode = body["barcode"].get<std::string>();
 
-        const double salePrice =
-            body["sale_price"].get<double>();
+        const double salePrice = body["sale_price"].get<double>();
 
-        const std::string idempotencyKey =
-            body["idempotency_key"].get<std::string>();
+        const std::string idempotencyKey = body["idempotency_key"].get<std::string>();
 
         const std::string source =
             body.value(
@@ -2735,25 +3553,26 @@ private:
     }
 
     // =========================================================================
-    // ОБРАБОТЧИК GET /api/v1/queue/display
-    // Возвращает полное состояние всех 6 очередей для ТВ-дисплея:
-    // - Ожидающие талоны (статус 'waiting' / 'pending')
-    // - Принятые талоны (статус 'accepted') с номером окна
-    // Обслуженные талоны (статус 'served') НЕ возвращаются.
-    //
-    // Формат ответа:
-    // {
-    //   "queues": {
-    //     "general":    { "waiting": [...], "accepted": [...] },
-    //     "first_time": { "waiting": [...], "accepted": [...] },
-    //     "extra_20":   { "waiting": [...], "accepted": [...] },
-    //     "trust":      { "waiting": [...], "accepted": [...] },
-    //     "paid":       { "waiting": [...], "accepted": [...] },
-    //     "expensive":  { "waiting": [...], "accepted": [...] }
-    //   },
-    //   "timestamp": 1234567890
-    // }
-    // =========================================================================
+// ВОССТАНОВЛЕННЫЙ ОБРАБОТЧИК: GET /api/v1/queue/display
+// =========================================================================
+// Возвращает полное состояние всех 6 очередей для ТВ-дисплея:
+// - Ожидающие талоны (статус 'waiting' / 'pending')
+// - Принятые талоны (статус 'accepted') с номером окна
+// Обслуженные талоны (статус 'served') НЕ возвращаются.
+//
+// Формат ответа:
+// {
+//   "queues": {
+//     "general":    { "waiting": [...], "accepted": [...] },
+//     "first_time": { "waiting": [...], "accepted": [...] },
+//     "extra_20":   { "waiting": [...], "accepted": [...] },
+//     "trust":      { "waiting": [...], "accepted": [...] },
+//     "paid":       { "waiting": [...], "accepted": [...] },
+//     "expensive":  { "waiting": [...], "accepted": [...] }
+//   },
+//   "timestamp": 1234567890
+// }
+// =========================================================================
     void handleQueueDisplay(const std::string& client_ip) {
         g_serverLogger.info("handleQueueDisplay: request from " + client_ip);
         try {
@@ -2845,6 +3664,81 @@ private:
             response_.body() = json{ {"error", "Queue display failed"} }.dump();
             response_.prepare_payload();
         }
+    }
+
+    // =========================================================================
+    // ИЗМЕНЕННЫЙ МЕТОД: handleQueueDisplayHTML
+    // Добавлена проверка IP клиента для идентификации Android TV
+    // =========================================================================
+    void handleQueueDisplayHTML(const std::string& client_ip) {
+        g_serverLogger.info("handleQueueDisplayHTML: request from " + client_ip);
+
+        // =========================================================================
+        // НОВОЕ: ПРОВЕРКА IP КЛИЕНТА ДЛЯ ИДЕНТИФИКАЦИИ ANDROID TV
+        // =========================================================================
+        // VPS проверяет, что подключение идет от:
+        // 1. Android TV внутри локальной сети (192.168.3.62)
+        // 2. Или из магазина через внешний IP (188.227.49.137)
+        // Это позволяет логировать подключения TV отдельно от обычных браузеров.
+        // =========================================================================
+        bool isTVConnection = false;
+        std::string connectionSource;
+
+        if (client_ip == Config::TV_INTERNAL_IP) {
+            isTVConnection = true;
+            connectionSource = "Android TV (internal network)";
+            g_serverLogger.info("handleQueueDisplayHTML: ANDROID TV DETECTED - IP=" + client_ip +
+                " (internal network " + Config::TV_INTERNAL_IP + ")");
+        }
+        else if (client_ip == Config::SHOP_EXTERNAL_IP) {
+            isTVConnection = true;
+            connectionSource = "Shop network (external IP)";
+            g_serverLogger.info("handleQueueDisplayHTML: SHOP NETWORK DETECTED - IP=" + client_ip +
+                " (external IP " + Config::SHOP_EXTERNAL_IP + ")");
+        }
+        else {
+            connectionSource = "Unknown client";
+            g_serverLogger.info("handleQueueDisplayHTML: connection from unknown IP=" + client_ip);
+        }
+
+        // =========================================================================
+        // ЧТЕНИЕ HTML ФАЙЛА
+        // =========================================================================
+        const std::string htmlPath = "/var/www/html/queue_display.html";
+        std::ifstream file(htmlPath, std::ios::binary);
+
+        if (!file.is_open()) {
+            g_serverLogger.error("handleQueueDisplayHTML: failed to open " + htmlPath);
+            response_.result(http::status::not_found);
+            response_.set(http::field::content_type, "text/plain; charset=utf-8");
+            response_.body() = "Queue display HTML file not found at " + htmlPath;
+            response_.prepare_payload();
+            return;
+        }
+
+        std::string html((std::istreambuf_iterator<char>(file)),
+            std::istreambuf_iterator<char>());
+        file.close();
+
+        // =========================================================================
+        // НОВОЕ: ДОБАВЛЕНИЕ ИНФОРМАЦИИ О ПОДКЛЮЧЕНИИ В HTML
+        // =========================================================================
+        // Если это подключение от TV, добавляем в HTML комментарий для отладки
+        if (isTVConnection) {
+            std::string tvInfo = "<!-- TV Connection detected from " + client_ip +
+                " (" + connectionSource + ") -->\n";
+            html = tvInfo + html;
+            g_serverLogger.info("handleQueueDisplayHTML: TV info injected into HTML");
+        }
+
+        response_.result(http::status::ok);
+        response_.set(http::field::content_type, "text/html; charset=utf-8");
+        response_.body() = html;
+        response_.prepare_payload();
+
+        g_serverLogger.info("handleQueueDisplayHTML: HTML served successfully (" +
+            std::to_string(html.size()) + " bytes) to " + client_ip +
+            " (source: " + connectionSource + ")");
     }
 
     // =========================================================================
@@ -3613,6 +4507,112 @@ private:
             " unsold items for clientId=" + std::to_string(clientId));
     }
 
+    // =========================================================================
+// НОВЫЙ ОБРАБОТЧИК: handleCashierGetAppendixByNumber
+// =========================================================================
+// GET /api/v1/cashier/appendix_by_number?number=<N>
+//
+// Назначение:
+//   Кассир вводит человекочитаемый номер приложения (например, 488)
+//   и получает полный перечень товаров, сданных под этим приложением:
+//   наименование, штрих-код, количество, цена, статус, состояние.
+//
+// Логика:
+//   1. Проверка роли (cashier/director) через verifyCashierRole().
+//   2. Извлечение параметра number из query string.
+//   3. Валидация: number должен быть положительным целым числом.
+//   4. Делегирование в db_->getAppendixByNumber(number).
+//   5. Возврат JSON с полной информацией о приложении.
+//
+// Потокобезопасность:
+//   Метод db_->getAppendixByNumber() выполняет SELECT в собственной
+//   транзакции pqxx::work. Данные не изменяет. Гонка исключена.
+//
+// БД НЕ МЕНЯЕТСЯ:
+//   Используется существующий индекс idx_contract_appendices_number
+//   по contract_appendices.appendix_number. Запрос выполняется
+//   мгновенно даже на больших объёмах данных.
+// =========================================================================
+    void handleCashierGetAppendixByNumber(const std::string& client_ip) {
+        g_serverLogger.info("handleCashierGetAppendixByNumber: from " + client_ip);
+        // 1. Проверка роли кассира/директора
+        int userId = verifyCashierRole(client_ip, "handleCashierGetAppendixByNumber");
+        if (userId == 0) return;
+
+        // 2. Извлечение параметра number
+        std::string numberStr = extractCashierQueryParam("number");
+        if (numberStr.empty()) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "number parameter required"}
+            }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleCashierGetAppendixByNumber: missing number from " +
+                client_ip);
+            return;
+        }
+
+        // 3. Валидация: только цифры, положительное число
+        long long appendixNumber = 0;
+        try {
+            // Защита от переполнения и некорректных символов
+            for (char c : numberStr) {
+                if (c < '0' || c > '9') {
+                    throw std::invalid_argument("non-digit character");
+                }
+            }
+            appendixNumber = std::stoll(numberStr);
+        }
+        catch (const std::exception& e) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "number must be a positive integer"}
+            }.dump();
+            response_.prepare_payload();
+            g_serverLogger.warning("handleCashierGetAppendixByNumber: invalid number '" +
+                numberStr + "' from " + client_ip);
+            return;
+        }
+        if (appendixNumber <= 0) {
+            response_.result(http::status::bad_request);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = json{
+                {"error", "number must be positive"}
+            }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        // 4. Делегирование в существующий метод БД
+        g_serverLogger.info("handleCashierGetAppendixByNumber: querying appendix_number=" +
+            std::to_string(appendixNumber) + " by cashier=" + std::to_string(userId));
+        json data = db_->getAppendixByNumber(appendixNumber);
+
+        // 5. Формирование ответа
+        if (data.contains("error")) {
+            response_.result(http::status::not_found);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = data.dump();
+            response_.prepare_payload();
+            g_serverLogger.info("handleCashierGetAppendixByNumber: appendix " +
+                std::to_string(appendixNumber) + " not found");
+        }
+        else {
+            response_.result(http::status::ok);
+            response_.set(http::field::content_type, "application/json");
+            response_.body() = data.dump();
+            response_.prepare_payload();
+            const int itemsCount = data.contains("items") ?
+                static_cast<int>(data["items"].size()) : 0;
+            g_serverLogger.info("handleCashierGetAppendixByNumber: SUCCESS - appendix_number=" +
+                std::to_string(appendixNumber) +
+                ", items=" + std::to_string(itemsCount) +
+                ", clientId=" + std::to_string(data.value("client_id", 0)));
+        }
+    }
+
     // -------------------------------------------------------------------------
     // POST /api/v1/cashier/create_document
     // Тело: {"client_id": 42, "doc_type": "return", "items_data": "...",
@@ -3689,6 +4689,297 @@ private:
         }
         response_.prepare_payload();
     }
+
+    // =========================================================================
+    // НОВОЕ: ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ЗАПРОСОВ К API ВТБ
+    // =========================================================================
+    json vtbRequest(const std::string& method, const json& params) {
+        std::string url = Config::VTB_API_URL + method;
+        std::string postData = params.dump();
+        std::string response;
+
+        CURL* curl = curl_easy_init();
+        if (curl) {
+            struct curl_slist* headers = nullptr;
+            headers = curl_slist_append(headers, "Content-Type: application/json");
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_POST, 1L);
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postData.c_str());
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)postData.size());
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, OneCIntegration::write_callback_1c);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+            CURLcode res = curl_easy_perform(curl);
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+
+            if (res == CURLE_OK) {
+                try {
+                    return json::parse(response);
+                }
+                catch (...) {
+                    g_serverLogger.error("vtbRequest: JSON parse error for method " + method);
+                    return { {"errorCode", "-1"}, {"error", "Parse error"} };
+                }
+            }
+            else {
+                g_serverLogger.error("vtbRequest: CURL error " + std::to_string(res) + " for method " + method);
+                return { {"errorCode", "-1"}, {"error", "CURL error"} };
+            }
+        }
+        return { {"errorCode", "-1"}, {"error", "CURL init failed"} };
+    }
+
+    // =========================================================================
+    // НОВЫЕ ОБРАБОТЧИКИ ЭКВАЙРИНГА ВТБ
+    // =========================================================================
+
+    /**
+     * @brief Регистрация заказа в ВТБ
+     * POST /api/v1/acquiring/register
+     */
+    void handleAcquiringRegister(const std::string& client_ip) {
+        int userId = verifyCashierRole(client_ip, "handleAcquiringRegister");
+        if (userId == 0) return;
+
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        int clientId = body.value("client_id", 0);
+        double amount = body.value("amount", 0.0);
+        std::string docType = body.value("doc_type", "payment");
+        int docId = body.value("doc_id", 0);
+
+        if (clientId <= 0 || amount <= 0) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid client_id or amount"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        long long amountCop = static_cast<long long>(std::round(amount * 100.0));
+
+        // Генерируем уникальный номер заказа
+        auto now = std::chrono::system_clock::now();
+        int64_t timestamp = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+        std::string orderNumber = "ORD_" + std::to_string(timestamp) + "_" + std::to_string(clientId);
+
+        int orderId = db_->createAcquiringOrder(orderNumber, clientId, amount, amountCop, docType, docId);
+        if (orderId <= 0) {
+            response_.result(http::status::internal_server_error);
+            response_.body() = json{ {"error", "Failed to create order in DB"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        json params;
+        params["userName"] = Config::VTB_USERNAME;
+        params["password"] = Config::VTB_PASSWORD;
+        params["orderNumber"] = orderNumber;
+        params["amount"] = amountCop;
+        params["currency"] = "643"; // RUB
+        params["returnUrl"] = Config::VTB_RETURN_URL;
+        params["failUrl"] = Config::VTB_FAIL_URL;
+        params["description"] = "Оплата заказа " + orderNumber;
+
+        g_serverLogger.info("handleAcquiringRegister: sending register.do to VTB, orderNumber=" + orderNumber);
+        json vtbResp = vtbRequest("register.do", params);
+
+        if (vtbResp.value("errorCode", "-1") == "0") {
+            std::string vtbOrderId = vtbResp.value("orderId", "");
+            std::string formUrl = vtbResp.value("formUrl", "");
+
+            db_->updateAcquiringOrderVtbId(orderNumber, vtbOrderId);
+
+            response_.result(http::status::ok);
+            response_.body() = json{
+                {"success", true},
+                {"order_number", orderNumber},
+                {"vtb_order_id", vtbOrderId},
+                {"form_url", formUrl}
+            }.dump();
+            g_serverLogger.info("handleAcquiringRegister: SUCCESS, vtbOrderId=" + vtbOrderId);
+        }
+        else {
+            response_.result(http::status::internal_server_error);
+            response_.body() = json{
+                {"success", false},
+                {"error", vtbResp.value("errorMessage", "VTB register failed")},
+                {"error_code", vtbResp.value("errorCode", "-1")}
+            }.dump();
+            g_serverLogger.error("handleAcquiringRegister: VTB register failed, error=" + vtbResp.dump());
+        }
+        response_.prepare_payload();
+    }
+
+    /**
+     * @brief Получение статуса заказа из ВТБ
+     * POST /api/v1/acquiring/status
+     */
+    void handleAcquiringStatus(const std::string& client_ip) {
+        int userId = verifyCashierRole(client_ip, "handleAcquiringStatus");
+        if (userId == 0) return;
+
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        std::string orderNumber = body.value("order_number", "");
+        if (orderNumber.empty()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "order_number required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        json dbOrder = db_->getAcquiringOrderByNumber(orderNumber);
+        if (dbOrder.empty()) {
+            response_.result(http::status::not_found);
+            response_.body() = json{ {"error", "Order not found"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        std::string vtbOrderId = dbOrder.value("vtb_order_id", "");
+        json params;
+        params["userName"] = Config::VTB_USERNAME;
+        params["password"] = Config::VTB_PASSWORD;
+        if (!vtbOrderId.empty()) {
+            params["orderId"] = vtbOrderId;
+        }
+        else {
+            params["orderNumber"] = orderNumber;
+        }
+
+        g_serverLogger.info("handleAcquiringStatus: sending get-status.do to VTB, orderNumber=" + orderNumber);
+        json vtbResp = vtbRequest("get-status.do", params);
+
+        if (vtbResp.value("errorCode", "-1") == "0") {
+            int orderStatus = vtbResp.value("orderStatus", -1);
+            std::string newStatus = "unknown";
+            switch (orderStatus) {
+            case 0: newStatus = "created"; break;
+            case 1: newStatus = "preauth"; break;
+            case 2: newStatus = "paid"; break;
+            case 3: newStatus = "cancelled"; break;
+            case 4: newStatus = "refunded"; break;
+            default: newStatus = "unknown"; break;
+            }
+
+            db_->updateAcquiringOrderStatus(orderNumber, newStatus);
+
+            response_.result(http::status::ok);
+            response_.body() = json{
+                {"success", true},
+                {"order_number", orderNumber},
+                {"status", newStatus},
+                {"vtb_status", orderStatus},
+                {"action_code", vtbResp.value("actionCode", "")},
+                {"action_description", vtbResp.value("actionCodeDescription", "")}
+            }.dump();
+            g_serverLogger.info("handleAcquiringStatus: SUCCESS, status=" + newStatus);
+        }
+        else {
+            response_.result(http::status::internal_server_error);
+            response_.body() = json{
+                {"success", false},
+                {"error", vtbResp.value("errorMessage", "VTB status failed")}
+            }.dump();
+        }
+        response_.prepare_payload();
+    }
+
+    /**
+     * @brief Возврат средств по заказу
+     * POST /api/v1/acquiring/refund
+     */
+    void handleAcquiringRefund(const std::string& client_ip) {
+        int userId = verifyCashierRole(client_ip, "handleAcquiringRefund");
+        if (userId == 0) return;
+
+        json body;
+        try { body = json::parse(request_.body()); }
+        catch (...) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Invalid JSON"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        std::string orderNumber = body.value("order_number", "");
+        double amount = body.value("amount", 0.0);
+
+        if (orderNumber.empty() || amount <= 0) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "order_number and amount required"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        json dbOrder = db_->getAcquiringOrderByNumber(orderNumber);
+        if (dbOrder.empty()) {
+            response_.result(http::status::not_found);
+            response_.body() = json{ {"error", "Order not found"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        std::string vtbOrderId = dbOrder.value("vtb_order_id", "");
+        if (vtbOrderId.empty()) {
+            response_.result(http::status::bad_request);
+            response_.body() = json{ {"error", "Order has no VTB ID"} }.dump();
+            response_.prepare_payload();
+            return;
+        }
+
+        long long amountCop = static_cast<long long>(std::round(amount * 100.0));
+
+        json params;
+        params["userName"] = Config::VTB_USERNAME;
+        params["password"] = Config::VTB_PASSWORD;
+        params["orderId"] = vtbOrderId;
+        params["amount"] = amountCop;
+
+        g_serverLogger.info("handleAcquiringRefund: sending refund.do to VTB, orderNumber=" + orderNumber);
+        json vtbResp = vtbRequest("refund.do", params);
+
+        if (vtbResp.value("errorCode", "-1") == "0") {
+            db_->updateAcquiringOrderStatus(orderNumber, "refunded");
+
+            response_.result(http::status::ok);
+            response_.body() = json{
+                {"success", true},
+                {"order_number", orderNumber},
+                {"action_code", vtbResp.value("actionCode", "")},
+                {"action_description", vtbResp.value("actionCodeDescription", "")}
+            }.dump();
+            g_serverLogger.info("handleAcquiringRefund: SUCCESS");
+        }
+        else {
+            response_.result(http::status::internal_server_error);
+            response_.body() = json{
+                {"success", false},
+                {"error", vtbResp.value("errorMessage", "VTB refund failed")}
+            }.dump();
+        }
+        response_.prepare_payload();
+    }
+
 
     void doWrite() {
         http::async_write(stream_, response_,
@@ -3833,8 +5124,37 @@ void startExpiredItemsMonitor(std::shared_ptr<Database> db) {
     g_serverLogger.info("ExpiredItemsMonitor: thread launched (interval=3600s)");
 }
 
+// =========================================================================
+// ФОНОВЫЙ ПОТОК: АВТОМАТИЧЕСКАЯ СИНХРОНИЗАЦИЯ С 1С
+// Запускается в main() и каждые ONEC_SYNC_INTERVAL_MINUTES вызывает syncData()
+// =========================================================================
+void startOneCSyncMonitor(std::shared_ptr<OneCIntegration> onec) {
+    std::thread([onec]() {
+        g_serverLogger.info("OneCSyncMonitor: background thread started (interval=" +
+            std::to_string(Config::ONEC_SYNC_INTERVAL_MINUTES) + " min)");
+
+        while (true) {
+            // Ждем заданный интервал
+            std::this_thread::sleep_for(std::chrono::minutes(Config::ONEC_SYNC_INTERVAL_MINUTES));
+
+            g_serverLogger.info("OneCSyncMonitor: periodic sync triggered");
+            try {
+                // Вызываем метод синхронизации, который уже реализован в onec_integration.h
+                onec->syncData();
+            }
+            catch (const std::exception& e) {
+                g_serverLogger.error("OneCSyncMonitor error: " + std::string(e.what()));
+            }
+        }
+        }).detach();
+
+    g_serverLogger.info("OneCSyncMonitor: thread launched successfully");
+}
+
 int main() {
     try {
+        Config::createDirectories();          // создаёт /var/log/kiosk и /var/backups/kiosk
+
         g_serverLogger.info("=== Server starting ===");
 
         std::string connStr = "host=" + std::string(Config::DB_HOST) +
@@ -3842,26 +5162,50 @@ int main() {
             " dbname=" + std::string(Config::DB_NAME) +
             " user=" + std::string(Config::DB_USER) +
             " password=" + std::string(Config::DB_PASSWORD);
-        auto conn = std::make_shared<pqxx::connection>(connStr);
-        if (!conn->is_open()) {
-            g_serverLogger.error("Database connection failed");
+        
+        // HTTP + auth + queue
+        auto connHttp = std::make_shared<pqxx::connection>(connStr);
+
+        auto dbHttp = std::make_shared<Database>(connHttp, Config::ENCRYPTION_KEY);
+
+        // Фоновая синхронизация с 1С
+        auto connOneC = std::make_shared<pqxx::connection>(connStr);
+        auto dbOneC = std::make_shared<Database>(connOneC, Config::ENCRYPTION_KEY);
+
+        // Монитор просроченных приложений
+        auto connExpired = std::make_shared<pqxx::connection>(connStr);
+        auto dbExpired = std::make_shared<Database>(connExpired, Config::ENCRYPTION_KEY);
+
+        if (!dbHttp->initialize()) {                  // схема создаётся один раз
+            g_serverLogger.error("Database initialization failed - aborting startup");
             return 1;
         }
+        // dbOneC, dbExpired не нужно инициализировать повторно —
+        // они работают на уже созданной схеме.
 
-        auto db = std::make_shared<Database>(conn, Config::ENCRYPTION_KEY);
-        auto auth = std::make_shared<AuthService>(db);
-        auto queue = std::make_shared<QueueService>(db);
-        auto onec = std::make_shared<OneCIntegration>(db);
+        auto auth = std::make_shared<AuthService>(dbHttp);
+        auto queue = std::make_shared<QueueService>(dbHttp);
+        auto onec = std::make_shared<OneCIntegration>(dbOneC);
+
         auto rate_limiter = std::make_shared<RateLimiter>(5, std::chrono::minutes(1));
 
         if (!auth->initialize()) {
             g_serverLogger.error("Auth service initialization failed");
             return 1;
         }
+        // =====================================================================
+        // ИСПРАВЛЕНИЕ: Фоновый поток запускается ДО блокирующего ioc.run(),
+        // чтобы он работал параллельно с сервером, а не после его остановки.
+        // =====================================================================
+        startExpiredItemsMonitor(dbHttp);
+        startOneCSyncMonitor(onec);
 
-        runServer(db, auth, queue, onec, rate_limiter);
+        // запуск фонового сервиса резервного копирования
+        auto backupService = std::make_shared<BackupService>();
+        backupService->start();
+        g_serverLogger.info("BackupService started (daily 22:00–23:00 MSK)");
 
-		startExpiredItemsMonitor(db); // Запуск фонового потока мониторинга просроченных приложений
+        runServer(dbHttp, auth, queue, onec, rate_limiter);
         
         g_serverLogger.info("=== Server shutdown ===");
         return 0;

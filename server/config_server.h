@@ -18,9 +18,9 @@ namespace Config {
     constexpr int DB_POOL_SIZE = 10;
 
     // 1C Integration
-    constexpr const char* ONEC_URL = "http://1c-server:1550/hs/exchange";
-    constexpr const char* ONEC_USER = "1c_user";
-    constexpr const char* ONEC_PASSWORD = "1c_password";
+    constexpr const char* ONEC_URL = "http://100.108.154.106/Rozniza_base/hs/kiosk_sync";
+    constexpr const char* ONEC_USER = "onec_sync";
+    constexpr const char* ONEC_PASSWORD = "123456";
     constexpr int ONEC_SYNC_INTERVAL_MINUTES = 15;
 
     // SSL
@@ -65,9 +65,36 @@ namespace Config {
     constexpr int MAX_QUEUE_SIZE_PAID = 30;
     constexpr int MAX_QUEUE_SIZE_EXPENSIVE = 20;
 
+    // =========================================================================
+    // »Ќ“≈√–ј÷»я Ё ¬ј…–»Ќ√ј ¬“Ѕ
+    // =========================================================================
+    // Ѕазовый URL API ¬“Ѕ (тестовый контур)
+    inline const std::string VTB_API_URL = "https://test-pay.vtb.ru/payment/rest/";
+    // ”четные данные API (выдаютс€ банком)
+    inline const std::string VTB_USERNAME = "vtb_api_user";
+    inline const std::string VTB_PASSWORD = "vtb_api_password";
+    // URL дл€ возврата после успешной/неуспешной оплаты (используютс€ дл€ веб-форм)
+    inline const std::string VTB_RETURN_URL = "https://77.222.32.209:8443/acquiring/success";
+    inline const std::string VTB_FAIL_URL = "https://77.222.32.209:8443/acquiring/fail";
+
+    // =========================================================================
+    //  ќЌ‘»√”–ј÷»я —≈“» ћј√ј«»Ќј ƒЋя “¬-ƒ»—ѕЋ≈я
+    // =========================================================================
+    // ¬нешний статичный IP-адрес магазина (через NAT)
+    // VPS использует этот IP дл€ идентификации подключений из магазина
+    inline const std::string SHOP_EXTERNAL_IP = "188.227.49.137";
+
+    // ¬нутренний IP-адрес Android TV в локальной сети магазина
+    // VPS провер€ет этот IP при подключении к /queue-display
+    // и логирует подключение как "TV connected"
+    inline const std::string TV_INTERNAL_IP = "192.168.3.62";
+
+
     // Paths
     inline void createDirectories() {
         std::filesystem::create_directories(LOG_PATH);
         std::filesystem::create_directories(BACKUP_PATH);
     }
+
+
 }

@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Электронная очередь - Комиссионный магазин СОВЕТСКИЙ</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #000028 0%, #1a1a4e 100%);
+            color: #ffffff;
+            overflow: hidden;
+            height: 100vh;
+        }
+        .container { display: flex; flex-direction: column; height: 100vh; padding: 20px; }
+        .header {
+            text-align: center;
+            padding: 20px;
+            background: rgba(255, 255, 0, 0.1);
+            border-radius: 10px;
+            margin-bottom: 20px;
+            position: relative;
+        }
+        .header h1 { font-size: 48px; color: #ffff00; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
+        .update-time { position: absolute; top: 20px; right: 30px; font-size: 18px; color: #b4b4b4; }
+        .tts-status {
+            position: absolute;
+            top: 20px;
+            left: 30px;
+            font-size: 16px;
+            padding: 5px 15px;
+            border-radius: 5px;
+        }
+        .tts-status.ok { background: rgba(0, 200, 0, 0.3); color: #00ff00; }
+        .tts-status.error { background: rgba(200, 0, 0, 0.3); color: #ff5050; }
+        .tts-status.loading { background: rgba(200, 200, 0, 0.3); color: #ffff00; }
+        .queue-table {
+            flex: 1;
+            overflow-y: auto;
+            background: rgba(40, 40, 80, 0.5);
+            border-radius: 10px;
+            padding: 20px;
+        }
+        .table-header {
+            display: grid;
+            grid-template-columns: 5fr 2fr 3fr;
+            gap: 20px;
+            padding: 15px;
+            background: rgba(255, 215, 0, 0.2);
+            border-radius: 5px;
+            margin-bottom: 10px;
+            font-size: 24px;
+            font-weight: bold;
+            color: #ffd700;
+        }
+        .table-row {
+            display: grid;
+            grid-template-columns: 5fr 2fr 3fr;
+            gap: 20px;
+            padding: 15px;
+            border-bottom: 1px solid rgba(150, 150, 200, 0.3);
+            font-size: 22px;
+            transition: background 0.3s;
+        }
+        .table-row:hover { background: rgba(255, 255, 255, 0.05); }
+        .table-row.accepted { background: rgba(0, 255, 128, 0.2); animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+        .empty-message { text-align: center; padding: 50px; font-size: 28px; color: #969696; }
+        .error-message { text-align: center; padding: 50px; font-size: 28px; color: #ff5050; }
+        .ad-banner {
+            height: 25vh;
+            background: linear-gradient(135deg, #3c3c50 0%, #4a4a6a 100%);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 20px;
+            font-size: 32px;
+            color: #c8c8c8;
+        }
+        .col-center { text-align: center; }
+        .tts-test-btn {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 15px 30px;
+            font-size: 18px;
+            background: #ffd700;
+            color: #000;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            z-index: 1000;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        }
+        .tts-test-btn:hover { background: #ffed4e; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Электронная очередь - Комиссионный магазин СОВЕТСКИЙ</h1>
+            <div class="update-time" id="updateTime">Обновлено: --:--:--</div>
+            <div class="tts-status loading" id="ttsStatus">TTS: инициализация...</div>
+        </div>
+        
+        <div class="queue-table" id="queueTable">
+            <div class="table-header">
+                <div>Тип очереди и номер талона</div>
+                <div class="col-center">№ в общей очереди</div>
+                <div>Время взятия талона</div>
+            </div>
+            <div id="queueContent">
+                <div class="empty-message">Загрузка данных...</div>
+            </div>
+        </div>
+        
+        <div class="ad-banner">
+            ЗДЕСЬ МОЖЕТ БЫТЬ ВАША РЕКЛАМА
+        </div>
+    </div>
+
+    <!-- Кнопка для разблокировки аудио-контекста (user gesture) -->
+    <button class="tts-test-btn" id="ttsTestBtn" onclick="unlockAudio()">
+        🔊 Активировать звук
+    </button>
+
+    <!-- Скрытый аудио-плеер для воспроизведения TTS -->
+    <audio id="ttsAudio" preload="auto" style="display: none;"></audio>
+
+    <script>
+        // =============================================================================
+        // КОНФИГУРАЦИЯ
+        // =============================================================================
+        const POLL_INTERVAL = 2000;
+        const SERVER_URL = '/api/v1/queue/display';
+        const TTS_ENDPOINT = '/cgi-bin/tts.sh';
+        
+        const QUEUE_NAMES = {
+            'general':    'Общая очередь (до 20 позиций)',
+            'first_time': 'Первый раз (оформление договора)',
+            'extra_20':   '+20 позиций',
+            'trust':      'На доверии',
+            'paid':       'Платный приём (200 руб.)',
+            'expensive':  'Дорогой товар (>5000 руб.)'
+        };
+        
+        // =============================================================================
+        // СОСТОЯНИЕ ПРИЛОЖЕНИЯ
+        // =============================================================================
+        let spokenTickets = new Set();
+        let isFirstSync = true;
+        let previousAcceptedKeys = new Set();
+        let ttsReady = false;
+        let audioUnlocked = false;
+        let ttsAudio = null;
+        let audioQueue = [];
+        let isPlaying = false;
+        
+        // =============================================================================
+        // ИНИЦИАЛИЗАЦИЯ АУДИО-ПЛЕЕРА
+        // =============================================================================
+        function initTTS() {
+            const statusEl = document.getElementById('ttsStatus');
+            console.log('[TTS] Инициализация локального TTS через CGI...');
+            
+            ttsAudio = document.getElementById('ttsAudio');
+            
+            // Обработчики событий для диагностики
+            ttsAudio.addEventListener('play', () => {
+                console.log('[TTS] Воспроизведение началось');
+            });
+            
+            ttsAudio.addEventListener('ended', () => {
+                console.log('[TTS] Воспроизведение завершено');
+                isPlaying = false;
+                playNextInQueue();
+            });
+            
+            ttsAudio.addEventListener('error', (e) => {
+                console.error('[TTS] Ошибка воспроизведения:', e);
+                statusEl.textContent = 'TTS: ошибка аудио';
+                statusEl.className = 'tts-status error';
+                isPlaying = false;
+                playNextInQueue();
+            });
+            
+            ttsAudio.addEventListener('canplay', () => {
+                console.log('[TTS] Аудио готово к воспроизведению');
+            });
+            
+            statusEl.textContent = 'TTS: готов (нажмите кнопку)';
+            statusEl.className = 'tts-status loading';
+            ttsReady = true;
+            console.log('[TTS] Инициализация завершена');
+        }
+        
+        // =============================================================================
+        // РАЗБЛОКИРОВКА АУДИО-КОНТЕКСТА (USER GESTURE)
+        // =============================================================================
+        // Браузеры на Android TV блокируют автоматическое воспроизведение звука.
+        // Необходимо явное взаимодействие пользователя (нажатие кнопки).
+        // =============================================================================
+        function unlockAudio() {
+            console.log('[TTS] Попытка разблокировки аудио-контекста...');
+            
+            // Воспроизводим тишину для разблокировки
+            const silentAudio = new Audio('data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYoRwAAAAAAAAAAAAAAAAAAAA//tQZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYoRwAAAAAAAAAAAAAAAAAAAA==');
+            
+            silentAudio.play().then(() => {
+                console.log('[TTS] ✅ Аудио-контекст разблокирован успешно');
+                audioUnlocked = true;
+                
+                const statusEl = document.getElementById('ttsStatus');
+                statusEl.textContent = 'TTS: активен';
+                statusEl.className = 'tts-status ok';
+                
+                // Скрываем кнопку через 2 секунды
+                setTimeout(() => {
+                    document.getElementById('ttsTestBtn').style.display = 'none';
+                }, 2000);
+                
+                // Воспроизводим тестовую фразу
+                speakInvitation('TEST', '1');
+            }).catch(error => {
+                console.error('[TTS] ❌ Ошибка разблокировки:', error);
+                alert('Не удалось активировать звук.\n\nПроверьте:\n1. Не отключён ли звук на телевизоре\n2. Не заблокирован ли звук в настройках Android TV');
+            });
+        }
+        
+        // =============================================================================
+        // ОЗВУЧИВАНИЕ ПРИГЛАШЕНИЯ (ЧЕРЕЗ ЛОКАЛЬНЫЙ CGI)
+        // =============================================================================
+        function speakInvitation(ticketNumber, windowNumber) {
+            if (!ttsReady) {
+                console.warn('[TTS] TTS не инициализирован');
+                return;
+            }
+            
+            if (!audioUnlocked) {
+                console.warn('[TTS] Аудио не разблокировано, пропуск озвучивания');
+                const statusEl = document.getElementById('ttsStatus');
+                statusEl.textContent = 'TTS: НАЖМИТЕ КНОПКУ!';
+                statusEl.className = 'tts-status error';
+                return;
+            }
+            
+            const text = `Клиент с номером ${ticketNumber}, просим подойти к окну номер ${windowNumber}`;
+            const encodedText = encodeURIComponent(text);
+            const ttsUrl = `${TTS_ENDPOINT}?text=${encodedText}`;
+            
+            console.log(`[TTS] Добавление в очередь: "${text}"`);
+            console.log(`[TTS] URL: ${ttsUrl}`);
+            
+            // Добавляем в очередь воспроизведения
+            audioQueue.push(ttsUrl);
+            
+            // Если ничего не играет, начинаем воспроизведение
+            if (!isPlaying) {
+                playNextInQueue();
+            }
+        }
+        
+        // =============================================================================
+        // ВОСПРОИЗВЕДЕНИЕ СЛЕДУЮЩЕГО АУДИО ИЗ ОЧЕРЕДИ
+        // =============================================================================
+        function playNextInQueue() {
+            if (audioQueue.length === 0) {
+                console.log('[TTS] Очередь пуста');
+                return;
+            }
+            
+            if (isPlaying) {
+                console.log('[TTS] Уже играет, ждём завершения');
+                return;
+            }
+            
+            const nextUrl = audioQueue.shift();
+            console.log(`[TTS] Воспроизведение: ${nextUrl}`);
+            
+            ttsAudio.src = nextUrl;
+            ttsAudio.play().then(() => {
+                isPlaying = true;
+                console.log('[TTS] ✅ Воспроизведение началось');
+            }).catch(error => {
+                console.error('[TTS] ❌ Ошибка воспроизведения:', error);
+                isPlaying = false;
+                // Пробуем следующий
+                setTimeout(() => playNextInQueue(), 100);
+            });
+        }
+        
+        // =============================================================================
+        // ФОРМАТИРОВАНИЕ ВРЕМЕНИ
+        // =============================================================================
+        function formatTime(timestamp) {
+            if (!timestamp || timestamp === 0) return '-';
+            const date = new Date(timestamp * 1000);
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            const seconds = String(date.getSeconds()).padStart(2, '0');
+            return `${hours}:${minutes}:${seconds}`;
+        }
+        
+        function getCurrentTime() {
+            const now = new Date();
+            return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+        }
+        
+        // =============================================================================
+        // ОБРАБОТКА ДАННЫХ С СЕРВЕРА
+        // =============================================================================
+        function processQueueData(data) {
+            if (!data || !data.queues) {
+                throw new Error('Некорректный формат данных');
+            }
+            
+            // Собираем все ожидающие талоны
+            const unifiedTickets = [];
+            for (const [queueId, queueData] of Object.entries(data.queues)) {
+                const queueName = QUEUE_NAMES[queueId] || queueId;
+                if (queueData.waiting && Array.isArray(queueData.waiting)) {
+                    for (const ticket of queueData.waiting) {
+                        unifiedTickets.push({
+                            displayName: queueName,
+                            ticketNumber: ticket.ticket_number,
+                            createdAt: ticket.created_at,
+                            status: 'waiting'
+                        });
+                    }
+                }
+            }
+            
+            unifiedTickets.sort((a, b) => a.createdAt - b.createdAt);
+            
+            // Собираем принятые талоны для озвучивания
+            const currentAcceptedKeys = new Set();
+            const newAcceptedTickets = [];
+            
+            for (const [queueId, queueData] of Object.entries(data.queues)) {
+                if (queueData.accepted && Array.isArray(queueData.accepted)) {
+                    for (const ticket of queueData.accepted) {
+                        const key = `${queueId}:${ticket.ticket_number}`;
+                        currentAcceptedKeys.add(key);
+                        
+                        if (!previousAcceptedKeys.has(key) && !spokenTickets.has(key)) {
+                            newAcceptedTickets.push({
+                                ticketNumber: ticket.ticket_number,
+                                windowNumber: ticket.window_number || '1',
+                                key: key
+                            });
+                        }
+                    }
+                }
+            }
+            
+            // Озвучиваем новые принятые талоны
+            if (!isFirstSync) {
+                for (const ticket of newAcceptedTickets) {
+                    console.log(`[TTS] Новый принятый талон: ${ticket.ticketNumber}, окно: ${ticket.windowNumber}`);
+                    speakInvitation(ticket.ticketNumber, ticket.windowNumber);
+                    spokenTickets.add(ticket.key);
+                }
+            } else {
+                console.log(`[TTS] Первая синхронизация - озвучивание подавлено для ${newAcceptedTickets.length} pre-existing талонов`);
+                for (const ticket of newAcceptedTickets) {
+                    spokenTickets.add(ticket.key);
+                }
+            }
+            
+            isFirstSync = false;
+            previousAcceptedKeys = currentAcceptedKeys;
+            
+            // Очистка spokenTickets
+            for (const key of spokenTickets) {
+                if (!currentAcceptedKeys.has(key)) {
+                    spokenTickets.delete(key);
+                }
+            }
+            
+            return unifiedTickets;
+        }
+        
+        // =============================================================================
+        // ОТРИСОВКА ОЧЕРЕДИ
+        // =============================================================================
+        function renderQueue(tickets) {
+            const content = document.getElementById('queueContent');
+            
+            if (tickets.length === 0) {
+                content.innerHTML = '<div class="empty-message">Очередь пуста</div>';
+                return;
+            }
+            
+            let html = '';
+            const maxRows = 15;
+            
+            for (let i = 0; i < Math.min(tickets.length, maxRows); i++) {
+                const ticket = tickets[i];
+                const orderNumber = i + 1;
+                const timeStr = formatTime(ticket.createdAt);
+                const ticketInfo = `${ticket.displayName} ${ticket.ticketNumber}`;
+                
+                html += `
+                    <div class="table-row">
+                        <div>${ticketInfo}</div>
+                        <div class="col-center">${orderNumber}</div>
+                        <div>${timeStr}</div>
+                    </div>
+                `;
+            }
+            
+            content.innerHTML = html;
+        }
+        
+        // =============================================================================
+        // ОПРОС СЕРВЕРА
+        // =============================================================================
+        async function fetchQueueData() {
+            try {
+                const response = await fetch(SERVER_URL);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                const tickets = processQueueData(data);
+                renderQueue(tickets);
+                
+                document.getElementById('updateTime').textContent = `Обновлено: ${getCurrentTime()}`;
+                console.log(`[DATA] Получено ${tickets.length} талонов в ожидании`);
+            }
+            catch (error) {
+                console.error('[ERROR] Ошибка получения данных:', error);
+                document.getElementById('queueContent').innerHTML = 
+                    '<div class="error-message">Нет связи с сервером</div>';
+            }
+        }
+        
+        // =============================================================================
+        // ИНИЦИАЛИЗАЦИЯ
+        // =============================================================================
+        function init() {
+            console.log('=== Инициализация очереди на Android TV ===');
+            console.log('VPS URL:', window.location.origin);
+            console.log('User Agent:', navigator.userAgent);
+            
+            // Инициализируем TTS
+            initTTS();
+            
+            // Первый запрос
+            fetchQueueData();
+            
+            // Периодический опрос
+            setInterval(fetchQueueData, POLL_INTERVAL);
+        }
+        
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>

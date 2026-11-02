@@ -6,6 +6,12 @@
 #include <chrono>
 #include <filesystem>
 #include <cstdlib>
+#include <sstream>      // std::stringstream
+#include <iomanip>      // std::put_time
+#include <ctime>        // std::localtime, std::strftime, gmtime_r
+#include <vector>       // std::vector
+#include <algorithm>
+
 #include "config_server.h"
 #include "logger_server.h"
 
@@ -14,20 +20,90 @@ extern Logger g_serverLogger;
 class BackupService {
 private:
     std::thread m_thread;
-    bool m_running;
+    std::atomic<bool> m_running;
     std::chrono::hours m_interval;
 
     void run() {
+        std::string lastBackupDate; // "YYYY-MM-DD" в МСК
+
         while (m_running) {
             try {
-                performBackup();
+                // --- 1. Текущее время по Москве (UTC+3) ---
+                auto now = std::chrono::system_clock::now();
+                std::time_t nowUtc = std::chrono::system_clock::to_time_t(now);
+                std::time_t nowMsk = nowUtc + 3 * 3600;
+
+                std::tm tmMsk{};
+#ifdef _WIN32
+                gmtime_s(&tmMsk, &nowMsk);
+#else
+                gmtime_r(&nowMsk, &tmMsk);
+#endif
+
+                char dateBuf[11] = { 0 };
+                std::strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", &tmMsk);
+                const std::string todayMsk(dateBuf);
+
+                // --- 2. Окно 22:00–22:59:59 МСК, ещё не делали сегодня ---
+                if (tmMsk.tm_hour == 22 && lastBackupDate != todayMsk) {
+                    g_serverLogger.info(
+                        "BackupService: 22:00 MSK window reached, starting daily backup");
+
+                    // Защита от повторного запуска в том же окне
+                    // (например, если сервер перезапускали в 22:00–23:00).
+                    bool alreadyDone = false;
+                    try {
+                        char dateNoSep[9] = { 0 };
+                        std::strftime(dateNoSep, sizeof(dateNoSep), "%Y%m%d", &tmMsk);
+                        const std::string prefix =
+                            std::string("kiosk_backup_") + dateNoSep + "_";
+                        std::error_code ec;
+                        for (const auto& entry :
+                            std::filesystem::directory_iterator(Config::BACKUP_PATH, ec)) {
+                            if (ec) break;
+                            const std::string name = entry.path().filename().string();
+                            if (name.rfind(prefix, 0) == 0 &&
+                                entry.path().extension() == ".gz") {
+                                alreadyDone = true;
+                                break;
+                            }
+                        }
+                    }
+                    catch (const std::exception& e) {
+                        g_serverLogger.warning(
+                            std::string("BackupService: cannot scan BACKUP_PATH: ") +
+                            e.what());
+                    }
+
+                    if (!alreadyDone) {
+                        try {
+                            performBackup();
+                            g_serverLogger.info(
+                                "BackupService: daily backup completed for " + todayMsk);
+                        }
+                        catch (const std::exception& e) {
+                            g_serverLogger.error(
+                                std::string("BackupService: performBackup failed: ") +
+                                e.what());
+                        }
+                    }
+                    else {
+                        g_serverLogger.info(
+                            "BackupService: backup for " + todayMsk +
+                            " already exists, skipping");
+                    }
+
+                    // Фиксируем дату в любом случае, чтобы не спамить лог каждую минуту
+                    lastBackupDate = todayMsk;
+                }
             }
             catch (const std::exception& e) {
-                g_serverLogger.error(std::string("Backup error: ") + e.what());
+                g_serverLogger.error(
+                    std::string("BackupService: scheduler error: ") + e.what());
             }
 
-            // Sleep until next backup
-            for (int i = 0; i < static_cast<int>(m_interval.count()) * 3600 && m_running; i++) {
+            // --- 3. Спим по 1 секунде (быстрый отклик на stop()) ---
+            for (int i = 0; i < 60 && m_running; ++i) {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
             }
         }
@@ -41,14 +117,23 @@ private:
         // Create backup directory if not exists
         fs::create_directories(Config::BACKUP_PATH);
 
-        // Generate timestamp
+        // backup at 22:00 by MSK
         auto now = std::chrono::system_clock::now();
-        auto time_t_now = std::chrono::system_clock::to_time_t(now);
-        std::stringstream timestamp;
-        timestamp << std::put_time(std::localtime(&time_t_now), "%Y%m%d_%H%M%S");
+        std::time_t time_t_now = std::chrono::system_clock::to_time_t(now);
+        std::time_t time_t_msk = time_t_now + 3 * 3600;
+
+        std::tm tm_msk{};
+#ifdef _WIN32
+        gmtime_s(&tm_msk, &time_t_msk);
+#else
+        gmtime_r(&time_t_msk, &tm_msk);
+#endif
+
+        char tsBuf[32] = { 0 };
+        std::strftime(tsBuf, sizeof(tsBuf), "%Y%m%d_%H%M%S", &tm_msk);
 
         std::string backupFile = std::string(Config::BACKUP_PATH) +
-            "/kiosk_backup_" + timestamp.str() + ".sql";
+            "/kiosk_backup_" + tsBuf + ".sql";
 
         // Run pg_dump
         std::string cmd = "PGPASSWORD=" + std::string(Config::DB_PASSWORD) +
@@ -120,6 +205,9 @@ public:
     BackupService()
         : m_running(false)
         , m_interval(Config::BACKUP_INTERVAL_HOURS) {
+    }
+    ~BackupService() {
+        stop();
     }
 
     void start() {

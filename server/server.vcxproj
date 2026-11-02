@@ -128,7 +128,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\Users\dpc\Desktop\SHOP\server\client\packages\vcpkg\packages\nlohmann-json_x64-windows\include\nlohmann;C:\Users\dpc\Desktop\SHOP\server\client\packages\vcpkg\packages\nlohmann-json_x64-windows\include;C:\Users\dpc\Desktop\SHOP\server\client\packages\vcpkg\packages\boost-beast_x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\Sergey\OneDrive\Рабочий стол\SHOP\server\client\packages\vcpkg\packages\boost-beast_x64-windows\include;C:\Users\Sergey\OneDrive\Рабочий стол\SHOP\server\client\packages\vcpkg\packages\nlohmann-json_x64-windows\include;C:\Users\Sergey\OneDrive\Рабочий стол\SHOP\server\client\packages\vcpkg\packages\nlohmann-json_x64-windows\include\nlohmann;C:\Users\dpc\Desktop\SHOP\server\client\packages\vcpkg\packages\nlohmann-json_x64-windows\include\nlohmann;C:\Users\dpc\Desktop\SHOP\server\client\packages\vcpkg\packages\nlohmann-json_x64-windows\include;C:\Users\dpc\Desktop\SHOP\server\client\packages\vcpkg\packages\boost-beast_x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
     </ClCompile>
     <Link>
@@ -157,6 +157,7 @@
     <ClInclude Include="crypto_utils.h" />
     <ClInclude Include="database.h" />
     <ClInclude Include="email_service.h" />
+    <ClInclude Include="shop_barcode.h" />
     <ClInclude Include="logger_server.h" />
     <ClInclude Include="monitoring.h" />
     <ClInclude Include="onec_integration.h" />

@@ -305,12 +305,30 @@ public:
         // Сохранение хешей токенов в БД — ЛОГИКА НЕ МЕНЯЕТСЯ.
         if (clientOpt) {
             try {
-                int64_t now = std::chrono::system_clock::now().time_since_epoch().count() / 1000;
+             // ================================================================
+             // ИСПРАВЛЕНИЕ: ранее использовалось
+             //   std::chrono::system_clock::now().time_since_epoch().count() / 1000
+             // что на Ubuntu 26.04 LTS даёт МИКРОСЕКУНДЫ (период
+             // system_clock = наносекунды, /1000 = микросекунды).
+             //
+             // Значение ~1.78*10^15 + 604800 превышает диапазон
+             // INTEGER (макс. 2 147 483 647), что вызывает исключение
+             // "integer out of range" в saveAuthTokens().
+             // Запись в auth_tokens НЕ создаётся.
+             // При последующем refreshAccessToken() сервер не находит
+             // токен в БД и возвращает 401.
+             //
+             // РЕШЕНИЕ: использовать duration_cast<seconds> для получения
+             // корректного Unix timestamp в секундах.
+             // ================================================================
+                int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
                 db_->saveAuthTokens(
                     clientOpt->id,
                     hashToken(accessToken),
                     hashToken(refreshToken),
                     now + Config::JWT_REFRESH_EXPIRY_SECONDS
+
                 );
             }
             catch (const std::exception& e) {
@@ -318,6 +336,62 @@ public:
             }
         }
         return { accessToken, refreshToken };
+    }
+
+    // =========================================================================
+// НОВЫЙ МЕТОД: ОБНОВЛЕНИЕ ACCESS TOKEN ПО REFRESH TOKEN
+// =========================================================================
+// Назначение: обрабатывает запрос POST /api/v1/auth/refresh.
+//
+// Логика:
+//   1. Проверяем валидность JWT refresh_token (подпись HS256 + срок действия).
+//   2. Извлекаем phone из payload JWT.
+//   3. Проверяем, что хеш токена присутствует в auth_tokens и не отозван.
+//   4. Отзываем старый refresh_token (revoke = TRUE) — защита от повторного использования.
+//   5. Генерируем новую пару (access_token, refresh_token) через generateTokens().
+//   6. Возвращаем пару токенов вызывающему коду.
+//
+// Потокобезопасность:
+//   - verifyJWT() — только чтение, не меняет состояние.
+//   - hashToken() — детерминированная функция, потокобезопасна.
+//   - findActiveRefreshToken() / revokeRefreshToken() — используют
+//     собственные транзакции PostgreSQL. Атомарность гарантирована БД.
+//   - generateTokens() — создаёт новую запись в auth_tokens в своей транзакции.
+//   Гонка между параллельными refresh-запросами исключена: первый запрос
+//   отзовёт токен, второй запрос не найдёт его в БД и вернёт nullopt.
+// =========================================================================
+    std::optional<std::pair<std::string, std::string>> refreshAccessToken(const std::string& refresh_token) {
+        g_serverLogger.info("refreshAccessToken: attempt to refresh token");
+
+        // ШАГ 1: Проверка JWT (подпись + срок действия)
+        auto phoneOpt = verifyJWT(refresh_token);
+        if (!phoneOpt) {
+            g_serverLogger.warning("refreshAccessToken: invalid JWT (signature or expiry)");
+            return std::nullopt;
+        }
+        g_serverLogger.info("refreshAccessToken: JWT valid for phone=" + *phoneOpt);
+
+        // ШАГ 2: Вычисляем хеш токена и проверяем его в БД
+        std::string token_hash = hashToken(refresh_token);
+        auto clientIdOpt = db_->findActiveRefreshToken(token_hash);
+        if (!clientIdOpt) {
+            g_serverLogger.warning("refreshAccessToken: token not found in DB or already revoked/expired");
+            return std::nullopt;
+        }
+        g_serverLogger.info("refreshAccessToken: token found for clientId=" + std::to_string(*clientIdOpt));
+
+        // ШАГ 3: Отзываем старый refresh_token (одноразовое использование)
+        if (!db_->revokeRefreshToken(token_hash)) {
+            g_serverLogger.error("refreshAccessToken: failed to revoke old token");
+            return std::nullopt;
+        }
+        g_serverLogger.info("refreshAccessToken: old refresh_token revoked successfully");
+
+        // ШАГ 4: Генерируем новую пару токенов
+        auto tokens = generateTokens(*phoneOpt);
+        g_serverLogger.info("refreshAccessToken: new tokens generated for phone=" + *phoneOpt);
+
+        return tokens;
     }
 
     std::optional<std::string> verifyJWT(const std::string& token) {
